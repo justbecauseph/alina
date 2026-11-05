@@ -873,21 +873,13 @@ public final class GuildGameTests {
                 case 4 -> {
                     helper.assertTrue(statusIs(rig, player, HORN, CommissionStatus.ACTIVE), "the row after a load before the startup activation finished");
                     helper.assertTrue(!withdrawn(rig, player), "a withdrawal was sent for a load before the startup finished");
+                    // haruhi runs its activation listeners before it reports startup complete, so this is the startup
+                    // activation itself: its section lacks the horn, and it withdraws it.
                     rig.service().contentActivated();
-                    since.set(rig.ticks());
                     advance(helper, step, 5);
                 }
-                case 5 -> {
-                    helper.assertTrue(rig.ticks() - since.get() >= 5, "waiting for any withdrawal to finish");
-                    helper.assertTrue(statusIs(rig, player, HORN, CommissionStatus.ACTIVE), "the row after an activation before the startup finished");
-                    helper.assertTrue(!withdrawn(rig, player), "a withdrawal was sent before the startup finished");
-                    // The startup is finished, and a later activation with a section that lacks the horn withdraws it.
-                    rig.setReady(true);
-                    rig.service().contentActivated();
-                    advance(helper, step, 6);
-                }
                 default -> {
-                    helper.assertTrue(stored(rig, player, HORN).isEmpty(), "the later activation did not withdraw the row");
+                    helper.assertTrue(stored(rig, player, HORN).isEmpty(), "the startup activation did not withdraw the row");
                     helper.assertTrue(withdrawn(rig, player), "the player was not told of the withdrawal");
                 }
             }

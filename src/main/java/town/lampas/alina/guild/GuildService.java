@@ -93,10 +93,12 @@ import town.lampas.haruhi.api.HaruhiServices;
  *
  * <p><b>Content activation.</b> {@link #contentActivated} withdraws, for every loaded record, each active commission the
  * new content lacks (it is abandoned in storage and the player gets {@link GuildText#withdrawn}), stops all tracking and
- * starts it again from the new content. {@link #loaded} withdraws the same way. Neither withdraws while haruhi's startup
- * activation is unfinished, or while the content is {@link GuildContent#EMPTY}, which is what the content is before any
- * bundle is active and when the active bundle has no {@code alina:guild} section. Then a row the content lacks stays in
- * the record and in storage, untracked, until a later activation with a section withdraws it. A board drawn from an empty
+ * starts it again from the new content. A record that loads withdraws the same way once haruhi's startup activation has
+ * finished; haruhi runs its activation listeners before it reports startup complete, so the startup activation itself
+ * withdraws from the records loaded before it. Nothing is withdrawn while the content is {@link GuildContent#EMPTY},
+ * which is what the content is before any bundle is active, after a refused startup load, and when the active bundle
+ * has no {@code alina:guild} section. Then a row the content lacks stays in the record and in storage, untracked,
+ * until an activation with a section withdraws it. A board drawn from an empty
  * pool is drawn again at once when the content changes.
  */
 public final class GuildService {
@@ -227,7 +229,9 @@ public final class GuildService {
     public void contentActivated() {
         requireServerThread();
         GuildContent content = contentSource.get();
-        boolean withdrawing = withdrawalAllowed(content);
+        // An activation is real content even while haruhi's startup is unfinished, which is when its startup
+        // activation runs this listener.
+        boolean withdrawing = content != GuildContent.EMPTY;
         for (PlayerRecord record : List.copyOf(records.values())) {
             if (!record.loaded) {
                 continue;
@@ -1146,7 +1150,8 @@ public final class GuildService {
     }
 
     /**
-     * Whether the content may withdraw a commission it lacks. Not before haruhi's startup activation has finished, and not
+     * Whether a record that loads may withdraw a commission the content lacks. Not before haruhi's startup activation has
+     * finished, because the content may not be active yet, and not
      * for {@link GuildContent#EMPTY}: the content is EMPTY before any bundle is active, and when the active bundle has no
      * {@code alina:guild} section, so an empty commission list there says nothing about what a revision removed.
      */
