@@ -173,8 +173,9 @@ The Guild service (ALINA-PLAN §8) is `GuildModule.service()` on a running serve
   storage thread).
 - **Accept** is write-through and optimistic: the commission is active in the record at once and is `BUSY` until the
   write finishes; a failed write takes it out again and tells the player. A repeatable must be on today's board; a feat
-  need not be. **Abandon** is optimistic the same way, with no cooldown and no reward, and an abandon still being
-  written counts towards the active cap.
+  need not be. **Abandon** frees the slot at once, with no cooldown and no reward. When its write fails, the commission
+  goes back into the record only if the content still has it and the record is under the cap; otherwise the delete is
+  written once more. A failed withdrawal is written once more too.
 - **Turn-in** checks the proof, then calls `SettlementService.begin` with the item plan as the removal and the
   commission's category and kind. The commission is `SETTLING` while its operation is in the escrow, including
   operations from an earlier session found at load. The settlement listeners update the record when storage records the
@@ -183,9 +184,10 @@ The Guild service (ALINA-PLAN §8) is `GuildModule.service()` on a running serve
   stored one, or one drawn from the repeatables in rotation and stored. A board with an empty pool is not stored and is
   drawn again after each activation. `board()` leaves out ids the active content no longer has as repeatables.
 - **Content activation** withdraws, for loaded records, each active commission the new content lacks (abandoned in
-  storage, with a chat message), and restarts proof tracking from the new content. Withdrawal, at activation or at
-  load, happens only when startup is complete and the active bundle has an `alina:guild` section, so a refused or late
-  startup load never deletes players' commissions.
+  storage, with a chat message), and restarts proof tracking from the new content. It withdraws only when the active
+  bundle has an `alina:guild` section. A record that loads withdraws the same way, and only once haruhi's startup is
+  complete; haruhi runs its activation listeners before it reports startup complete, so the startup activation withdraws
+  from records loaded before it. A refused or late startup load therefore never deletes players' commissions.
 - **Proofs.** Item proofs are planned by `ItemProofPlanner`: main inventory, hotbar and off-hand only; `all_of` is a
   matching, so one item never counts for two entries. Criterion proofs count through `CriterionWatchers` only while
   the commission is active. Progress is written behind every 100 ticks, on leave and on stop. The descent tracker
