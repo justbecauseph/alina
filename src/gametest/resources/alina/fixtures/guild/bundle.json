@@ -59,6 +59,15 @@
             "start": "alina:guild_test/high_dive",
             "finish": "alina:guild_test/dive_basin"
           }
+        },
+        "alina:guild_test/hall": {
+          "category": "F", "kind": "feat", "name": "Hall", "hint": "Walk into the high hall three times.",
+          "proof": {
+            "type": "criterion",
+            "trigger": "alina:volume_entered",
+            "conditions": { "volume": "alina:guild_test/high_dive" },
+            "count": 3
+          }
         }
       },
       "volumes": {

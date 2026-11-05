@@ -12,8 +12,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.network.Connection;
@@ -52,6 +54,8 @@ final class GuildRig {
     private final AlinaStorage storage;
     private final GuildTestClock clock = new GuildTestClock(START);
     private final AtomicReference<GuildContent> content = new AtomicReference<>();
+    /** What the service reports as contentReady. True unless a test sets it false, as before the startup activation. */
+    private final AtomicBoolean ready = new AtomicBoolean(true);
     private final List<ServerPlayer> online = new ArrayList<>();
     private final Map<UUID, EmbeddedChannel> channels = new HashMap<>();
     private final Map<UUID, List<String>> said = new HashMap<>();
@@ -66,7 +70,7 @@ final class GuildRig {
         this.content.set(parse(fixture));
         this.settlement = settlementOver(storage);
         this.service = new GuildService(server, storage, settlement, content::get, () -> REVISION, clock,
-                () -> online, () -> true);
+                () -> online, ready::get);
     }
 
     /**
@@ -118,6 +122,16 @@ final class GuildRig {
         content.set(parse(fixture));
     }
 
+    /** Replaces the active content with {@code next}, as when a bundle without an {@code alina:guild} section is active. */
+    void useContent(GuildContent next) {
+        content.set(next);
+    }
+
+    /** Sets what the service reports as contentReady: false stands for the startup activation not having finished. */
+    void setReady(boolean value) {
+        ready.set(value);
+    }
+
     /**
      * A mock player that is not in the server's player list. Its connection is an embedded channel, so messages sent to the
      * player are kept for {@link #messages}. It is online for this rig's services.
@@ -152,10 +166,18 @@ final class GuildRig {
         return List.copyOf(texts);
     }
 
-    /** A service over {@code over}, with its own settlement and this rig's clock, content and players. */
+    /** A service over {@code over}, with its own settlement and this rig's clock, content and players, at {@link #REVISION}. */
     GuildService serviceOver(AlinaStorage over, Supplier<GuildContent> from) {
+        return serviceOver(over, from, () -> REVISION);
+    }
+
+    /**
+     * A service over {@code over}, as {@link #serviceOver(AlinaStorage, Supplier)}, but reporting {@code revision} as the
+     * active revision, as a service started after a content change would.
+     */
+    GuildService serviceOver(AlinaStorage over, Supplier<GuildContent> from, LongSupplier revision) {
         SettlementService settle = settlementOver(over);
-        return new GuildService(server, over, settle, from, () -> REVISION, clock, () -> online, () -> true);
+        return new GuildService(server, over, settle, from, revision, clock, () -> online, ready::get);
     }
 
     private SettlementService settlementOver(AlinaStorage over) {

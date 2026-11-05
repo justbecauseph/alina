@@ -277,8 +277,17 @@ public final class SettlementService {
         } catch (RuntimeException failure) {
             call = CompletableFuture.failedFuture(failure);
         }
-        call.whenComplete((result, failure) ->
-                server.execute(() -> applied(player, op.operationId(), result, failure)));
+        call.whenComplete((result, failure) -> server.execute(() -> {
+            if (server.isSameThread()) {
+                applied(player, op.operationId(), result, failure);
+            } else {
+                // The server stopped before storage answered. The escrow keeps the operation without its result, so
+                // the next start calls storage again, and storage answers fresh false.
+                Alina.LOGGER.warn("Alina dropped the storage answer for settlement operation {} of {}: it finished after "
+                        + "the server stopped, and the next start applies the operation again", op.operationId(),
+                        player.getUUID());
+            }
+        }));
     }
 
     /**

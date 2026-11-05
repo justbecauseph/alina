@@ -67,7 +67,9 @@ import town.lampas.haruhi.api.HaruhiServices;
  *
  * <p><b>Abandon</b> frees the slot with no cooldown and no reward (open question 4's proposal). It is optimistic in the
  * same way: the commission leaves the record at once, and is put back, with its progress and tracking, if the write
- * fails.
+ * fails. Until the write finishes, the abandon still counts towards {@code active_cap}, so a commission accepted in its
+ * place is refused. If the content no longer has the commission when the write fails, the row is not put back; the next
+ * load withdraws it.
  *
  * <p><b>Turn-in</b> checks the proof now, then asks {@link SettlementService#begin} to settle it: the item proof's plan
  * is the removal, the reward and reputation come from the commission, and the effect sets the commission to
@@ -91,7 +93,11 @@ import town.lampas.haruhi.api.HaruhiServices;
  *
  * <p><b>Content activation.</b> {@link #contentActivated} withdraws, for every loaded record, each active commission the
  * new content lacks (it is abandoned in storage and the player gets {@link GuildText#withdrawn}), stops all tracking and
- * starts it again from the new content. A board with an empty pool is drawn again.
+ * starts it again from the new content. {@link #loaded} withdraws the same way. Neither withdraws while haruhi's startup
+ * activation is unfinished, or while the content is {@link GuildContent#EMPTY}, which is what the content is before any
+ * bundle is active and when the active bundle has no {@code alina:guild} section. Then a row the content lacks stays in
+ * the record and in storage, untracked, until a later activation with a section withdraws it. A board drawn from an empty
+ * pool is drawn again at once when the content changes.
  */
 public final class GuildService {
     /** Server ticks between progress write-behind flushes: 5 seconds. */
@@ -100,6 +106,7 @@ public final class GuildService {
     public static final long RETRY_TICKS = 100;
     /** Server ticks between descent tracker checks of players with no armed dive. */
     public static final long DESCENT_CHECK_TICKS = 5;
+    private static final Runnable NOTHING = () -> {};
 
     private final MinecraftServer server;
     private final AlinaStorage storage;
@@ -137,7 +144,8 @@ public final class GuildService {
      * @param revisionId the active content revision, 0 when none is stored
      * @param clock real time, for the board day, cooldowns and timestamps
      * @param online the players {@link #tick} serves: progress flushes, descent tracking and load retries
-     * @param contentReady true once the content's startup activation has finished; no board is drawn before
+     * @param contentReady true once the content's startup activation has finished; no board is drawn, and no commission
+     *     is withdrawn, before
      */
     public GuildService(MinecraftServer server, AlinaStorage storage, SettlementService settlement,
             Supplier<GuildContent> content, LongSupplier revisionId, Clock clock,
@@ -163,6 +171,8 @@ public final class GuildService {
             retire(previous);
         }
         PlayerRecord record = new PlayerRecord(player.getUUID());
+        // The volumes the player stands in now are the baseline: a player who joins inside a volume has not entered it.
+        record.volumesIn = descent.volumesHolding(player, contentSource.get());
         records.put(record.id, record);
         startLoad(record);
     }
@@ -217,15 +227,23 @@ public final class GuildService {
     public void contentActivated() {
         requireServerThread();
         GuildContent content = contentSource.get();
+        boolean withdrawing = withdrawalAllowed(content);
         for (PlayerRecord record : List.copyOf(records.values())) {
             if (!record.loaded) {
                 continue;
             }
             closeTracking(record);
-            for (CommissionState row : List.copyOf(record.rows.values())) {
-                Identifier id = row.commissionId();
-                if (isActive(record, row) && !content.commissions().containsKey(id)) {
-                    withdraw(record, id);
+            // Standing in a volume the new content defines is not entering it, so the baseline is taken now.
+            ServerPlayer entity = online(record.id);
+            if (entity != null) {
+                record.volumesIn = descent.volumesHolding(entity, content);
+            }
+            if (withdrawing) {
+                for (CommissionState row : List.copyOf(record.rows.values())) {
+                    Identifier id = row.commissionId();
+                    if (isActive(record, row) && !content.commissions().containsKey(id)) {
+                        withdraw(record, id);
+                    }
                 }
             }
             for (CommissionState row : List.copyOf(record.rows.values())) {
@@ -236,10 +254,7 @@ public final class GuildService {
         }
         known = content;
         if (board != null && !board.stored()) {
-            // An empty pool is drawn again, now that the content has changed.
-            board = null;
-            boardDate = null;
-            boardRetryAt = 0;
+            redrawUnstored(content);
         }
     }
 
@@ -437,9 +452,12 @@ public final class GuildService {
         record.rows.put(commission, new CommissionState(
                 commission, CommissionStatus.ACTIVE, 0, at, Optional.empty(), Optional.empty(), revision));
         record.busy.add(commission);
+        // A new acceptance starts at progress 0, so unwritten progress left for the commission is stale.
+        record.dirty.remove(commission);
         startTracking(record, commission);
         writes.submit(id, () -> storage.acceptCommission(id, commission, revision, at))
-                .whenComplete((ignored, failure) -> server.execute(() -> acceptWritten(record, accepted, at, failure)));
+                .whenComplete((ignored, failure) -> onServer("acceptance of " + commission,
+                        () -> acceptWritten(record, accepted, at, failure), NOTHING));
         return Optional.empty();
     }
 
@@ -498,9 +516,10 @@ public final class GuildService {
         CommissionState row = record.rows.remove(commission);
         stopTracking(record, commission);
         record.busy.add(commission);
+        record.abandoning.add(commission);
         writes.submit(id, () -> storage.abandonCommission(id, commission))
-                .whenComplete((removed, failure) ->
-                        server.execute(() -> abandonWritten(record, abandoned, row, failure)));
+                .whenComplete((removed, failure) -> onServer("abandon of " + commission,
+                        () -> abandonWritten(record, abandoned, row, failure), NOTHING));
         return Optional.empty();
     }
 
@@ -512,7 +531,7 @@ public final class GuildService {
         UUID id = player.getUUID();
         CompletableFuture<Void> done = new CompletableFuture<>();
         Runnable start = () -> writes.submit(id, () -> storage.setReputation(id, reputation, stamp()))
-                .whenComplete((ignored, failure) -> server.execute(() -> {
+                .whenComplete((ignored, failure) -> onServer("reputation write of " + id, () -> {
                     if (failure != null) {
                         done.completeExceptionally(failure);
                         return;
@@ -525,7 +544,7 @@ public final class GuildService {
                         record.reloadRequested = true;
                     }
                     done.complete(null);
-                }));
+                }, () -> done.completeExceptionally(new IllegalStateException("the server has stopped"))));
         if (server.isSameThread()) {
             start.run();
         } else {
@@ -536,7 +555,9 @@ public final class GuildService {
 
     /**
      * For staff: deletes the commission's state whatever its status (it becomes available), in storage and then in the
-     * record, and stops its tracking. Refused with {@link Refusal.Reason#SETTLING} while it is being settled.
+     * record. Refused with {@link Refusal.Reason#SETTLING} while it is being settled. Its tracking keeps running while the
+     * delete is written, and stops when the delete succeeds, which also drops its unwritten progress. A failed delete
+     * changes nothing except the busy mark, so the commission keeps counting.
      */
     public CompletableFuture<Optional<Refusal>> reset(ServerPlayer player, Identifier commission) {
         UUID id = player.getUUID();
@@ -557,14 +578,14 @@ public final class GuildService {
                 done.complete(refuse(Refusal.Reason.BUSY, GuildText.busy(name)));
                 return;
             }
-            stopTracking(record, commission);
             record.busy.add(commission);
             writes.submit(id, () -> storage.clearCommission(id, commission))
-                    .whenComplete((ignored, failure) -> server.execute(() -> {
+                    .whenComplete((ignored, failure) -> onServer("reset of " + commission, () -> {
                         if (isCurrent(record)) {
                             record.busy.remove(commission);
                             if (failure == null) {
                                 record.rows.remove(commission);
+                                stopTracking(record, commission);
                             }
                         }
                         if (failure != null) {
@@ -572,7 +593,7 @@ public final class GuildService {
                         } else {
                             done.complete(Optional.empty());
                         }
-                    }));
+                    }, () -> done.completeExceptionally(new IllegalStateException("the server has stopped"))));
         };
         if (server.isSameThread()) {
             start.run();
@@ -590,7 +611,8 @@ public final class GuildService {
         record.loadInFlight = true;
         UUID id = record.id;
         writes.submit(id, () -> storage.loadCharacter(id))
-                .whenComplete((state, failure) -> server.execute(() -> loaded(record, generation, state, failure)));
+                .whenComplete((state, failure) -> onServer("load of " + id,
+                        () -> loaded(record, generation, state, failure), NOTHING));
     }
 
     private void loaded(PlayerRecord record, long generation, CharacterState state, Throwable failure) {
@@ -633,10 +655,12 @@ public final class GuildService {
         }
         record.loaded = true;
         GuildContent content = contentSource.get();
-        for (CommissionState row : List.copyOf(record.rows.values())) {
-            Identifier id = row.commissionId();
-            if (isActive(record, row) && !content.commissions().containsKey(id)) {
-                withdraw(record, id);
+        if (withdrawalAllowed(content)) {
+            for (CommissionState row : List.copyOf(record.rows.values())) {
+                Identifier id = row.commissionId();
+                if (isActive(record, row) && !content.commissions().containsKey(id)) {
+                    withdraw(record, id);
+                }
             }
         }
         for (CommissionState row : List.copyOf(record.rows.values())) {
@@ -651,7 +675,8 @@ public final class GuildService {
         record.rows.remove(commission);
         stopTracking(record, commission);
         writes.submit(record.id, () -> storage.abandonCommission(record.id, commission))
-                .whenComplete((removed, failure) -> server.execute(() -> withdrawn(record, name, failure)));
+                .whenComplete((removed, failure) -> onServer("withdrawal of " + commission,
+                        () -> withdrawn(record, name, failure), NOTHING));
     }
 
     private void withdrawn(PlayerRecord record, Component name, Throwable failure) {
@@ -682,7 +707,13 @@ public final class GuildService {
         record.dirty.clear();
         UUID id = record.id;
         CompletableFuture<Void> write = writes.submit(id, () -> storage.writeCommissionProgress(id, taken));
-        write.whenComplete((ignored, failure) -> server.execute(() -> flushed(record, taken, failure)));
+        write.whenComplete((ignored, failure) -> onServer("progress write of " + id,
+                () -> flushed(record, taken, failure), () -> {
+                    if (failure != null) {
+                        Alina.LOGGER.warn("Alina could not write the progress of {}, and the server had stopped; it is lost",
+                                id, failure);
+                    }
+                }));
         return write;
     }
 
@@ -739,6 +770,7 @@ public final class GuildService {
         boolean current = isCurrent(record);
         if (current) {
             record.busy.remove(abandoned.id());
+            record.abandoning.remove(abandoned.id());
         }
         ServerPlayer entity = online(record.id);
         if (failure == null) {
@@ -747,14 +779,20 @@ public final class GuildService {
             }
             return;
         }
-        Alina.LOGGER.warn("Alina could not abandon {} for {}; the commission is active again",
-                abandoned.id(), record.id, failure);
+        Alina.LOGGER.warn("Alina could not abandon {} for {}", abandoned.id(), record.id, failure);
         if (current && !record.rows.containsKey(abandoned.id())) {
-            record.rows.put(abandoned.id(), row);
-            if (row.progress() > 0) {
-                record.dirty.put(abandoned.id(), row.progress());
+            if (contentSource.get().commissions().containsKey(abandoned.id())) {
+                record.rows.put(abandoned.id(), row);
+                if (row.progress() > 0) {
+                    record.dirty.put(abandoned.id(), row.progress());
+                }
+                startTracking(record, abandoned.id());
+            } else {
+                // A content activation removed the commission while the abandon was written. Storage still holds the
+                // row, so it is not put back here; the next load withdraws it.
+                Alina.LOGGER.warn("Alina could not abandon {} for {}, and the active content no longer has it; the next "
+                        + "load of the character withdraws it", abandoned.id(), record.id);
             }
-            startTracking(record, abandoned.id());
         }
         if (entity != null) {
             entity.sendSystemMessage(GuildText.abandonFailed(abandoned.name()));
@@ -762,6 +800,9 @@ public final class GuildService {
     }
 
     private void settled(SettledOperation settled) {
+        if (!listenerOnServer("settlement of an operation", settled.player().getUUID())) {
+            return;
+        }
         Operation operation = settled.operation();
         if (operation.kind() != OperationKind.TURN_IN) {
             return;
@@ -787,6 +828,9 @@ public final class GuildService {
 
     /** Storage recorded a settlement result: the record takes the effect and the reputation. */
     private void applied(SettledOperation settled) {
+        if (!listenerOnServer("storage result of an operation", settled.player().getUUID())) {
+            return;
+        }
         PlayerRecord record = records.get(settled.player().getUUID());
         if (record == null) {
             return;
@@ -915,7 +959,8 @@ public final class GuildService {
         boardDate = date;
         board = null;
         storage.loadBoard(date)
-                .whenComplete((stored, failure) -> server.execute(() -> boardLoaded(date, stored, failure)));
+                .whenComplete((stored, failure) -> onServer("board load for " + date,
+                        () -> boardLoaded(date, stored, failure), NOTHING));
     }
 
     private void boardLoaded(LocalDate date, Optional<StoredBoard> stored, Throwable failure) {
@@ -931,17 +976,15 @@ public final class GuildService {
         GuildSettings settings = content.settings();
         long revision = revisionId.getAsLong();
         long seed = BoardDraw.seed(settings.salt(), date, revision);
-        List<Commission> pool = content.commissions().values().stream()
-                .filter(commission -> commission.kind() == Commission.Kind.REPEATABLE && commission.inRotation())
-                .toList();
-        List<Identifier> ids = BoardDraw.draw(pool, settings.boardSize(), seed);
+        List<Identifier> ids = BoardDraw.draw(rotationPool(content), settings.boardSize(), seed);
         if (ids.isEmpty()) {
             board = new Board(date, revision, List.of(), false);
             boardLoading = false;
             return;
         }
         storage.storeBoard(new StoredBoard(date, revision, seed, ids))
-                .whenComplete((result, storeFailure) -> server.execute(() -> boardStored(date, result, storeFailure)));
+                .whenComplete((result, storeFailure) -> onServer("board store for " + date,
+                        () -> boardStored(date, result, storeFailure), NOTHING));
     }
 
     private void boardStored(LocalDate date, StoredBoard result, Throwable failure) {
@@ -963,6 +1006,29 @@ public final class GuildService {
         boardLoading = false;
         boardDate = null;
         boardRetryAt = ticks + RETRY_TICKS;
+    }
+
+    /**
+     * Draws again a board that was drawn from an empty pool, now that the content has changed. An empty pool gives an
+     * empty unstored board at once, so {@link #board} has no gap. A pool with repeatables is loaded, drawn and stored as
+     * at the start of a day. Before the startup activation has finished, the board is only cleared, and
+     * {@link #advanceBoard} draws it once the content is ready.
+     */
+    private void redrawUnstored(GuildContent content) {
+        board = null;
+        boardDate = null;
+        boardRetryAt = 0;
+        if (!contentReady.getAsBoolean()) {
+            return;
+        }
+        GuildSettings settings = content.settings();
+        LocalDate today = BoardDay.dateOf(clock.instant(), settings.resetTime(), settings.zone());
+        if (rotationPool(content).isEmpty()) {
+            board = new Board(today, revisionId.getAsLong(), List.of(), false);
+            boardDate = today;
+        } else {
+            requestBoard(today);
+        }
     }
 
     /** A board as storage holds it: the ids are not filtered to the active content. */
@@ -1062,10 +1128,56 @@ public final class GuildService {
         return row != null && row.status() == CommissionStatus.COMPLETED;
     }
 
+    /**
+     * The commissions the cap counts: the active rows, and the abandons still being written, which free their slot only
+     * when their write succeeds.
+     */
     private static int activeCount(PlayerRecord record) {
-        return (int) record.rows.values().stream()
+        long rows = record.rows.values().stream()
                 .filter(row -> row.status() == CommissionStatus.ACTIVE && !record.settling.containsKey(row.commissionId()))
                 .count();
+        return (int) (rows + record.abandoning.size());
+    }
+
+    private static List<Commission> rotationPool(GuildContent content) {
+        return content.commissions().values().stream()
+                .filter(commission -> commission.kind() == Commission.Kind.REPEATABLE && commission.inRotation())
+                .toList();
+    }
+
+    /**
+     * Whether the content may withdraw a commission it lacks. Not before haruhi's startup activation has finished, and not
+     * for {@link GuildContent#EMPTY}: the content is EMPTY before any bundle is active, and when the active bundle has no
+     * {@code alina:guild} section, so an empty commission list there says nothing about what a revision removed.
+     */
+    private boolean withdrawalAllowed(GuildContent content) {
+        return contentReady.getAsBoolean() && content != GuildContent.EMPTY;
+    }
+
+    /**
+     * Runs a storage completion on the server thread. Storage completes on its own threads. Once the server has stopped,
+     * {@code server.execute} runs its task inline on the storage thread, so the task checks the thread: a completion that
+     * is not on the server thread is logged and {@code dropped} runs instead, and the state it would record stays as it is.
+     */
+    private void onServer(String what, Runnable task, Runnable dropped) {
+        server.execute(() -> {
+            if (server.isSameThread()) {
+                task.run();
+            } else {
+                Alina.LOGGER.info("Alina Guild dropped the {} completion: it finished after the server stopped", what);
+                dropped.run();
+            }
+        });
+    }
+
+    /** Settlement calls its listeners on the server thread. A call from another thread is logged and changes nothing. */
+    private boolean listenerOnServer(String listener, UUID character) {
+        if (server.isSameThread()) {
+            return true;
+        }
+        Alina.LOGGER.warn("Alina Guild ignored a {} for {}: settlement called it off the server thread", listener,
+                character);
+        return false;
     }
 
     private boolean isCurrent(PlayerRecord record) {
