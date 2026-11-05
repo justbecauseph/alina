@@ -8,9 +8,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import net.minecraft.advancements.AdvancementNode;
-import net.minecraft.advancements.AdvancementTree;
-import net.minecraft.advancements.TreeNodePosition;
 import net.minecraft.resources.Identifier;
 import town.lampas.alina.Alina;
 import town.lampas.alina.content.AchievementsContent;
@@ -18,12 +15,15 @@ import town.lampas.alina.content.AchievementsContent.Achievement;
 import town.lampas.alina.content.AchievementsContent.Tab;
 
 /**
- * The advancement holders of one content, in tree order, and where vanilla's layout puts each one (ALINA-PLAN §9.4).
- * Each tab is a root. Its top-level achievements are its children, in id order, and an achievement's tiers are a chain,
- * each the child of the previous; the first tier is the child of its parent achievement's first tier, or of the tab's
- * root. The list has every parent before its children. Positions come from vanilla's {@link TreeNodePosition}, run over
- * every holder of the content, hidden ones included, so withholding a holder from one player leaves a gap and moves
- * nothing else. Built once per content. Server thread only.
+ * The advancement holders of one content, in tree order, and where each one is (ALINA-PLAN §9.4). Each tab is a root. Its
+ * top-level achievements are its children, in id order, and an achievement's tiers are a chain, each the child of the
+ * previous; the first tier is the child of its parent achievement's first tier, or of the tab's root. The list has every
+ * parent before its children. Holders are placed by Alina's own rule, not by vanilla's {@code TreeNodePosition}, which
+ * orders siblings by identity hash and so moved them between builds: x is the depth below the tab's root, and each tab's
+ * holders are given rows depth first, with the children of a holder visited in the id order of their achievements. A leaf
+ * takes the next free row of its tab, and a holder with children sits on its first child's row. Positions cover every
+ * holder of the content, hidden ones included, so withholding a holder from one player leaves a gap and moves nothing
+ * else. Built once per content. Server thread only.
  */
 final class HolderLayout {
 
@@ -86,28 +86,45 @@ final class HolderLayout {
             }
         }
 
-        AdvancementTree tree = new AdvancementTree();
-        // Layout needs the structure and a display, not the segments or the text, so every holder is built with one segment.
-        tree.addAll(slots.stream().map(slot -> HolderBuilder.holder(slot, 1, 0, 0f, 0f)).toList());
-        for (AdvancementNode root : tree.roots()) {
-            TreeNodePosition.run(root);
-        }
-        Map<Identifier, Position> positions = new HashMap<>();
-        for (Slot slot : slots) {
-            AdvancementNode node = tree.get(slot.id());
-            if (node != null) {
-                node.advancement().display().ifPresent(display ->
-                        positions.put(slot.id(), new Position(display.getX(), display.getY())));
-            }
-        }
-
         Map<Identifier, List<AchievementTier>> tiers = new HashMap<>();
+        Map<Identifier, List<AchievementTier>> childrenOf = new HashMap<>();
         for (Slot slot : slots) {
             if (slot instanceof AchievementTier tier) {
                 tiers.computeIfAbsent(tier.achievement().id(), key -> new ArrayList<>()).add(tier);
+                tier.parent().ifPresent(parent -> childrenOf.computeIfAbsent(parent, key -> new ArrayList<>()).add(tier));
+            }
+        }
+        Comparator<AchievementTier> siblingOrder = Comparator.comparing((AchievementTier tier) -> tier.achievement().id())
+                .thenComparingInt(AchievementTier::tier);
+        childrenOf.values().forEach(siblings -> siblings.sort(siblingOrder));
+
+        Map<Identifier, Position> positions = new HashMap<>();
+        for (Slot slot : slots) {
+            if (slot instanceof TabRoot root) {
+                layOut(root.id(), 0, childrenOf, positions, new int[1]);
             }
         }
         return new HolderLayout(List.copyOf(slots), Map.copyOf(tiers), Map.copyOf(positions));
+    }
+
+    /**
+     * Places {@code holder} at {@code depth} and its children below it, in order, and returns the holder's row. {@code
+     * nextRow[0]} is the next free row of the tab being laid out.
+     */
+    private static float layOut(Identifier holder, int depth, Map<Identifier, List<AchievementTier>> childrenOf,
+            Map<Identifier, Position> positions, int[] nextRow) {
+        List<AchievementTier> children = childrenOf.getOrDefault(holder, List.of());
+        float row;
+        if (children.isEmpty()) {
+            row = nextRow[0]++;
+        } else {
+            row = layOut(children.get(0).id(), depth + 1, childrenOf, positions, nextRow);
+            for (AchievementTier child : children.subList(1, children.size())) {
+                layOut(child.id(), depth + 1, childrenOf, positions, nextRow);
+            }
+        }
+        positions.put(holder, new Position(depth, row));
+        return row;
     }
 
     /** Every holder, parents before children. */

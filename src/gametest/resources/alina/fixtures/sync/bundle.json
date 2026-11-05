@@ -46,6 +46,15 @@
           "hidden": true,
           "criteria": { "hide": { "trigger": "alina:manual", "conditions": { "key": "hide" } } }
         },
+        "alina:sync_test/recluse": {
+          "tab": "alina:sync_test/hall",
+          "title": "Recluse",
+          "description": "Found once, found again.",
+          "icon": { "id": "minecraft:ender_eye" },
+          "hidden": true,
+          "criteria": { "seek": { "trigger": "alina:manual", "conditions": { "key": "seek" } } },
+          "tiers": [ { "count": 1, "title": "Recluse I" }, { "count": 2, "title": "Recluse II" } ]
+        },
         "alina:sync_test/pair": {
           "tab": "alina:sync_test/hall",
           "title": "Pair",

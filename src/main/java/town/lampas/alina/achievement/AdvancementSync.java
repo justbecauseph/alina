@@ -189,7 +189,7 @@ public final class AdvancementSync implements AchievementListener {
             Batch batch = scopeDiff(state, byId(shown(view.get())),
                     slot -> slot instanceof AchievementTier tier && dirty.contains(tier.achievement().id()), true);
             if (!batch.isEmpty()) {
-                send(player, batch);
+                send(player, batch, false);
                 state.lastProgressTick = ticks;
                 state.progressSent = true;
             }
@@ -211,9 +211,9 @@ public final class AdvancementSync implements AchievementListener {
     }
 
     /**
-     * The tier was just earned. A hidden achievement's first earn, or an achievement the client has no holders of, adds its
-     * holders with their progress. Otherwise the earned holder's progress goes out, done, and nothing else does. The
-     * achievement's other holders are marked, so their counts go out with the next throttled packet.
+     * The tier was just earned. Holders the client lacks are added; a holder that is done now and was not sent done
+     * gets its progress, done. The packet has {@code showAdvancements} true, so the earned holder's toast fires. The
+     * achievement's holders are marked, so their counts go out with the next throttled packet.
      */
     @Override
     public void earned(ServerPlayer player, Identifier achievement, int tier) {
@@ -225,8 +225,6 @@ public final class AdvancementSync implements AchievementListener {
         if (view.isEmpty()) {
             return;
         }
-        Identifier earnedHolder = holderId(achievement, tier);
-        boolean firstShow = !state.sent.containsKey(earnedHolder);
         Map<Identifier, Shown> now = byId(shown(view.get()));
         Batch batch = new Batch();
         for (AchievementTier slot : layout().tiersOf(achievement)) {
@@ -235,19 +233,18 @@ public final class AdvancementSync implements AchievementListener {
                 continue;
             }
             HolderProgress.State previous = state.sent.get(slot.id());
-            boolean send = firstShow
-                    ? previous == null
-                    : slot.id().equals(earnedHolder) && shown.state().done() && (previous == null || !previous.done());
-            if (send) {
-                if (previous == null) {
-                    batch.added.add(holderOf(shown));
-                }
+            if (previous == null) {
+                batch.added.add(holderOf(shown));
+            }
+            if (shown.state().done() && (previous == null || !previous.done())) {
                 batch.progress.put(slot.id(), progressOf(shown));
                 state.sent.put(slot.id(), shown.state());
+            } else if (previous == null) {
+                state.sent.put(slot.id(), notStarted(shown));
             }
         }
         state.dirty.add(achievement);
-        send(player, batch);
+        send(player, batch, true);
     }
 
     /** A repeatable's cooldown ended: the achievement's holders go back to not done, and their progress is sent. */
@@ -263,9 +260,8 @@ public final class AdvancementSync implements AchievementListener {
     }
 
     /**
-     * A content bundle was activated: each online player gets one packet without the reset flag that removes the Alina
-     * holders the client has, adds every visible holder, and sends progress for the holders whose done state or segment
-     * count differs from what the client last had, or that the client never had.
+     * A content bundle was activated: each online player gets a full packet, which removes the tab roots the client has,
+     * adds every visible holder of the new layout, and carries every visible holder's progress, with no toasts.
      */
     @Override
     public void contentActivated() {
@@ -278,30 +274,13 @@ public final class AdvancementSync implements AchievementListener {
             if (view.isEmpty()) {
                 continue;
             }
-            Batch batch = new Batch();
-            batch.removed.addAll(state.sent.keySet());
-            Map<Identifier, HolderProgress.State> next = new HashMap<>();
-            for (Shown shown : shown(view.get())) {
-                batch.added.add(holderOf(shown));
-                HolderProgress.State previous = state.sent.get(shown.id());
-                if (previous == null || previous.done() != shown.state().done()
-                        || previous.segments() != shown.state().segments()) {
-                    batch.progress.put(shown.id(), progressOf(shown));
-                    next.put(shown.id(), shown.state());
-                } else {
-                    next.put(shown.id(), previous);
-                }
-            }
-            state.sent.clear();
-            state.sent.putAll(next);
-            send(player, batch);
+            sendFull(player, state, view.get());
         }
     }
 
     /**
-     * The player's record loaded after vanilla's first packet went out without Alina's holders. They are sent in a packet
-     * without the reset flag: every visible holder, with progress except for the done achievements, so no toast fires.
-     * A done tab root has progress too, since its toast is off.
+     * The player's record loaded after vanilla's first packet went out without Alina's holders (or with none built): the
+     * holders go out in a full packet, with their progress and no toasts, so the earned ones show as done.
      */
     @Override
     public void loaded(ServerPlayer player) {
@@ -314,23 +293,11 @@ public final class AdvancementSync implements AchievementListener {
             return;
         }
         state.pendingLoad = false;
-        Alina.LOGGER.warn("Alina loaded the achievements of {} after the first advancement packet; they are sent without "
-                + "the reset flag, and earned achievements show as not done until the next reset", player.getUUID());
-        Batch batch = new Batch();
-        batch.removed.addAll(state.sent.keySet());
-        state.sent.clear();
-        state.dirty.clear();
-        for (Shown shown : shown(view.get())) {
-            batch.added.add(holderOf(shown));
-            boolean withheld = !(shown.slot() instanceof TabRoot) && shown.state().done();
-            if (withheld) {
-                state.sent.put(shown.id(), new HolderProgress.State(false, shown.state().segments(), 0));
-            } else {
-                batch.progress.put(shown.id(), progressOf(shown));
-                state.sent.put(shown.id(), shown.state());
-            }
-        }
-        send(player, batch);
+        // The full packet gives the client Alina's holders, even when vanilla built no reset packet for this join.
+        state.resetSent = true;
+        Alina.LOGGER.warn("Alina loaded the achievements of {} after the first advancement packet; they are sent in a full "
+                + "packet, without toasts", player.getUUID());
+        sendFull(player, state, view.get());
     }
 
     /** Sends the progress of one achievement's holders, not done, and removes or adds those whose visibility changed. */
@@ -345,17 +312,37 @@ public final class AdvancementSync implements AchievementListener {
         }
         Batch batch = scopeDiff(state, byId(shown(view.get())),
                 slot -> slot instanceof AchievementTier tier && tier.achievement().id().equals(achievement), false);
-        send(player, batch);
+        send(player, batch, false);
+    }
+
+    /**
+     * The full packet: no reset flag and no toasts. It removes the tab roots the client has, which takes their holders
+     * with them, adds every visible holder in tree order, and carries every visible holder's progress.
+     */
+    private void sendFull(ServerPlayer player, SyncState state, AchievementView view) {
+        Batch batch = new Batch();
+        for (Identifier id : state.sent.keySet()) {
+            if (isTabHolder(id)) {
+                batch.removed.add(id);
+            }
+        }
+        state.sent.clear();
+        state.dirty.clear();
+        for (Shown shown : shown(view)) {
+            batch.added.add(holderOf(shown));
+            batch.progress.put(shown.id(), progressOf(shown));
+            state.sent.put(shown.id(), shown.state());
+        }
+        send(player, batch, false);
     }
 
     /**
      * The packet that brings the client up to date for the holders {@code inScope} picks, in tree order. A holder no longer
-     * shown is removed. A holder the client lacks is added, with its progress. A holder the client has as not done gets
-     * its progress when it changed, or always when {@code changedOnly} is false. A holder the client has as done gets
-     * nothing, so no done progress is repeated.
+     * shown is removed, unless one of its ancestors is removed in the same packet, which takes it along. A holder the client
+     * lacks is added, with its progress. A holder the client has as not done gets its progress when it changed, or always
+     * when {@code changedOnly} is false. A holder the client has as done gets nothing, so no done progress is repeated.
      */
-    private Batch scopeDiff(SyncState state, Map<Identifier, Shown> now, Predicate<Slot> inScope,
-            boolean changedOnly) {
+    private Batch scopeDiff(SyncState state, Map<Identifier, Shown> now, Predicate<Slot> inScope, boolean changedOnly) {
         Batch batch = new Batch();
         for (Slot slot : layout().slots()) {
             if (!inScope.test(slot)) {
@@ -366,7 +353,9 @@ public final class AdvancementSync implements AchievementListener {
             HolderProgress.State previous = state.sent.get(id);
             if (shown == null) {
                 if (previous != null) {
-                    batch.removed.add(id);
+                    if (!slot.parent().map(batch.removed::contains).orElse(false)) {
+                        batch.removed.add(id);
+                    }
                     state.sent.remove(id);
                 }
                 continue;
@@ -427,12 +416,22 @@ public final class AdvancementSync implements AchievementListener {
         return HolderBuilder.progress(shown.state().segments(), shown.state().doneSegments());
     }
 
-    private static void send(ServerPlayer player, Batch batch) {
+    /** The state the client has for a holder added without progress: not done, nothing done. */
+    private static HolderProgress.State notStarted(Shown shown) {
+        return new HolderProgress.State(false, shown.state().segments(), 0);
+    }
+
+    /** A tab's root holder, by its id. Achievement holders are named {@code achievement/...}. */
+    private static boolean isTabHolder(Identifier id) {
+        return id.getPath().startsWith("tab/");
+    }
+
+    private static void send(ServerPlayer player, Batch batch, boolean showAdvancements) {
         if (batch.isEmpty()) {
             return;
         }
         player.connection.send(new ClientboundUpdateAdvancementsPacket(false, batch.added, batch.removed,
-                batch.progress, true));
+                batch.progress, showAdvancements));
     }
 
     private SyncState state(ServerPlayer player) {
