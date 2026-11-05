@@ -14,6 +14,8 @@ import com.networknt.schema.SchemaLocation;
 import com.networknt.schema.SchemaRegistry;
 import com.networknt.schema.dialect.Dialects;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -31,7 +33,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 /**
  * Keeps {@code docs/alina.schema.json} in step with the readers: it names exactly the keys they accept, accepts the
  * documented examples inside a whole bundle, and agrees with the readers on the shape rules both check. haruhi's own
- * bundle schema, which it builds on, is read from the {@code ../haruhi} checkout the build includes.
+ * bundle schema, which it builds on, is read from the haruhi jar Alina builds against.
  */
 class AlinaSchemaTest {
     private static final Path FILE = Path.of("docs", "alina.schema.json");
@@ -45,11 +47,22 @@ class AlinaSchemaTest {
         ContentFixtures.boot();
         String text = Files.readString(FILE);
         json = JsonParser.parseString(text).getAsJsonObject();
-        String haruhiSchema = Files.readString(Path.of("..", "haruhi", "docs", "bundle.schema.json"));
+        String haruhiSchema = haruhiSchema();
         schema = SchemaRegistry.withDialect(Dialects.getDraft202012(),
                         builder -> builder.schemaLoader(loader -> loader.resourceLoaders(
                                 resources -> resources.resources(Map.of(HARUHI_DOCS + "bundle.schema.json", haruhiSchema)))))
                 .getSchema(text, InputFormat.JSON);
+    }
+
+    /** haruhi's bundle schema, which the haruhi jar ships as {@code haruhi/bundle.schema.json}. */
+    private static String haruhiSchema() throws IOException {
+        try (InputStream in = AlinaSchemaTest.class.getClassLoader().getResourceAsStream("haruhi/bundle.schema.json")) {
+            if (in == null) {
+                throw new IllegalStateException("haruhi/bundle.schema.json is not on the test classpath; "
+                        + "the haruhi jar ships it from 0.1.0");
+            }
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
     }
 
     private static List<String> errors(JsonElement bundle) {

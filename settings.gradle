@@ -11,6 +11,10 @@ pluginManagement {
 
 rootProject.name = 'alina'
 
-// haruhi has no published artifact yet (ALINA-PLAN H4), so Alina builds against a haruhi checkout beside this one.
-// Gradle substitutes the town.lampas:haruhi dependency with that build.
-includeBuild('../haruhi')
+// Alina depends on town.lampas:haruhi from the JustBecause Maven repository (build.gradle). When a haruhi checkout sits
+// beside this one, Gradle builds that instead, so a haruhi change can be tried before it is published. Pass
+// -Palina.publishedHaruhi=true to build against the published jar even with a checkout present.
+def localHaruhi = file('../haruhi')
+if (localHaruhi.isDirectory() && !providers.gradleProperty('alina.publishedHaruhi').map { it.toBoolean() }.getOrElse(false)) {
+	includeBuild(localHaruhi)
+}

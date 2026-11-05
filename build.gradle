@@ -11,10 +11,11 @@ base {
 
 repositories {
 	mavenCentral()
-	// GeckoLib, which haruhi puts on the runtime classpath for runClient and the GameTests.
+	// The JustBecause Maven repository, where haruhi's release workflow publishes it.
 	maven {
-		url = 'https://api.modrinth.com/maven'
-		content { includeGroup 'maven.modrinth' }
+		name = 'JustBecause'
+		url = 'https://raw.githubusercontent.com/justbecauseph/maven/main'
+		content { includeGroup 'town.lampas' }
 	}
 }
 
@@ -23,7 +24,8 @@ dependencies {
 	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 
-	// haruhi: dialogue, NPCs and the content bundle Alina's extensions live in. Substituted by the ../haruhi build.
+	// haruhi: dialogue, NPCs and the content bundle Alina's extensions live in. A ../haruhi checkout replaces the
+	// published jar (settings.gradle).
 	implementation "town.lampas:haruhi:${project.haruhi_version}"
 
 	// PostgreSQL storage adapter, nested in the jar.
@@ -66,9 +68,8 @@ test {
 	dependsOn 'classes'
 	systemProperty 'alina.mainClasses', sourceSets.main.output.classesDirs.asPath
 	// The schema tests read these from the project directory, so a change to them reruns the tests.
-	// AlinaSchemaTest also reads haruhi's bundle schema, which alina.schema.json builds on.
-	inputs.files(fileTree('docs') { include '*.json', '*.md' }, fileTree('content'), 'AGENTS.md',
-			'../haruhi/docs/bundle.schema.json')
+	// AlinaSchemaTest also reads haruhi's bundle schema, from the haruhi jar on the test classpath.
+	inputs.files(fileTree('docs') { include '*.json', '*.md' }, fileTree('content'), 'AGENTS.md')
 			.withPropertyName('schemaFiles')
 			.withPathSensitivity(PathSensitivity.RELATIVE)
 }
