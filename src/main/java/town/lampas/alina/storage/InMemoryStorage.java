@@ -16,10 +16,11 @@ import net.minecraft.resources.Identifier;
 /**
  * Keeps all state in memory. It is the backend when no database is configured, and the one the contract tests run
  * against. Each call runs on a small executor and completes its future there, as the PostgreSQL backend does. One lock
- * guards the state, so calls from any thread see it consistently, and each call applies its changes all or none. Closing
- * the instance discards everything.
+ * guards the state, so calls from any thread see it consistently, and each call applies its changes all or none.
+ * Closing the instance discards everything. The server's storage comes from {@link StorageModule}; GameTests build
+ * their own instance so that they do not share state with it.
  */
-final class InMemoryStorage implements AlinaStorage {
+public final class InMemoryStorage implements AlinaStorage {
     private static final int THREADS = 2;
     /** The order PostgreSQL gives {@code created_at, operation_id}: a UUID's text sorts as its bytes do. */
     private static final Comparator<StoredOperation> OLDEST_FIRST = Comparator
