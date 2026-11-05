@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:catalog/board": {
+      "start": "hello",
+      "nodes": {
+        "hello": {
+          "text": "Board."
+        }
+      }
+    }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "board_graph": "alina:catalog/board"
+      },
+      "commissions": {
+        "alina:catalog/e1_longshot_marksman": {
+          "category": "E",
+          "kind": "feat",
+          "name": "The Longshot Marksman",
+          "hint": "Kill a skeleton from more than 50 blocks away, after accepting.",
+          "proof": {
+            "type": "criterion",
+            "trigger": "minecraft:player_killed_entity",
+            "conditions": {
+              "entity": [
+                {
+                  "condition": "minecraft:entity_properties",
+                  "entity": "this",
+                  "predicate": {
+                    "minecraft:entity_type": "minecraft:skeleton",
+                    "minecraft:distance": {
+                      "horizontal": {
+                        "min": 50
+                      }
+                    }
+                  }
+                }
+              ],
+              "killing_blow": {
+                "tags": [
+                  {
+                    "id": "minecraft:is_projectile",
+                    "expected": true
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

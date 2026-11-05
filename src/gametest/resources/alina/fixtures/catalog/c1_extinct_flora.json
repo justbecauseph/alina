@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:catalog/board": {
+      "start": "hello",
+      "nodes": {
+        "hello": {
+          "text": "Board."
+        }
+      }
+    }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "board_graph": "alina:catalog/board"
+      },
+      "commissions": {
+        "alina:catalog/c1_extinct_flora": {
+          "category": "C",
+          "kind": "repeatable",
+          "name": "Extinct Flora",
+          "hint": "Bring a torchflower and a pitcher plant.",
+          "proof": {
+            "type": "item",
+            "all_of": [
+              {
+                "item": {
+                  "items": "minecraft:torchflower"
+                }
+              },
+              {
+                "item": {
+                  "items": "minecraft:pitcher_plant"
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

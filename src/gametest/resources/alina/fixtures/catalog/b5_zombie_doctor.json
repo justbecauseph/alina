@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:catalog/board": {
+      "start": "hello",
+      "nodes": {
+        "hello": {
+          "text": "Board."
+        }
+      }
+    }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "board_graph": "alina:catalog/board"
+      },
+      "commissions": {
+        "alina:catalog/b5_zombie_doctor": {
+          "category": "B",
+          "kind": "feat",
+          "name": "Zombie Doctor",
+          "hint": "Cure a zombie villager after accepting.",
+          "proof": {
+            "type": "criterion",
+            "trigger": "minecraft:cured_zombie_villager"
+          }
+        }
+      }
+    }
+  }
+}

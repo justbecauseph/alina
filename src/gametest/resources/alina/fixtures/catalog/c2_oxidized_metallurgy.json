@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:catalog/board": {
+      "start": "hello",
+      "nodes": {
+        "hello": {
+          "text": "Board."
+        }
+      }
+    }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "board_graph": "alina:catalog/board"
+      },
+      "commissions": {
+        "alina:catalog/c2_oxidized_metallurgy": {
+          "category": "C",
+          "kind": "repeatable",
+          "name": "Oxidized Metallurgy",
+          "hint": "Bring a waxed oxidized chiseled copper block.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              {
+                "item": {
+                  "items": "minecraft:waxed_oxidized_chiseled_copper"
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

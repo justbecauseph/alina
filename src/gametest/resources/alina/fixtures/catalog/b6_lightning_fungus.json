@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:catalog/board": {
+      "start": "hello",
+      "nodes": {
+        "hello": {
+          "text": "Board."
+        }
+      }
+    }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "board_graph": "alina:catalog/board"
+      },
+      "commissions": {
+        "alina:catalog/b6_lightning_fungus": {
+          "category": "B",
+          "kind": "repeatable",
+          "name": "Lightning Fungus",
+          "hint": "Bring a suspicious stew with the wither effect.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              {
+                "item": {
+                  "items": "minecraft:suspicious_stew"
+                },
+                "checks": [
+                  {
+                    "type": "alina:stew_effect",
+                    "effect": "minecraft:wither"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

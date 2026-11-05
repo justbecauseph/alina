@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:catalog/board": {
+      "start": "hello",
+      "nodes": {
+        "hello": {
+          "text": "Board."
+        }
+      }
+    }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "board_graph": "alina:catalog/board"
+      },
+      "commissions": {
+        "alina:catalog/f2_disc_jockeys_gamble": {
+          "category": "F",
+          "kind": "repeatable",
+          "name": "Disc Jockey's Gamble",
+          "hint": "Bring a music disc that a creeper can drop.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              {
+                "item": {
+                  "items": "#minecraft:creeper_drop_music_discs"
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
