@@ -11,13 +11,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.BiFunction;
-import net.minecraft.SharedConstants;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.data.registries.VanillaRegistries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.RegistryOps;
-import net.minecraft.server.Bootstrap;
+import town.lampas.alina.TestBootstrap;
 import town.lampas.haruhi.content.api.ExtensionContext;
 import town.lampas.haruhi.content.model.ContentBundle;
 import town.lampas.haruhi.content.model.DialogueGraph;
@@ -36,8 +35,8 @@ final class ContentFixtures {
 
     static synchronized DynamicOps<JsonElement> boot() {
         if (ops == null) {
-            SharedConstants.tryDetectVersion();
-            Bootstrap.bootStrap();
+            // Registers Alina's triggers (AlinaTriggers.init) before Bootstrap freezes the registries.
+            TestBootstrap.boot();
             ops = RegistryOps.create(JsonOps.INSTANCE, lookup());
         }
         return ops;

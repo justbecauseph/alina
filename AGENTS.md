@@ -58,6 +58,17 @@ haruhi's services are read from server events onward, never during init.
 - **`docs/alina.schema.json` changes with the content format.** `AlinaSchemaTest` fails when it names different keys
   from the readers, refuses the documented examples, or accepts a shape the readers refuse.
 
+## Alina's triggers
+
+`criteria` registers six criterion triggers in `BuiltInRegistries.TRIGGER_TYPES` (`AlinaTriggers.init()`, called right
+after storage and before content). Each is a `SimpleCriterionTrigger` with a public fire method, and every condition is
+optional, so `{}` matches every event. `alina:commission_accepted` and `alina:commission_completed` take `commission`
+(an id), `category` (A to F) and `kind` (`repeatable` or `feat`), fired as `trigger(player, commission, category, kind)`.
+`alina:reputation_changed` takes `reputation` (int bounds), fired as `trigger(player, reputation)`. `alina:volume_entered`
+takes `volume` (an id), fired as `trigger(player, volume)`. `alina:achievement_earned` takes `achievement` (an id) and
+`tier` (int bounds), fired as `trigger(player, achievement, tier)`. `alina:manual` takes `key` (a string), fired as
+`trigger(player, key)`. A misspelt condition key fails content validation.
+
 ## Content
 
 Two sections under the haruhi bundle's `extensions` object. The format, with examples, is in the plan's §6;
