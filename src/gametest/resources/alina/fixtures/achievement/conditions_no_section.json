@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:test/gate": {
+      "start": "gate",
+      "nodes": {
+        "gate": {
+          "text": "Hello.",
+          "choices": [
+            {
+              "text": "Thanks.", "next": "bye",
+              "only_if": [ { "type": "alina:achievement", "achievement": "alina:test/signed_on" } ]
+            }
+          ]
+        },
+        "bye": { "text": "Safe travels." }
+      }
+    }
+  }
+}
