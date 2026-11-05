@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:test/gate": {
+      "start": "gate",
+      "nodes": {
+        "gate": {
+          "text": "Hello.",
+          "choices": [
+            {
+              "text": "Thanks.", "next": "bye",
+              "only_if": [ { "type": "alina:achievement", "achievement": "alina:test/signed_on" } ]
+            },
+            {
+              "text": "Once more.", "next": "bye",
+              "only_if": [ { "type": "alina:achievement", "achievement": "alina:test/climber", "tier": 2 } ]
+            },
+            {
+              "text": "Leave.", "next": "bye"
+            }
+          ]
+        },
+        "bye": { "text": "Safe travels." }
+      }
+    }
+  },
+  "extensions": {
+    "alina:achievements": {
+      "tabs": {
+        "alina:test": { "title": "Test", "icon": { "id": "minecraft:paper" } }
+      },
+      "achievements": {
+        "alina:test/signed_on": {
+          "tab": "alina:test", "title": "Signed On", "description": "Be met.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "met": { "trigger": "alina:manual", "conditions": { "key": "signed" } } }
+        },
+        "alina:test/climber": {
+          "tab": "alina:test", "title": "Climber", "description": "Climb.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "climb": { "trigger": "alina:manual", "conditions": { "key": "climb" } } },
+          "tiers": [ { "count": 1 }, { "count": 2 }, { "count": 3 } ]
+        }
+      }
+    }
+  }
+}

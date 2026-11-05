@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "extensions": {
+    "alina:achievements": {
+      "tabs": {
+        "alina:test": { "title": "Test", "icon": { "id": "minecraft:paper" } }
+      },
+      "achievements": {
+        "alina:test/flush": {
+          "tab": "alina:test", "title": "Flush", "description": "Four steps now.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "step": { "trigger": "alina:manual", "conditions": { "key": "step" }, "count": 4 } }
+        }
+      }
+    }
+  }
+}

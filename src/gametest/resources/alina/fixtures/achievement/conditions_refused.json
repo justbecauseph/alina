@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:test/gate": {
+      "start": "gate",
+      "nodes": {
+        "gate": {
+          "text": "Hello.",
+          "choices": [
+            {
+              "text": "Unknown.", "next": "bye",
+              "only_if": [ { "type": "alina:achievement", "achievement": "alina:test/nope" } ]
+            },
+            {
+              "text": "Tier on an untiered one.", "next": "bye",
+              "only_if": [ { "type": "alina:achievement", "achievement": "alina:test/signed_on", "tier": 1 } ]
+            },
+            {
+              "text": "Tier out of range.", "next": "bye",
+              "only_if": [ { "type": "alina:achievement", "achievement": "alina:test/climber", "tier": 4 } ]
+            },
+            {
+              "text": "Misspelt key.", "next": "bye",
+              "only_if": [ { "type": "alina:achievement", "achievement": "alina:test/signed_on", "tiers": 1 } ]
+            },
+            {
+              "text": "Missing id.", "next": "bye",
+              "only_if": [ { "type": "alina:achievement" } ]
+            }
+          ]
+        },
+        "bye": { "text": "Safe travels." }
+      }
+    }
+  },
+  "extensions": {
+    "alina:achievements": {
+      "tabs": {
+        "alina:test": { "title": "Test", "icon": { "id": "minecraft:paper" } }
+      },
+      "achievements": {
+        "alina:test/signed_on": {
+          "tab": "alina:test", "title": "Signed On", "description": "Be met.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "met": { "trigger": "alina:manual", "conditions": { "key": "signed" } } }
+        },
+        "alina:test/climber": {
+          "tab": "alina:test", "title": "Climber", "description": "Climb.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "climb": { "trigger": "alina:manual", "conditions": { "key": "climb" } } },
+          "tiers": [ { "count": 1 }, { "count": 2 }, { "count": 3 } ]
+        }
+      }
+    }
+  }
+}
