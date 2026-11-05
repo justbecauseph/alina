@@ -81,11 +81,13 @@ final class GuildProviders {
 
     private static List<ProvidedChoice> boardRows(ServerPlayer player, Optional<String> next) {
         GuildService service = GuildModule.service();
-        List<Identifier> ids = service.boardEntries(player).orElse(List.of());
-        if (ids.isEmpty()) {
+        Optional<List<Identifier>> entries = service.boardEntries(player);
+        if (entries.isEmpty()) {
             Component text = service.view(player).isEmpty() ? GuildText.loading() : GuildText.boardLoading();
             return List.of(disabled(text));
         }
+        // A loaded board with nothing to show has no rows; the graph's own choices follow.
+        List<Identifier> ids = entries.get();
         GuildContent content = service.content();
         List<ProvidedChoice> rows = new ArrayList<>();
         for (Identifier id : ids) {

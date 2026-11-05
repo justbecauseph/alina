@@ -26,7 +26,7 @@
       "type": ["string", "object", "array"]
     },
     "duration": {
-      "description": "A positive ISO-8601 duration, such as PT20H or P7D.",
+      "description": "A positive ISO-8601 duration of at most 3650 days, such as PT20H or P7D.",
       "type": "string",
       "pattern": "^(?!P(0+D)?(T(0+H)?(0+M)?(0+(\\.0+)?S)?)?$)P(?!$)(\\d+D)?(T(?=\\d)(\\d+H)?(\\d+M)?(\\d+(\\.\\d+)?S)?)?$"
     },

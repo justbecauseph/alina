@@ -106,6 +106,11 @@ public final class GuildText {
         return text("withdrawn", "The Guild withdrew %s, so it is no longer active.", name);
     }
 
+    /** The player used the Notice Board from farther than its reach. */
+    public static Component tooFar() {
+        return text("too_far", "Step closer to the notice board to read it.");
+    }
+
     /** The Notice Board's graph is not in the active content. */
     public static Component boardMissing() {
         return text("board_missing", "Nothing is posted on the notice board.");
