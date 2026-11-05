@@ -76,7 +76,24 @@ final class AchievementsReader {
             }
         }
         checkParents(achievements, declaredTabs, where, context);
+        checkAchievementReferences(achievements, achievementIds, where, context);
         return Optional.of(new AchievementsContent(tabs, achievements));
+    }
+
+    /**
+     * An {@code alina:achievement_earned} criterion names an achievement of this extension. Commissions and volumes
+     * named by other Alina triggers live in the {@code alina:guild} extension, which this parser cannot see; the Guild
+     * reader checks the ones in commission proofs.
+     */
+    private static void checkAchievementReferences(
+            Map<Identifier, Achievement> achievements, Set<Identifier> achievementIds, String where,
+            ExtensionContext context) {
+        for (Achievement achievement : achievements.values()) {
+            achievement.criteria().forEach((name, spec) -> TriggerReferences.achievement(spec)
+                    .filter(id -> !achievementIds.contains(id))
+                    .ifPresent(id -> context.problem(where + ", achievement " + achievement.id() + ", criterion " + name,
+                            "conditions name achievement '" + id + "', which is not an achievement in this extension")));
+        }
     }
 
     private static Optional<Tab> readTab(Identifier id, JsonElement value, String where, ExtensionContext context) {

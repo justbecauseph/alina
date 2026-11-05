@@ -307,6 +307,25 @@ class GuildReaderTest {
     }
 
     @Test
+    void anAlinaTriggerNamesAVolumeOfTheExtension() {
+        String known = "{ \"type\": \"criterion\", \"trigger\": \"alina:volume_entered\", \"conditions\": { \"volume\": \"alina:v\" } }";
+        assertEquals(List.of(), problems(commission("", known)));
+        String misspelt = known.replace("alina:v\"", "alina:vv\"");
+        assertEquals(List.of("extension alina:guild, commission alina:c, proof: conditions name volume 'alina:vv', which "
+                + "is not a volume in this extension"), problems(commission("", misspelt)));
+    }
+
+    @Test
+    void anAlinaTriggerNamesACommissionOfTheExtension() {
+        String known = "{ \"type\": \"criterion\", \"trigger\": \"alina:commission_completed\", \"count\": 3,"
+                + " \"conditions\": { \"commission\": \"alina:c\" } }";
+        assertEquals(List.of(), problems(commission("", known)));
+        String unknown = known.replace("\"alina:c\" }", "\"alina:elsewhere\" }");
+        assertEquals(List.of("extension alina:guild, commission alina:c, proof: conditions name commission "
+                + "'alina:elsewhere', which is not a commission in this extension"), problems(commission("", unknown)));
+    }
+
+    @Test
     void anUnknownTriggerIsAProblem() {
         String unknown = "{ \"type\": \"criterion\", \"trigger\": \"minecraft:not_a_trigger\" }";
         assertEquals(List.of("extension alina:guild, commission alina:c, proof: trigger minecraft:not_a_trigger is not "

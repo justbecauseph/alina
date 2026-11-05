@@ -222,6 +222,17 @@ class AchievementsReaderTest {
     }
 
     @Test
+    void anAchievementEarnedCriterionNamesAnAchievementOfTheExtension() {
+        String earned = "\"criteria\": { \"earned\": { \"trigger\": \"alina:achievement_earned\","
+                + " \"conditions\": { \"achievement\": \"alina:%s\" } } }";
+        assertEquals(List.of(), problems(achievement("alina:a", KILLS),
+                achievement("alina:b", String.format(earned, "a"))));
+        assertEquals(List.of("extension alina:achievements, achievement alina:b, criterion earned: conditions name "
+                + "achievement 'alina:z', which is not an achievement in this extension"),
+                problems(achievement("alina:a", KILLS), achievement("alina:b", String.format(earned, "z"))));
+    }
+
+    @Test
     void unknownKeysAreProblems() {
         assertEquals(List.of("extension alina:achievements, achievement alina:a: unknown key 'parnet'"),
                 problems(achievement("alina:a", KILLS + ", \"parnet\": \"alina:b\"")));

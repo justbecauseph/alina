@@ -11,6 +11,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import net.minecraft.advancements.predicates.ItemPredicate;
@@ -80,7 +81,39 @@ final class GuildReader {
             readCommission(id, entry.getValue(), where + ", commission " + id, context, volumes, defaultCooldown)
                     .ifPresent(commission -> commissions.put(id, commission));
         }
+        checkTriggerReferences(commissions, declared(guild.entries("volumes")), claimed.keySet(), where, context);
         return settings.map(parsed -> new GuildContent(parsed, commissions, volumes));
+    }
+
+    /** The ids of a section's keys that parse, including entries whose value failed to parse. */
+    private static Set<Identifier> declared(Map<String, JsonElement> entries) {
+        Set<Identifier> ids = new HashSet<>();
+        entries.keySet().stream().map(Json::keyId).filter(Objects::nonNull).forEach(ids::add);
+        return ids;
+    }
+
+    /**
+     * A criterion proof on an Alina trigger names a volume or commission of this extension. A misspelt id would make a
+     * proof that can never be met.
+     */
+    private static void checkTriggerReferences(
+            Map<Identifier, Commission> commissions,
+            Set<Identifier> volumeIds,
+            Set<Identifier> commissionIds,
+            String where,
+            ExtensionContext context) {
+        for (Commission commission : commissions.values()) {
+            if (!(commission.proof() instanceof Proof.Criterion criterion)) {
+                continue;
+            }
+            String proofWhere = where + ", commission " + commission.id() + ", proof";
+            TriggerReferences.volume(criterion.criterion()).filter(id -> !volumeIds.contains(id)).ifPresent(id ->
+                    context.problem(proofWhere, "conditions name volume '" + id + "', which is not a volume in this "
+                            + "extension"));
+            TriggerReferences.commission(criterion.criterion()).filter(id -> !commissionIds.contains(id)).ifPresent(id ->
+                    context.problem(proofWhere, "conditions name commission '" + id + "', which is not a commission in "
+                            + "this extension"));
+        }
     }
 
     private static <T> Optional<T> missing(Section section, String message) {
