@@ -29,6 +29,7 @@ import net.minecraft.resources.RegistryOps;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
@@ -86,6 +87,8 @@ public final class GuildGameTests {
     private static final Vec3 OUTSIDE = new Vec3(0.5, 100.5, 0.5);
     private static final Vec3 IN_HIGH = new Vec3(501.5, 200.5, 501.5);
     private static final Vec3 IN_BASIN = new Vec3(501.5, 60.5, 501.5);
+    /** Between the volumes: above the basin and below the start volume, outside both. */
+    private static final Vec3 BETWEEN = new Vec3(501.5, 130.5, 501.5);
     /** Ticks a flush may take to reach storage after the event: the flush period, and a little for the storage thread. */
     private static final long FLUSH_SLACK = 2;
 
@@ -188,13 +191,15 @@ public final class GuildGameTests {
                     advance(helper, step, 2);
                 }
                 case 2 -> {
-                    // The abandon holds its slot until storage answers, so the feat waits for the written abandon.
+                    // The abandon has been written, so the slot it freed is free for the feat.
                     helper.assertTrue(rig.messages(player).contains("Commission abandoned: Courier"),
-                            "the abandon is still being written");
+                            "the abandon is not written yet");
                     helper.assertValueEqual(rig.service().view(player).orElseThrow().standing(COURIER),
                             Standing.AVAILABLE, "standing after abandon");
+                    helper.assertTrue(rig.service().checkAccept(player, FEAT_ITEMS).isEmpty(),
+                            "the freed slot refused the feat: " + reasonOf(rig.service().checkAccept(player, FEAT_ITEMS)));
                     helper.assertTrue(rig.service().accept(player, FEAT_ITEMS).isEmpty(),
-                            "the freed slot did not take the feat");
+                            "the feat was refused after the abandon");
                     advance(helper, step, 3);
                 }
                 default -> {
@@ -242,8 +247,12 @@ public final class GuildGameTests {
         });
     }
 
+    /**
+     * An abandon frees its slot at once. While its first write is held, a feat is accepted into the slot; when the write
+     * then fails, the slot is taken, so the abandon is written again rather than put back, and the cap ends at active_cap.
+     */
     @GameTest(maxTicks = 600)
-    public void anAbandonStillBeingWrittenHoldsItsSlotAgainstTheCap(GameTestHelper helper) {
+    public void anAbandonFreesItsSlotAtOnceAndAFailedWriteWhoseSlotIsTakenIsWrittenAgain(GameTestHelper helper) {
         AtomicInteger abandons = new AtomicInteger();
         CompletableFuture<Object> gate = new CompletableFuture<>();
         GuildRig rig = GuildRig.create(helper, BUNDLE,
@@ -263,35 +272,156 @@ public final class GuildGameTests {
                     helper.assertTrue(rig.messages(player).contains("Commission accepted: Courier")
                                     && rig.messages(player).contains("Commission accepted: Horn"),
                             "the acceptances are not written yet");
+                    helper.assertTrue(rig.service().checkAbandon(player, COURIER).isEmpty(),
+                            "the courier cannot be abandoned: " + reasonOf(rig.service().checkAbandon(player, COURIER)));
                     helper.assertTrue(rig.service().abandon(player, COURIER).isEmpty(), "the abandon was refused");
-                    // The abandon is still in flight, so its slot is not free: a third commission is refused.
-                    assertReason(helper, rig.service().accept(player, FEAT_ITEMS), Refusal.Reason.CAP_REACHED,
-                            "a feat accepted while the abandon is pending");
                     advance(helper, step, 2);
                 }
                 case 2 -> {
-                    // Storage now answers the abandon with a failure.
-                    gate.completeExceptionally(new IllegalStateException("injected abandonCommission failure"));
+                    // The abandon's write is held, and its slot is already free: a feat is accepted into it.
+                    helper.assertTrue(rig.service().checkAccept(player, FEAT_ITEMS).isEmpty(),
+                            "a feat refused while the abandon is written: " + reasonOf(rig.service().checkAccept(player, FEAT_ITEMS)));
+                    helper.assertTrue(rig.service().accept(player, FEAT_ITEMS).isEmpty(),
+                            "the feat was refused while the abandon is written");
                     advance(helper, step, 3);
                 }
+                case 3 -> {
+                    // Storage now answers the first abandon with a failure. The slot is taken, so it is not put back.
+                    gate.completeExceptionally(new IllegalStateException("injected abandonCommission failure"));
+                    advance(helper, step, 4);
+                }
                 default -> {
-                    helper.assertTrue(rig.messages(player).contains("The Guild could not abandon Courier. Try again."),
-                            "the abandon failure was not reported");
-                    helper.assertValueEqual(rig.service().view(player).orElseThrow().standing(COURIER),
-                            Standing.ACTIVE, "the courier after the failed abandon");
-                    helper.assertValueEqual(rig.service().view(player).orElseThrow().activeCount(), 2,
-                            "active commissions after the failed abandon");
-                    assertReason(helper, rig.service().checkAccept(player, FEAT_ITEMS), Refusal.Reason.CAP_REACHED,
-                            "the cap after the failed abandon");
-                    helper.assertTrue(statusIs(rig, player, COURIER, CommissionStatus.ACTIVE),
-                            "the courier row after the failed abandon");
+                    helper.assertValueEqual(abandons.get(), 2, "abandonCommission calls: the failed write and its retry");
+                    helper.assertTrue(rig.messages(player).contains("Commission abandoned: Courier"),
+                            "the retried abandon was not reported as done");
+                    helper.assertTrue(!rig.messages(player).contains("The Guild could not abandon Courier. Try again."),
+                            "the failed write was reported to the player");
+                    GuildView view = rig.service().view(player).orElseThrow();
+                    helper.assertValueEqual(view.standing(COURIER), Standing.AVAILABLE, "the courier after the retry");
+                    helper.assertValueEqual(view.activeCount(), 2, "active commissions in the record");
+                    helper.assertTrue(stored(rig, player, COURIER).isEmpty(), "the courier row is still in storage");
+                    helper.assertValueEqual(activeInStorage(rig, player), 2, "active commissions in storage");
+                    helper.assertTrue(statusIs(rig, player, HORN, CommissionStatus.ACTIVE)
+                            && statusIs(rig, player, FEAT_ITEMS, CommissionStatus.ACTIVE), "the rows after the retry");
                 }
             }
         });
     }
 
+    @GameTest(maxTicks = 500)
+    public void aFailedAbandonWithAFreeSlotPutsTheRowBackWithItsProgressAndTracking(GameTestHelper helper) {
+        AtomicInteger abandons = new AtomicInteger();
+        CompletableFuture<Object> gate = new CompletableFuture<>();
+        GuildRig rig = GuildRig.create(helper, BUNDLE,
+                delegate -> gatedFirst(delegate, "abandonCommission", abandons, gate));
+        ServerPlayer player = rig.joined();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record or today's board has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    helper.assertTrue(rig.service().accept(player, GREETER).isEmpty(), "the greeter was refused");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertTrue(rig.messages(player).contains("Commission accepted: Greeter"),
+                            "the acceptance is not written yet");
+                    AlinaTriggers.MANUAL.trigger(player, "met");
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertValueEqual(progress(rig, player, GREETER), 1, "the first event");
+                    helper.assertTrue(rig.service().checkAbandon(player, GREETER).isEmpty(),
+                            "the greeter cannot be abandoned: " + reasonOf(rig.service().checkAbandon(player, GREETER)));
+                    helper.assertTrue(rig.service().abandon(player, GREETER).isEmpty(), "the abandon was refused");
+                    advance(helper, step, 3);
+                }
+                case 3 -> {
+                    gate.completeExceptionally(new IllegalStateException("injected abandonCommission failure"));
+                    advance(helper, step, 4);
+                }
+                case 4 -> {
+                    // The slot is free, so the row goes back at once and is not written again.
+                    helper.assertTrue(rig.messages(player).contains("The Guild could not abandon Greeter. Try again."),
+                            "the abandon failure was not reported");
+                    helper.assertValueEqual(abandons.get(), 1, "abandonCommission calls for a free slot");
+                    helper.assertValueEqual(rig.service().view(player).orElseThrow().standing(GREETER),
+                            Standing.ACTIVE, "the greeter after the failed abandon");
+                    helper.assertValueEqual(progress(rig, player, GREETER), 1, "the progress after the failed abandon");
+                    helper.assertTrue(statusIs(rig, player, GREETER, CommissionStatus.ACTIVE),
+                            "the row storage still holds");
+                    // The restored tracking counts the next event.
+                    AlinaTriggers.MANUAL.trigger(player, "met");
+                    advance(helper, step, 5);
+                }
+                default -> {
+                    helper.assertValueEqual(progress(rig, player, GREETER), 2, "the event after the restored row");
+                    helper.assertTrue(rig.messages(player).contains("Ready to turn in: Greeter"),
+                            "no ready message at the count");
+                    helper.assertValueEqual(storedProgress(rig, player, GREETER), 2,
+                            "the progress of the restored row was not written");
+                }
+            }
+        });
+    }
+
+    @GameTest(maxTicks = 600)
+    public void aSecondFailedAbandonIsReportedAndNotWrittenAThirdTime(GameTestHelper helper) {
+        AtomicInteger abandons = new AtomicInteger();
+        CompletableFuture<Object> gate = new CompletableFuture<>();
+        GuildRig rig = GuildRig.create(helper, BUNDLE, delegate -> answeredInOrder(delegate, "abandonCommission", abandons,
+                List.of(gate, CompletableFuture.<Object>failedFuture(
+                        new IllegalStateException("injected abandonCommission failure")))));
+        ServerPlayer player = rig.joined();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record or today's board has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    helper.assertTrue(rig.service().accept(player, COURIER).isEmpty(), "the courier was refused");
+                    helper.assertTrue(rig.service().accept(player, HORN).isEmpty(), "the horn was refused");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertTrue(rig.messages(player).contains("Commission accepted: Courier")
+                                    && rig.messages(player).contains("Commission accepted: Horn"),
+                            "the acceptances are not written yet");
+                    helper.assertTrue(rig.service().abandon(player, COURIER).isEmpty(), "the abandon was refused");
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertTrue(rig.service().checkAccept(player, FEAT_ITEMS).isEmpty(),
+                            "a feat refused while the abandon is written: " + reasonOf(rig.service().checkAccept(player, FEAT_ITEMS)));
+                    helper.assertTrue(rig.service().accept(player, FEAT_ITEMS).isEmpty(),
+                            "the feat was refused while the abandon is written");
+                    advance(helper, step, 3);
+                }
+                case 3 -> {
+                    // The first write fails, the slot is taken, and the retry fails as well.
+                    gate.completeExceptionally(new IllegalStateException("injected abandonCommission failure"));
+                    advance(helper, step, 4);
+                }
+                default -> {
+                    helper.assertValueEqual(abandons.get(), 2, "abandonCommission calls: the write and one retry");
+                    helper.assertTrue(rig.messages(player).contains("The Guild could not abandon Courier. Try again."),
+                            "the second failure was not reported");
+                    helper.assertTrue(!rig.messages(player).contains("Commission abandoned: Courier"),
+                            "a failed abandon was reported as done");
+                    helper.assertTrue(statusIs(rig, player, COURIER, CommissionStatus.ACTIVE),
+                            "storage no longer holds the courier row after two failed writes");
+                }
+            }
+        });
+    }
+
+    /**
+     * A revision without the horn is activated while the horn's abandon is written, and the write then fails. The content
+     * no longer has the horn, so the abandon is written again, not put back, and the second write deletes the row.
+     */
     @GameTest(maxTicks = 800)
-    public void anAbandonThatFailsAfterAnActivationRemovedTheCommissionIsWithdrawnByTheNextLoad(GameTestHelper helper) {
+    public void anAbandonThatFailsAfterAnActivationRemovedTheCommissionIsWrittenAgain(GameTestHelper helper) {
         AtomicInteger abandons = new AtomicInteger();
         CompletableFuture<Object> gate = new CompletableFuture<>();
         GuildRig rig = GuildRig.create(helper, BUNDLE,
@@ -316,24 +446,18 @@ public final class GuildGameTests {
                     advance(helper, step, 2);
                 }
                 case 2 -> {
-                    // Then storage fails the abandon. The horn is no longer in the content, so it is not put back.
+                    // Then storage fails the abandon, and the retry is written.
                     gate.completeExceptionally(new IllegalStateException("injected abandonCommission failure"));
                     advance(helper, step, 3);
                 }
-                case 3 -> {
-                    helper.assertTrue(rig.messages(player).contains("The Guild could not abandon Horn. Try again."),
-                            "the abandon failure was not reported");
-                    helper.assertValueEqual(rig.service().view(player).orElseThrow().standing(HORN),
-                            Standing.AVAILABLE, "the horn is back in the record");
-                    helper.assertTrue(statusIs(rig, player, HORN, CommissionStatus.ACTIVE),
-                            "the row storage still holds");
-                    rig.service().leave(player);
-                    rig.service().join(player);
-                    advance(helper, step, 4);
-                }
                 default -> {
-                    helper.assertTrue(stored(rig, player, HORN).isEmpty(), "the next load did not withdraw the row");
-                    helper.assertTrue(withdrawn(rig, player), "the player was not told of the withdrawal");
+                    helper.assertValueEqual(abandons.get(), 2, "abandonCommission calls: the failed write and its retry");
+                    helper.assertTrue(rig.messages(player).contains("Commission abandoned: Horn"),
+                            "the retried abandon was not reported as done");
+                    helper.assertTrue(!rig.messages(player).contains("The Guild could not abandon Horn. Try again."),
+                            "the failed write was reported to the player");
+                    helper.assertTrue(stored(rig, player, HORN).isEmpty(), "the row is still in storage without a rejoin");
+                    helper.assertTrue(!withdrawn(rig, player), "the abandoned horn was reported as withdrawn");
                 }
             }
         });
@@ -572,6 +696,7 @@ public final class GuildGameTests {
         GuildRig rig = GuildRig.create(helper, BUNDLE, delegate -> failingFirst(delegate, "clearCommission", clears));
         ServerPlayer player = rig.joined();
         AtomicReference<CompletableFuture<Optional<Refusal>>> reset = new AtomicReference<>();
+        AtomicLong failedAt = new AtomicLong();
         AtomicInteger step = new AtomicInteger();
         helper.succeedWhen(() -> {
             rig.tick();
@@ -584,20 +709,31 @@ public final class GuildGameTests {
                 case 1 -> {
                     helper.assertTrue(rig.messages(player).contains("Commission accepted: Greeter"),
                             "the acceptance is not written yet");
+                    // The reset fails a tick or two after the step, so no flush may be due before then: the step waits
+                    // until the next flush is more than a few ticks away.
+                    long toFlush = GuildService.FLUSH_TICKS - rig.ticks() % GuildService.FLUSH_TICKS;
+                    helper.assertTrue(toFlush > FLUSH_SLACK + 3, "waiting for a tick clear of a flush");
+                    // The event and the reset share this step, so the count is unwritten when the reset fails.
                     AlinaTriggers.MANUAL.trigger(player, "met");
+                    reset.set(rig.service().reset(player, GREETER));
                     advance(helper, step, 2);
                 }
                 case 2 -> {
                     helper.assertValueEqual(progress(rig, player, GREETER), 1, "the first event");
-                    reset.set(rig.service().reset(player, GREETER));
-                    advance(helper, step, 3);
-                }
-                case 3 -> {
                     helper.assertTrue(reset.get().isDone(), "the failed reset has not returned");
                     helper.assertTrue(reset.get().isCompletedExceptionally(), "the failed delete reported success");
                     helper.assertValueEqual(rig.service().view(player).orElseThrow().standing(GREETER),
                             Standing.ACTIVE, "standing after the failed reset");
-                    helper.assertValueEqual(progress(rig, player, GREETER), 1, "progress after the failed reset");
+                    failedAt.set(rig.ticks());
+                    advance(helper, step, 3);
+                }
+                case 3 -> {
+                    // The count the failed reset left unwritten reaches storage at the next flush. If the reset had dropped
+                    // it, storage would stay at 0 and this step would time out.
+                    helper.assertValueEqual(storedProgress(rig, player, GREETER), 1,
+                            "the progress unwritten at the failed reset was dropped");
+                    helper.assertTrue(rig.ticks() - failedAt.get() <= GuildService.FLUSH_TICKS + FLUSH_SLACK,
+                            "the unwritten progress reached storage later than one flush period");
                     AlinaTriggers.MANUAL.trigger(player, "met");
                     advance(helper, step, 4);
                 }
@@ -716,12 +852,14 @@ public final class GuildGameTests {
                 changed.set(true);
             }
             List<Identifier> expected = before.get().stream().filter(id -> !id.equals(HORN)).toList();
-            helper.assertValueEqual(rig.service().board().orElseThrow().commissions(), expected,
-                    "the board after the change");
-            helper.assertTrue(!rig.service().board().orElseThrow().commissions().contains(NEW_ARRIVAL),
-                    "the new commission was added to the board mid-day");
-            helper.assertValueEqual(rig.storage().loadBoard(LocalDate.of(2026, 11, 5)).join().orElseThrow()
-                    .commissionIds(), before.get(), "the stored board");
+            Optional<BoardView> today = rig.service().board();
+            helper.assertTrue(today.isPresent(), "the activation dropped the stored board");
+            List<Identifier> after = today.get().commissions();
+            helper.assertValueEqual(after, expected, "the board after the change");
+            helper.assertTrue(!after.contains(NEW_ARRIVAL), "the new commission was added to the board mid-day");
+            Optional<StoredBoard> stored = rig.storage().loadBoard(LocalDate.of(2026, 11, 5)).join();
+            helper.assertTrue(stored.isPresent(), "the stored board is missing");
+            helper.assertValueEqual(stored.get().commissionIds(), before.get(), "the stored board");
         });
     }
 
@@ -786,8 +924,9 @@ public final class GuildGameTests {
                     helper.assertTrue(drawn.stored(), "the redrawn board was not stored");
                     helper.assertValueEqual(drawn.commissions().stream().sorted().toList(),
                             List.of(COURIER, HORN).stream().sorted().toList(), "the redrawn board");
-                    helper.assertValueEqual(rig.storage().loadBoard(LocalDate.of(2026, 11, 5)).join().orElseThrow()
-                            .commissionIds().size(), 2, "the stored board");
+                    Optional<StoredBoard> stored = rig.storage().loadBoard(LocalDate.of(2026, 11, 5)).join();
+                    helper.assertTrue(stored.isPresent(), "the redrawn board is not in storage");
+                    helper.assertValueEqual(stored.get().commissionIds().size(), 2, "the stored board");
                 }
             }
         });
@@ -886,6 +1025,112 @@ public final class GuildGameTests {
         });
     }
 
+    @GameTest(maxTicks = 500)
+    public void aWithdrawalWhoseStorageWriteFailsIsWrittenAgain(GameTestHelper helper) {
+        AtomicInteger deletes = new AtomicInteger();
+        GuildRig rig = GuildRig.create(helper, BUNDLE,
+                delegate -> failingFirst(delegate, "abandonCommission", deletes));
+        ServerPlayer player = rig.joined();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record or today's board has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    helper.assertTrue(rig.service().accept(player, FEAT_ITEMS).isEmpty(), "the feat was refused");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertTrue(statusIs(rig, player, FEAT_ITEMS, CommissionStatus.ACTIVE), "the row before the change");
+                    // The first delete of the withdrawal fails. The content no longer has the feat, so it is written again.
+                    rig.useContent(BUNDLE_NEXT);
+                    rig.service().contentActivated();
+                    advance(helper, step, 2);
+                }
+                default -> {
+                    helper.assertValueEqual(deletes.get(), 2, "abandonCommission calls: the failed delete and its retry");
+                    helper.assertTrue(withdrawn(rig, player), "the player was not told of the withdrawal");
+                    helper.assertTrue(stored(rig, player, FEAT_ITEMS).isEmpty(),
+                            "the withdrawn row is still in storage without a rejoin");
+                    helper.assertValueEqual(rig.service().view(player).orElseThrow().standing(FEAT_ITEMS),
+                            Standing.AVAILABLE, "the feat after the withdrawal");
+                }
+            }
+        });
+    }
+
+    /**
+     * A record still loading when an activation runs takes its volume baseline from the new content. The player stands
+     * in the hall at the join, when the content is empty, and the record's load is held until after the activation: the
+     * player has not entered anything, so no volume is counted and no dive is armed.
+     */
+    @GameTest(maxTicks = 900)
+    public void aRecordStillLoadingAtAnActivationTakesItsBaselineFromTheNewContent(GameTestHelper helper) {
+        AtomicBoolean holding = new AtomicBoolean();
+        CompletableFuture<Void> release = new CompletableFuture<>();
+        GuildRig rig = GuildRig.create(helper, BUNDLE, delegate -> heldLoads(delegate, holding, release));
+        ServerPlayer player = rig.newPlayer();
+        move(player, OUTSIDE);
+        rig.service().join(player);
+        AtomicInteger entered = new AtomicInteger();
+        CriterionWatchers.watch(player.getUUID(), spec(helper, "alina:volume_entered",
+                "{ \"volume\": \"alina:guild_test/high_dive\" }"), event -> entered.incrementAndGet());
+        AtomicInteger step = new AtomicInteger();
+        AtomicLong since = new AtomicLong();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            switch (step.get()) {
+                case 0 -> {
+                    helper.assertTrue(loaded(rig, player), "the record or today's board has not loaded");
+                    helper.assertTrue(rig.service().accept(player, HALL).isEmpty(), "the hall was refused");
+                    helper.assertTrue(rig.service().accept(player, DIVE).isEmpty(), "the dive was refused");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertTrue(statusIs(rig, player, HALL, CommissionStatus.ACTIVE)
+                            && statusIs(rig, player, DIVE, CommissionStatus.ACTIVE), "the rows are not written yet");
+                    // The player rejoins inside the hall. The content is empty while the record loads, and the load is held.
+                    rig.service().leave(player);
+                    move(player, IN_HIGH);
+                    rig.useContent(GuildContent.EMPTY);
+                    holding.set(true);
+                    rig.service().join(player);
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertTrue(rig.service().view(player).isEmpty(), "the record loaded while its load was held");
+                    // The activation of the new content runs while the record is still loading.
+                    rig.useContent(BUNDLE);
+                    rig.service().contentActivated();
+                    holding.set(false);
+                    release.complete(null);
+                    advance(helper, step, 3);
+                }
+                case 3 -> {
+                    helper.assertTrue(rig.service().view(player).isPresent(), "the record has not loaded after its release");
+                    since.set(rig.ticks());
+                    advance(helper, step, 4);
+                }
+                case 4 -> {
+                    helper.assertTrue(rig.ticks() - since.get() >= 2 * GuildService.DESCENT_CHECK_TICKS,
+                            "waiting for the descent checks after the load");
+                    helper.assertValueEqual(entered.get(), 0, "volume_entered for a volume the player was standing in");
+                    helper.assertValueEqual(progress(rig, player, HALL), 0, "the hall counted a volume the player did not enter");
+                    // An armed dive would meet its proof here, so the basin shows that no dive was armed.
+                    move(player, IN_BASIN);
+                    since.set(rig.ticks());
+                    advance(helper, step, 5);
+                }
+                default -> {
+                    helper.assertTrue(rig.ticks() - since.get() >= 2 * GuildService.DESCENT_CHECK_TICKS,
+                            "waiting for the checks at the basin");
+                    helper.assertValueEqual(progress(rig, player, DIVE), 0, "a dive armed at the activation met its proof");
+                    helper.assertValueEqual(entered.get(), 0, "volume_entered after the player moved to the basin");
+                }
+            }
+        });
+    }
+
     // Descent (ALINA-PLAN §8.3).
 
     @GameTest(maxTicks = 500)
@@ -957,18 +1202,78 @@ public final class GuildGameTests {
                     advance(helper, step, 2);
                 }
                 case 2 -> {
+                    // The dive is armed now. Between the volumes, Slow Falling starts.
                     helper.assertValueEqual(entered.get(), 1, "volume_entered on entering the start volume");
+                    move(player, BETWEEN);
                     player.addEffect(new MobEffectInstance(MobEffects.SLOW_FALLING, 400));
-                    helper.assertTrue(player.hasEffect(MobEffects.SLOW_FALLING), "the effect was not applied");
+                    advance(helper, step, 3);
+                }
+                case 3 -> {
+                    // The check at the start of this pass saw the effect, so the dive is disarmed. The effect ends now,
+                    // and the basin is reached with no effect: a dive that was not disarmed meets its proof here.
+                    helper.assertTrue(player.hasEffect(MobEffects.SLOW_FALLING), "Slow Falling ended before the basin");
+                    player.removeEffect(MobEffects.SLOW_FALLING);
                     move(player, IN_BASIN);
                     movedAt.set(rig.ticks());
-                    advance(helper, step, 3);
+                    advance(helper, step, 4);
                 }
                 default -> {
                     helper.assertTrue(rig.ticks() - movedAt.get() >= 2 * GuildService.DESCENT_CHECK_TICKS,
                             "waiting for the checks at the finish");
                     helper.assertValueEqual(progress(rig, player, DIVE), 0,
-                            "Slow Falling in between did not disarm the dive");
+                            "Slow Falling between the volumes did not disarm the dive");
+                }
+            }
+        });
+    }
+
+    @GameTest(maxTicks = 500)
+    public void glidingBetweenTheVolumesDoesNotMeetTheProof(GameTestHelper helper) {
+        GuildRig rig = GuildRig.create(helper, BUNDLE);
+        ServerPlayer player = rig.joined();
+        player.setPos(OUTSIDE.x, OUTSIDE.y, OUTSIDE.z);
+        AtomicInteger entered = new AtomicInteger();
+        CriterionWatchers.watch(player.getUUID(), spec(helper, "alina:volume_entered",
+                "{ \"volume\": \"alina:guild_test/high_dive\" }"), event -> entered.incrementAndGet());
+        AtomicBoolean glided = new AtomicBoolean();
+        AtomicInteger step = new AtomicInteger();
+        AtomicLong movedAt = new AtomicLong();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record or today's board has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    helper.assertTrue(rig.service().accept(player, DIVE).isEmpty(), "the dive was refused");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    move(player, IN_HIGH);
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    // The dive is armed now. Between the volumes, an elytra starts a glide: tryToStartFallFlying needs
+                    // the elytra in the chest slot and a player who can glide, which the airborne mock player is.
+                    helper.assertValueEqual(entered.get(), 1, "volume_entered on entering the start volume");
+                    move(player, BETWEEN);
+                    player.setItemSlot(EquipmentSlot.CHEST, new ItemStack(Items.ELYTRA));
+                    glided.set(player.tryToStartFallFlying());
+                    advance(helper, step, 3);
+                }
+                case 3 -> {
+                    // The check at the start of this pass saw the glide, so the dive is disarmed. The glide ends now, and
+                    // the basin is reached while not gliding.
+                    helper.assertTrue(glided.get(), "the elytra did not start a glide");
+                    helper.assertTrue(player.isFallFlying(), "the player is not gliding before the basin");
+                    player.stopFallFlying();
+                    move(player, IN_BASIN);
+                    movedAt.set(rig.ticks());
+                    advance(helper, step, 4);
+                }
+                default -> {
+                    helper.assertTrue(rig.ticks() - movedAt.get() >= 2 * GuildService.DESCENT_CHECK_TICKS,
+                            "waiting for the checks at the finish");
+                    helper.assertValueEqual(progress(rig, player, DIVE), 0,
+                            "a glide between the volumes did not disarm the dive");
                 }
             }
         });
@@ -1013,7 +1318,7 @@ public final class GuildGameTests {
         });
     }
 
-    @GameTest(maxTicks = 800)
+    @GameTest(maxTicks = 900)
     public void aPlayerWhoStandsInAVolumeWhenHeJoinsDoesNotEnterIt(GameTestHelper helper) {
         GuildRig rig = GuildRig.create(helper, BUNDLE);
         ServerPlayer player = rig.newPlayer();
@@ -1040,34 +1345,51 @@ public final class GuildGameTests {
                             "waiting for the descent checks");
                     helper.assertValueEqual(entered.get(), 0, "volume_entered for a player who joined inside the volume");
                     helper.assertValueEqual(progress(rig, player, HALL), 0, "the hall counted the volume at the join");
-                    helper.assertValueEqual(progress(rig, player, DIVE), 0, "the dive was armed at the join");
-                    rig.service().leave(player);
-                    rig.service().join(player);
+                    // Straight from the start volume into the basin: a dive armed at the join would meet its proof here.
+                    move(player, IN_BASIN);
                     since.set(rig.ticks());
                     advance(helper, step, 2);
                 }
                 case 2 -> {
                     helper.assertTrue(rig.ticks() - since.get() >= 2 * GuildService.DESCENT_CHECK_TICKS,
-                            "waiting for the descent checks after the rejoin");
-                    helper.assertValueEqual(entered.get(), 0, "volume_entered for the rejoin");
-                    helper.assertValueEqual(progress(rig, player, HALL), 0, "the hall counted the rejoin");
-                    helper.assertValueEqual(progress(rig, player, DIVE), 0, "the dive was armed by the rejoin");
-                    move(player, OUTSIDE);
+                            "waiting for the checks at the basin after the join");
+                    helper.assertValueEqual(progress(rig, player, DIVE), 0, "a dive armed at the join met its proof");
+                    rig.service().leave(player);
+                    move(player, IN_HIGH);
+                    rig.service().join(player);
                     since.set(rig.ticks());
                     advance(helper, step, 3);
                 }
                 case 3 -> {
                     helper.assertTrue(rig.ticks() - since.get() >= 2 * GuildService.DESCENT_CHECK_TICKS,
-                            "waiting for the checks outside the volume");
-                    move(player, IN_HIGH);
+                            "waiting for the descent checks after the rejoin");
+                    helper.assertValueEqual(entered.get(), 0, "volume_entered for the rejoin");
+                    helper.assertValueEqual(progress(rig, player, HALL), 0, "the hall counted the rejoin");
+                    // Straight from the start volume into the basin again, now after the rejoin.
+                    move(player, IN_BASIN);
+                    since.set(rig.ticks());
                     advance(helper, step, 4);
                 }
                 case 4 -> {
+                    helper.assertTrue(rig.ticks() - since.get() >= 2 * GuildService.DESCENT_CHECK_TICKS,
+                            "waiting for the checks at the basin after the rejoin");
+                    helper.assertValueEqual(progress(rig, player, DIVE), 0, "a dive armed by the rejoin met its proof");
+                    move(player, OUTSIDE);
+                    since.set(rig.ticks());
+                    advance(helper, step, 5);
+                }
+                case 5 -> {
+                    helper.assertTrue(rig.ticks() - since.get() >= 2 * GuildService.DESCENT_CHECK_TICKS,
+                            "waiting for the checks outside the volume");
+                    move(player, IN_HIGH);
+                    advance(helper, step, 6);
+                }
+                case 6 -> {
                     // A real entry still counts, and it arms the dive for the finish that follows.
                     helper.assertValueEqual(entered.get(), 1, "volume_entered for entering the volume");
                     helper.assertValueEqual(progress(rig, player, HALL), 1, "the hall did not count the entry");
                     move(player, IN_BASIN);
-                    advance(helper, step, 5);
+                    advance(helper, step, 7);
                 }
                 default -> {
                     helper.assertValueEqual(progress(rig, player, DIVE), 1, "the dive did not meet its proof");
@@ -1212,5 +1534,57 @@ public final class GuildGameTests {
                         throw failure.getCause();
                     }
                 });
+    }
+
+    /**
+     * A storage whose {@code loadCharacter} calls, made while {@code holding} is set, complete with the delegate's result
+     * only after {@code release} completes. Other calls reach {@code delegate} at once.
+     */
+    @SuppressWarnings("unchecked")
+    private static AlinaStorage heldLoads(AlinaStorage delegate, AtomicBoolean holding, CompletableFuture<Void> release) {
+        return (AlinaStorage) Proxy.newProxyInstance(AlinaStorage.class.getClassLoader(),
+                new Class<?>[] {AlinaStorage.class},
+                (proxy, called, args) -> {
+                    boolean hold = called.getName().equals("loadCharacter") && holding.get();
+                    Object result;
+                    try {
+                        result = called.invoke(delegate, args);
+                    } catch (InvocationTargetException failure) {
+                        throw failure.getCause();
+                    }
+                    if (!hold) {
+                        return result;
+                    }
+                    return ((CompletableFuture<Object>) result).thenCompose(state -> release.thenApply(ignored -> state));
+                });
+    }
+
+    /**
+     * A storage whose calls to {@code method} return {@code answers} in order, one answer for each call, and whose later
+     * calls reach {@code delegate}. {@code calls} counts the calls to {@code method}.
+     */
+    private static AlinaStorage answeredInOrder(AlinaStorage delegate, String method, AtomicInteger calls,
+            List<CompletableFuture<Object>> answers) {
+        return (AlinaStorage) Proxy.newProxyInstance(AlinaStorage.class.getClassLoader(),
+                new Class<?>[] {AlinaStorage.class},
+                (proxy, called, args) -> {
+                    if (called.getName().equals(method)) {
+                        int call = calls.incrementAndGet();
+                        if (call <= answers.size()) {
+                            return answers.get(call - 1);
+                        }
+                    }
+                    try {
+                        return called.invoke(delegate, args);
+                    } catch (InvocationTargetException failure) {
+                        throw failure.getCause();
+                    }
+                });
+    }
+
+    /** The number of commissions storage holds ACTIVE for the player. */
+    private static int activeInStorage(GuildRig rig, ServerPlayer player) {
+        return (int) rig.storage().loadCharacter(player.getUUID()).join().commissions().values().stream()
+                .filter(row -> row.status() == CommissionStatus.ACTIVE).count();
     }
 }

@@ -32,8 +32,6 @@ final class PlayerRecord {
     final Map<Identifier, Instant> settling = new HashMap<>();
     /** Commissions with an accept, abandon or reset still being written. */
     final Set<Identifier> busy = new HashSet<>();
-    /** Abandons still being written. Their commissions have no row, but they count towards the cap until the write ends. */
-    final Set<Identifier> abandoning = new HashSet<>();
     /** The open criterion watches, by commission id. */
     final Map<Identifier, CriterionWatchers.Watch> watches = new HashMap<>();
     /** Progress not yet written to storage, by commission id. */

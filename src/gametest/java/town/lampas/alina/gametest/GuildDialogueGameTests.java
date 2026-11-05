@@ -311,26 +311,72 @@ public final class GuildDialogueGameTests {
                     helper.assertValueEqual(viewOf(helper, subject.player).activeCount(), 2,
                             "active commissions at the cap");
                     pick(helper, subject.player, session, "The Ledger");
-                })
-                .thenExecute(() -> {
-                    DialogueSession session = presentedAt(helper, subject.player, "board");
-                    VisibleChoice ledger = row(helper, session, "The Ledger");
+                    // The stale pick has run and the board is shown again, in the same tick.
+                    DialogueSession shown = presentedAt(helper, subject.player, "board");
+                    VisibleChoice ledger = row(helper, shown, "The Ledger");
                     helper.assertFalse(ledger.enabled(), "the stale pick's entry is grayed out when the node is shown again");
                     helper.assertTrue(reason(ledger).contains(CAP_REASON), "the reason is the cap: " + reason(ledger));
                     GuildView view = viewOf(helper, subject.player);
                     helper.assertValueEqual(view.standing(LEDGER), Standing.AVAILABLE, "the stale pick accepted nothing");
                     helper.assertValueEqual(view.activeCount(), 2, "active commissions after the stale pick");
 
-                    int shown = session.presented().size();
+                    int entries = shown.presented().size();
                     // A forged index past the end, then the entry of a commission that is already active.
-                    sessions().choose(subject.player, session.id(), "board", shown + 5);
-                    sessions().choose(subject.player, session.id(), "board", indexOf(helper, session, "The Courier"));
-                    helper.assertTrue(sessionOf(helper, subject.player) == session,
-                            "the same conversation is still open");
-                    helper.assertValueEqual(session.presentedNode(), "board", "the node after the forged picks");
-                    helper.assertValueEqual(session.presented().size(), shown, "the shown entries after the forged picks");
+                    sessions().choose(subject.player, shown.id(), "board", entries + 5);
+                    sessions().choose(subject.player, shown.id(), "board", indexOf(helper, shown, "The Courier"));
+                    helper.assertTrue(sessionOf(helper, subject.player) == shown, "the same conversation is still open");
+                    helper.assertValueEqual(shown.presentedNode(), "board", "the node after the forged picks");
+                    helper.assertValueEqual(shown.presented().size(), entries, "the shown entries after the forged picks");
                     helper.assertValueEqual(viewOf(helper, subject.player).activeCount(), 2,
                             "active commissions after the forged picks");
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * At the cap, a drop through the abandon provider opens the board with the freed slot open: the feats on it are enabled,
+     * and {@code alina:guild/can_accept} agrees with {@code checkAccept} both at the cap and after the drop.
+     */
+    @GameTest(maxTicks = 600)
+    public void aDropAtTheCapOpensTheBoardWithAnEnabledFeat(GameTestHelper helper) {
+        Subject subject = new Subject();
+        joinedWithFixture(helper, subject)
+                .thenExecute(() -> {
+                    helper.assertTrue(guild().accept(subject.player, COURIER).isEmpty(), "the courier was refused");
+                    helper.assertTrue(guild().accept(subject.player, LANTERN).isEmpty(), "the lantern was refused");
+                })
+                .thenWaitUntil(() -> {
+                    ensureFixtureActive(helper);
+                    // A commission whose acceptance is being written is busy, and cannot be dropped until it is written.
+                    helper.assertTrue(guild().checkAbandon(subject.player, COURIER).isEmpty(),
+                            "the courier is still being written");
+                    helper.assertTrue(guild().checkAbandon(subject.player, LANTERN).isEmpty(),
+                            "the lantern is still being written");
+                    ContentBundle bundle = parse(helper, fixture(helper, "bundle.json"));
+                    DialogueCondition canAccept = condition(helper, "alina:guild/can_accept", "{}",
+                            new ParseContext(bundle, BOARD, "board"));
+                    helper.assertFalse(canAccept.test(new Ctx(subject.player, bundle)), "can_accept is true at the cap");
+                    assertRefusal(helper, guild().checkAccept(subject.player, LEDGER), Refusal.Reason.CAP_REACHED);
+                })
+                .thenExecute(() -> {
+                    DialogueSession board = openBoard(helper, subject.player);
+                    pick(helper, subject.player, board, "Drop a commission.");
+                    DialogueSession abandon = presentedAt(helper, subject.player, "abandon");
+                    helper.assertValueEqual(providedRows(abandon).size(), 2, "the drop lists the active commissions");
+                    pick(helper, subject.player, abandon, "The Courier");
+                    // The drop leads to the board in the same tick, and the board shows the freed slot.
+                    DialogueSession shown = presentedAt(helper, subject.player, "board");
+                    VisibleChoice ledger = row(helper, shown, "The Ledger");
+                    helper.assertTrue(ledger.enabled(),
+                            "an available feat is grayed out on the board that a drop opens: " + reason(ledger));
+                    helper.assertTrue(providedRows(shown).stream().noneMatch(choice -> reason(choice).contains(CAP_REASON)),
+                            "a board row gives the cap as its reason after a drop");
+                    ContentBundle bundle = parse(helper, fixture(helper, "bundle.json"));
+                    DialogueCondition canAccept = condition(helper, "alina:guild/can_accept", "{}",
+                            new ParseContext(bundle, BOARD, "board"));
+                    helper.assertTrue(canAccept.test(new Ctx(subject.player, bundle)), "can_accept is false after a drop");
+                    helper.assertTrue(guild().checkAccept(subject.player, LEDGER).isEmpty(),
+                            "checkAccept refused the ledger after a drop");
                 })
                 .thenSucceed();
     }
@@ -361,10 +407,8 @@ public final class GuildDialogueGameTests {
                     DialogueSession turnIn = openTurnIn(helper, subject.player);
                     helper.assertTrue(row(helper, turnIn, "The Courier").enabled(), "the proof is in the inventory");
                     pick(helper, subject.player, turnIn, "The Courier");
-                })
-                .thenExecute(() -> {
-                    DialogueSession turnIn = presentedAt(helper, subject.player, "turn_in");
-                    helper.assertFalse(row(helper, turnIn, "The Courier").enabled(),
+                    DialogueSession shown = presentedAt(helper, subject.player, "turn_in");
+                    helper.assertFalse(row(helper, shown, "The Courier").enabled(),
                             "a commission being turned in cannot be turned in again");
                 })
                 .thenWaitUntil(() -> {
@@ -618,8 +662,8 @@ public final class GuildDialogueGameTests {
                 return index;
             }
         }
-        helper.assertTrue(false, "the entry '" + text + "' is not shown; shown: " + texts(session));
-        throw new IllegalStateException("unreachable");
+        throw helper.assertionException(Component.literal(
+                "the entry '" + text + "' is not shown; shown: " + texts(session)));
     }
 
     private static VisibleChoice row(GameTestHelper helper, DialogueSession session, String text) {

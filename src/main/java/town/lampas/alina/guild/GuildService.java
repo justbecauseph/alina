@@ -66,10 +66,15 @@ import town.lampas.haruhi.api.HaruhiServices;
  * player gets {@link GuildText#acceptFailed}. A repeatable must be on today's board; a feat need not be.
  *
  * <p><b>Abandon</b> frees the slot with no cooldown and no reward (open question 4's proposal). It is optimistic in the
- * same way: the commission leaves the record at once, and is put back, with its progress and tracking, if the write
- * fails. Until the write finishes, the abandon still counts towards {@code active_cap}, so a commission accepted in its
- * place is refused. If the content no longer has the commission when the write fails, the row is not put back; the next
- * load withdraws it.
+ * same way: the commission leaves the record at once, so its slot is free for an accept, and the commission is
+ * {@link Refusal.Reason#BUSY} until the write finishes. When the write fails and the record is still current, the row is
+ * put back, with its progress and tracking, and the player gets {@link GuildText#abandonFailed}, if the active content
+ * still has the commission and the record is under {@code active_cap}. Otherwise the write is repeated once, after
+ * anything submitted in the meantime, and the commission stays busy until the repeat finishes. A repeat that succeeds
+ * gives the player {@link GuildText#abandoned}. A repeat that fails too is logged, the commission is no longer busy, and
+ * the player gets {@link GuildText#abandonFailed}; the row stays in storage, and the next load of the character restores
+ * or withdraws it. A write that fails after the player has left is not repeated: the player, if online, gets
+ * {@link GuildText#abandonFailed}, and the row is the next load's.
  *
  * <p><b>Turn-in</b> checks the proof now, then asks {@link SettlementService#begin} to settle it: the item proof's plan
  * is the removal, the reward and reputation come from the commission, and the effect sets the commission to
@@ -98,8 +103,9 @@ import town.lampas.haruhi.api.HaruhiServices;
  * withdraws from the records loaded before it. Nothing is withdrawn while the content is {@link GuildContent#EMPTY},
  * which is what the content is before any bundle is active, after a refused startup load, and when the active bundle
  * has no {@code alina:guild} section. Then a row the content lacks stays in the record and in storage, untracked,
- * until an activation with a section withdraws it. A board drawn from an empty
- * pool is drawn again at once when the content changes.
+ * until an activation with a section withdraws it. A withdrawal whose storage write fails is written once more; if that
+ * fails too, the next load withdraws the row. A board drawn from an empty pool is drawn again at once when the content
+ * changes.
  */
 public final class GuildService {
     /** Server ticks between progress write-behind flushes: 5 seconds. */
@@ -233,15 +239,16 @@ public final class GuildService {
         // activation runs this listener.
         boolean withdrawing = content != GuildContent.EMPTY;
         for (PlayerRecord record : List.copyOf(records.values())) {
-            if (!record.loaded) {
-                continue;
-            }
-            closeTracking(record);
-            // Standing in a volume the new content defines is not entering it, so the baseline is taken now.
+            // Standing in a volume the new content defines is not entering it, so the baseline is taken now, also for a
+            // record still loading: its baseline came from the content at join.
             ServerPlayer entity = online(record.id);
             if (entity != null) {
                 record.volumesIn = descent.volumesHolding(entity, content);
             }
+            if (!record.loaded) {
+                continue;
+            }
+            closeTracking(record);
             if (withdrawing) {
                 for (CommissionState row : List.copyOf(record.rows.values())) {
                     Identifier id = row.commissionId();
@@ -298,6 +305,16 @@ public final class GuildService {
             return Optional.empty();
         }
         return Optional.of(viewOf(record));
+    }
+
+    /**
+     * Whether the record is loaded and the player is under the active cap, counted as {@link #checkAccept} counts it. False
+     * while the record loads.
+     */
+    public boolean underActiveCap(ServerPlayer player) {
+        requireServerThread();
+        PlayerRecord record = records.get(player.getUUID());
+        return record != null && record.loaded && activeCount(record) < contentSource.get().settings().activeCap();
     }
 
     /** Today's board, or empty while it loads. */
@@ -514,16 +531,12 @@ public final class GuildService {
         if (refused.isPresent()) {
             return refused;
         }
-        UUID id = player.getUUID();
-        PlayerRecord record = records.get(id);
+        PlayerRecord record = records.get(player.getUUID());
         Commission abandoned = contentSource.get().commissions().get(commission);
         CommissionState row = record.rows.remove(commission);
         stopTracking(record, commission);
         record.busy.add(commission);
-        record.abandoning.add(commission);
-        writes.submit(id, () -> storage.abandonCommission(id, commission))
-                .whenComplete((removed, failure) -> onServer("abandon of " + commission,
-                        () -> abandonWritten(record, abandoned, row, failure), NOTHING));
+        writeAbandon(record, abandoned, row, false);
         return Optional.empty();
     }
 
@@ -675,16 +688,32 @@ public final class GuildService {
     }
 
     private void withdraw(PlayerRecord record, Identifier commission) {
-        Component name = knownName(commission);
-        record.rows.remove(commission);
-        stopTracking(record, commission);
-        writes.submit(record.id, () -> storage.abandonCommission(record.id, commission))
-                .whenComplete((removed, failure) -> onServer("withdrawal of " + commission,
-                        () -> withdrawn(record, name, failure), NOTHING));
+        withdraw(record, commission, knownName(commission));
     }
 
-    private void withdrawn(PlayerRecord record, Component name, Throwable failure) {
+    /** Removes the commission from the record and writes its storage row away. {@code name} is the name the player is told. */
+    private void withdraw(PlayerRecord record, Identifier commission, Component name) {
+        record.rows.remove(commission);
+        stopTracking(record, commission);
+        writeWithdrawal(record, commission, name, false);
+    }
+
+    /** Writes the storage delete of a withdrawal. {@code retried} is true for the second write. */
+    private void writeWithdrawal(PlayerRecord record, Identifier commission, Component name, boolean retried) {
+        writes.submit(record.id, () -> storage.abandonCommission(record.id, commission))
+                .whenComplete((removed, failure) -> onServer("withdrawal of " + commission,
+                        () -> withdrawn(record, commission, name, failure, retried), NOTHING));
+    }
+
+    private void withdrawn(PlayerRecord record, Identifier commission, Component name, Throwable failure,
+            boolean retried) {
         if (failure != null) {
+            if (!retried) {
+                Alina.LOGGER.warn("Alina could not withdraw {} for {}; it is written again", commission, record.id,
+                        failure);
+                writeWithdrawal(record, commission, name, true);
+                return;
+            }
             Alina.LOGGER.warn("Alina could not abandon a withdrawn commission for {}; the next load tries again",
                     record.id, failure);
             return;
@@ -770,33 +799,54 @@ public final class GuildService {
         }
     }
 
-    private void abandonWritten(PlayerRecord record, Commission abandoned, CommissionState row, Throwable failure) {
+    /** Writes the abandon of a commission the record no longer holds. {@code retried} is true for the second write. */
+    private void writeAbandon(PlayerRecord record, Commission abandoned, CommissionState row, boolean retried) {
+        Identifier commission = abandoned.id();
+        writes.submit(record.id, () -> storage.abandonCommission(record.id, commission))
+                .whenComplete((removed, failure) -> onServer("abandon of " + commission,
+                        () -> abandonWritten(record, abandoned, row, failure, retried), NOTHING));
+    }
+
+    /**
+     * An abandon's write has answered. On a failure for a current record, the row goes back when the content still has the
+     * commission and a slot is free. Otherwise the write is repeated once; a second failure leaves the row to the next load.
+     */
+    private void abandonWritten(PlayerRecord record, Commission abandoned, CommissionState row, Throwable failure,
+            boolean retried) {
+        Identifier commission = abandoned.id();
         boolean current = isCurrent(record);
-        if (current) {
-            record.busy.remove(abandoned.id());
-            record.abandoning.remove(abandoned.id());
-        }
         ServerPlayer entity = online(record.id);
         if (failure == null) {
+            if (current) {
+                record.busy.remove(commission);
+            }
             if (entity != null) {
                 entity.sendSystemMessage(GuildText.abandoned(abandoned.name()));
             }
             return;
         }
-        Alina.LOGGER.warn("Alina could not abandon {} for {}", abandoned.id(), record.id, failure);
-        if (current && !record.rows.containsKey(abandoned.id())) {
-            if (contentSource.get().commissions().containsKey(abandoned.id())) {
-                record.rows.put(abandoned.id(), row);
+        Alina.LOGGER.warn("Alina could not abandon {} for {}", commission, record.id, failure);
+        if (current && !retried) {
+            GuildContent content = contentSource.get();
+            if (content.commissions().containsKey(commission) && activeCount(record) < content.settings().activeCap()) {
+                record.busy.remove(commission);
+                record.rows.put(commission, row);
                 if (row.progress() > 0) {
-                    record.dirty.put(abandoned.id(), row.progress());
+                    record.dirty.put(commission, row.progress());
                 }
-                startTracking(record, abandoned.id());
+                startTracking(record, commission);
             } else {
-                // A content activation removed the commission while the abandon was written. Storage still holds the
-                // row, so it is not put back here; the next load withdraws it.
-                Alina.LOGGER.warn("Alina could not abandon {} for {}, and the active content no longer has it; the next "
-                        + "load of the character withdraws it", abandoned.id(), record.id);
+                // The slot was taken while the abandon was written, or the content no longer has the commission. The
+                // commission stays busy, and the write is repeated after anything submitted since.
+                writeAbandon(record, abandoned, row, true);
+                return;
             }
+        } else if (current) {
+            // The repeat failed too. Storage still holds the row, and the record does not: the next load restores or
+            // withdraws it.
+            record.busy.remove(commission);
+            Alina.LOGGER.warn("Alina could not abandon {} for {} a second time; storage still holds its row, and the next "
+                    + "load of the character restores or withdraws it", commission, record.id);
         }
         if (entity != null) {
             entity.sendSystemMessage(GuildText.abandonFailed(abandoned.name()));
@@ -1132,15 +1182,11 @@ public final class GuildService {
         return row != null && row.status() == CommissionStatus.COMPLETED;
     }
 
-    /**
-     * The commissions the cap counts: the active rows, and the abandons still being written, which free their slot only
-     * when their write succeeds.
-     */
+    /** The commissions the cap counts: the active rows that are not being settled. */
     private static int activeCount(PlayerRecord record) {
-        long rows = record.rows.values().stream()
+        return (int) record.rows.values().stream()
                 .filter(row -> row.status() == CommissionStatus.ACTIVE && !record.settling.containsKey(row.commissionId()))
                 .count();
-        return (int) (rows + record.abandoning.size());
     }
 
     private static List<Commission> rotationPool(GuildContent content) {

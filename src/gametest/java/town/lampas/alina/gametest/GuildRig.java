@@ -19,6 +19,7 @@ import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.network.Connection;
+import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.PacketFlow;
 import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
 import net.minecraft.server.MinecraftServer;
@@ -185,19 +186,23 @@ final class GuildRig {
                 (player, expected) -> PlayerDataSaves.saveAndVerify(server, player, expected));
     }
 
+    /**
+     * Parses a fixture. A refused fixture or one without an {@code alina:guild} section fails with a GameTest assertion, so a
+     * step that uses it fails its test rather than the server.
+     */
     private GuildContent parse(String fixture) {
         String json = read(fixture).replace("{{dimension}}", helper.getLevel().dimension().identifier().toString());
         DataResult<ContentBundle> result = HaruhiServices.content().parseAndValidate(json);
-        ContentBundle bundle = result.result().orElseThrow(() -> new IllegalStateException(
-                "the fixture " + fixture + " was refused:\n" + result.error().map(error -> error.message()).orElse("")));
-        return bundle.extension(AlinaContent.GUILD).orElseThrow(() ->
-                new IllegalStateException("the fixture " + fixture + " has no alina:guild section"));
+        ContentBundle bundle = result.result().orElseThrow(() -> helper.assertionException(Component.literal(
+                "the fixture " + fixture + " was refused:\n" + result.error().map(error -> error.message()).orElse(""))));
+        return bundle.extension(AlinaContent.GUILD).orElseThrow(() -> helper.assertionException(Component.literal(
+                "the fixture " + fixture + " has no alina:guild section")));
     }
 
-    private static String read(String name) {
+    private String read(String name) {
         try (InputStream in = GuildRig.class.getResourceAsStream(FIXTURES + name)) {
             if (in == null) {
-                throw new IllegalStateException("missing fixture " + name);
+                throw helper.assertionException(Component.literal("missing fixture " + name));
             }
             return new String(in.readAllBytes(), StandardCharsets.UTF_8);
         } catch (IOException e) {

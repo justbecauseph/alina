@@ -38,12 +38,7 @@ final class GuildConditions {
 
     static DataResult<DialogueCondition> canAccept(JsonObject json, ParseContext context) {
         return DialogueArgs.<DialogueCondition>parse(context, CAN_ACCEPT, json, Set.of(), args ->
-                ctx -> {
-                    var service = GuildModule.service();
-                    return service.view(ctx.player())
-                            .map(view -> view.activeCount() < service.content().settings().activeCap())
-                            .orElse(false);
-                });
+                ctx -> GuildModule.service().underActiveCap(ctx.player()));
     }
 
     static DataResult<DialogueCondition> reputation(JsonObject json, ParseContext context) {
