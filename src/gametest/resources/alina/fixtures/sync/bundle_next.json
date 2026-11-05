@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "extensions": {
+    "alina:achievements": {
+      "tabs": {
+        "alina:sync_test/hall": {
+          "title": "The Hall",
+          "icon": { "id": "minecraft:writable_book" },
+          "background": "minecraft:block/spruce_planks"
+        }
+      },
+      "achievements": {
+        "alina:sync_test/greeter": {
+          "tab": "alina:sync_test/hall",
+          "title": "Greeter",
+          "description": "Greet someone.",
+          "icon": { "id": "minecraft:paper" },
+          "criteria": { "greet": { "trigger": "alina:manual", "conditions": { "key": "greet" } } }
+        },
+        "alina:sync_test/visitor": {
+          "tab": "alina:sync_test/hall",
+          "parent": "alina:sync_test/greeter",
+          "title": "Visitor",
+          "description": "Visit 37 times.",
+          "icon": { "id": "minecraft:compass" },
+          "frame": "goal",
+          "criteria": { "visit": { "trigger": "alina:manual", "conditions": { "key": "visit" }, "count": 37 } }
+        },
+        "alina:sync_test/newcomer": {
+          "tab": "alina:sync_test/hall",
+          "parent": "alina:sync_test/greeter",
+          "title": "Newcomer",
+          "description": "Arrive.",
+          "icon": { "id": "minecraft:name_tag" },
+          "criteria": { "arrive": { "trigger": "alina:manual", "conditions": { "key": "arrive" } } }
+        },
+        "alina:sync_test/hermit": {
+          "tab": "alina:sync_test/hall",
+          "title": "Hermit",
+          "description": "Withheld until earned.",
+          "icon": { "id": "minecraft:ender_pearl" },
+          "hidden": true,
+          "criteria": { "hide": { "trigger": "alina:manual", "conditions": { "key": "hide" } } }
+        },
+        "alina:sync_test/pair": {
+          "tab": "alina:sync_test/hall",
+          "title": "Pair",
+          "description": "Do both.",
+          "icon": { "id": "minecraft:stick" },
+          "criteria": {
+            "one": { "trigger": "alina:manual", "conditions": { "key": "one" } },
+            "two": { "trigger": "alina:manual", "conditions": { "key": "two" } }
+          },
+          "requirements": [ [ "one" ], [ "two" ] ]
+        }
+      }
+    }
+  }
+}
