@@ -37,6 +37,8 @@ so on) refer to that plan.
 | `storage` | `AlinaStorage` port, in-memory and PostgreSQL (HikariCP, migrations under `alina/migrations/`), config `config/alina.json` |
 | `api` | `AlinaServices`: the storage getter |
 | `content` | the `alina:guild` and `alina:achievements` bundle extensions: records, readers, validation, `AlinaContent` |
+| `criteria` | `CriterionWatchers`: watches one player's criterion trigger events, indexed by trigger and then player; `CriteriaModule` closes a player's watches on leave |
+| `mixin` | `SimpleCriterionTriggerMixin`: hands every simple criterion trigger event to the watchers, before vanilla's early return for players with no unfinished advancement on it |
 | `client` | `AlinaClient` entrypoint |
 
 Initialisation, in `Alina.onInitialize`: storage, criteria, content, settlement, guild, achievement (§5). Criterion
