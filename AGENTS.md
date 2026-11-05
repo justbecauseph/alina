@@ -38,7 +38,8 @@ so on) refer to that plan.
 | `api` | `AlinaServices`: the storage getter |
 | `content` | the `alina:guild` and `alina:achievements` bundle extensions: records, readers, validation, `AlinaContent` |
 | `criteria` | `CriterionWatchers`: watches one player's criterion trigger events, indexed by trigger and then player; `CriteriaModule` closes a player's watches on leave |
-| `mixin` | `SimpleCriterionTriggerMixin`: hands every simple criterion trigger event to the watchers, before vanilla's early return for players with no unfinished advancement on it |
+| `settlement` | `SettlementService` (escrow attachment, verified player-data saves, recovery, world id, reconciliation), `SettlementModule` (the attachment, the service's lifecycle and tick) |
+| `mixin` | `SimpleCriterionTriggerMixin`: hands every simple criterion trigger event to the watchers, before vanilla's early return for players with no unfinished advancement on it; `PlayerStorageAccess`: the server's `playerDataStorage`, for settlement's saves |
 | `client` | `AlinaClient` entrypoint |
 
 Initialisation, in `Alina.onInitialize`: storage, criteria, content, settlement, guild, achievement (§5). Criterion
@@ -90,3 +91,27 @@ Two sections under the haruhi bundle's `extensions` object. The format, with exa
   no server and skip those checks; `ContentGameTests` covers them.
 - References to NPCs and graphs are checked against `ExtensionContext.npcIds()` and `graphIds()`, which include
   entries that failed to parse.
+
+## Settlement
+
+Turn-ins and achievement rewards go through `SettlementService` (ALINA-PLAN §7). `begin` runs on the server thread;
+`tick` runs every server tick.
+
+- **Escrow.** The attachment `alina:settlement` (persistent, copied on death) holds a JSON array of the player's pending
+  operations. An operation keeps its id, kind, subject, tier, revision, world id, reputation delta, effect, the rolled
+  reward, the stacks still to deliver, the removed proof stacks (audit) and, once storage has applied it, the
+  `ApplyResult`. Stacks are written with `ItemStack.CODEC` through the server's registries.
+- **Verified saves.** Every change is saved with `PlayerDataSaves.saveAndVerify`, which saves the player and reads
+  `playerdata/<uuid>.dat` back. Vanilla catches save failures, so the read-back is the proof. A failed save keeps the
+  operation in the escrow and is retried. The proof is never refunded.
+- **World id.** `<world>/alina/world_id.txt` holds a UUID, made on the first start. An operation whose world id is not
+  the running world's is never applied; it is listed by `reconciliation()` and logged once.
+- **Steps.** `begin` rolls the reward (seed: the operation id's most and least significant bits XOR), runs the removal,
+  and saves. `tick` calls `AlinaStorage.applyOperation` for the first due operation, off the server thread, after its
+  escrow is on disk. The completion saves the delivery with the storage result recorded; a failed save restores the
+  inventory and the previous escrow, so the next attempt calls storage again and gets `fresh` false. When the reward is
+  fully delivered the operation leaves the escrow, `markOperation` marks it settled (write-behind), and the settled
+  listeners run. One storage call is in flight per player; a failed step waits 100 ticks.
+- **Injection.** The constructor takes the `AlinaStorage` and the online players, and a `SaveProof` for the save step
+  (the default is `PlayerDataSaves.saveAndVerify`). GameTests build their own services over `InMemoryStorage`, wrap the
+  storage or the save to fail on purpose, and call `tick()` themselves. They never add mock players to the player list.

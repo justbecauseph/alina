@@ -4,7 +4,8 @@
   "package": "town.lampas.alina.mixin",
   "compatibilityLevel": "JAVA_25",
   "mixins": [
-    "SimpleCriterionTriggerMixin"
+    "SimpleCriterionTriggerMixin",
+    "PlayerStorageAccess"
   ],
   "injectors": {
     "defaultRequire": 1

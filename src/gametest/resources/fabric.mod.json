@@ -10,7 +10,8 @@
       "town.lampas.alina.gametest.StorageGameTests",
       "town.lampas.alina.gametest.ContentGameTests",
       "town.lampas.alina.gametest.CriteriaGameTests",
-      "town.lampas.alina.gametest.TriggerGameTests"
+      "town.lampas.alina.gametest.TriggerGameTests",
+      "town.lampas.alina.gametest.SettlementGameTests"
     ]
   },
   "depends": {
