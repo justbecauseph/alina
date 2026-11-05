@@ -1,6 +1,7 @@
 package town.lampas.alina.settlement;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.nio.file.Files;
@@ -30,5 +31,24 @@ class WorldIdTest {
 
         assertThrows(IllegalStateException.class, () -> WorldId.loadOrCreate(world));
         assertEquals("not a uuid\n", Files.readString(file));
+    }
+
+    @Test
+    void aNewIdLeavesNoTemporaryFileBehind() {
+        WorldId.loadOrCreate(world);
+
+        assertFalse(Files.exists(world.resolve("alina").resolve("world_id.txt.tmp")));
+    }
+
+    @Test
+    void aTemporaryFileLeftByACrashIsNotReadAsTheId() throws Exception {
+        Path temporary = world.resolve("alina").resolve("world_id.txt.tmp");
+        Files.createDirectories(temporary.getParent());
+        Files.writeString(temporary, "half written");
+
+        UUID id = WorldId.loadOrCreate(world);
+
+        assertEquals(id.toString(), Files.readString(world.resolve("alina").resolve("world_id.txt")).strip());
+        assertFalse(Files.exists(temporary));
     }
 }

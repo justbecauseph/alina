@@ -17,7 +17,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import net.minecraft.core.HolderLookup;
-import net.minecraft.core.NonNullList;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
@@ -36,34 +35,44 @@ import town.lampas.alina.storage.Operation;
 import town.lampas.alina.storage.OperationStep;
 
 /**
- * Settles turn-ins and achievement rewards (ALINA-PLAN §7). The steps, and what each leaves in the player's escrow:
+ * Settles turn-ins and achievement rewards (ALINA-PLAN section 7). The steps, and what each leaves in the player's escrow:
  *
  * <ol>
- *   <li>{@link #begin}, on the server thread: rolls the reward, runs the proof removal, appends the operation to
- *       the escrow and saves it verified. A failed save keeps the operation in the escrow, and it is saved again
- *       before the storage is called.
- *   <li>{@link #tick}, every server tick: calls {@link AlinaStorage#applyOperation} for the first operation that
- *       is due, off the server thread.
- *   <li>Back on the server thread, when the storage call completes: delivers the reward stacks that fit, records
- *       the storage result in the escrow and saves verified. A failed save puts the inventory and the escrow back,
- *       so the next attempt starts from the saved state. Once the reward is delivered, the operation leaves the
- *       escrow, its row is marked settled, and the settled listeners run.
+ *   <li>{@link #begin}, on the server thread: rolls the reward, takes the proof, appends the operation to the escrow and
+ *       saves it verified. A failed save keeps the operation in the escrow, and it is saved again before the storage is
+ *       called. A refused begin changes nothing.
+ *   <li>{@link #tick}, every server tick: calls {@link AlinaStorage#applyOperation} for the first operation that is due,
+ *       off the server thread. A player who is dead, or whose entity was removed, is not served.
+ *   <li>Back on the server thread, when the storage call completes: delivers the reward stacks that fit, records the
+ *       storage result in the escrow and saves verified. The applied listeners run once that save has verified. A failed
+ *       save puts the inventory and the escrow back, so the next attempt starts from the saved state. Once the reward is
+ *       delivered, the operation leaves the escrow, its row is marked settled, and the settled listeners run.
  * </ol>
  *
- * <p>A player has at most one storage call in flight. After a failed step an operation waits {@link #RETRY_TICKS}
- * before its next attempt. Everything that touches a player runs on the server thread; storage completions hop back
- * with {@code server.execute}.
+ * <p>A player has at most one storage call in flight. A completion is applied only to the entity that started the call,
+ * and only while that entity is alive and is still the player's online entity. Otherwise the completion changes nothing,
+ * and the entity that is online is served from its own escrow: storage is called again and answers with fresh false.
+ *
+ * <p>After a failed step an operation waits {@link #RETRY_TICKS} before its next attempt. Everything that touches a player
+ * runs on the server thread; storage completions hop back with {@code server.execute}.
  */
 public final class SettlementService {
     /** Server ticks an operation waits after a failed attempt: 5 seconds. */
     static final long RETRY_TICKS = 100;
+    /**
+     * The most modified-UTF-8 bytes the escrow text may hold when {@link #begin} writes it. Vanilla writes the escrow as
+     * one string in the player data, and a string above 65535 bytes fails the whole save, so every save of the player
+     * would fail. The margin covers the storage results that later commits add to the escrow.
+     */
+    static final int ESCROW_LIMIT_BYTES = 60_000;
 
     private final MinecraftServer server;
     private final AlinaStorage storage;
     private final UUID worldId;
     private final Supplier<? extends Collection<ServerPlayer>> online;
     private final SaveProof save;
-    private final List<Consumer<SettledOperation>> listeners = new CopyOnWriteArrayList<>();
+    private final List<Consumer<SettledOperation>> settledListeners = new CopyOnWriteArrayList<>();
+    private final List<Consumer<SettledOperation>> appliedListeners = new CopyOnWriteArrayList<>();
     private final Map<UUID, Reconciliation> reconciliation = new LinkedHashMap<>();
     /** Players with a storage call in flight. */
     private final Set<UUID> busy = new HashSet<>();
@@ -73,6 +82,8 @@ public final class SettlementService {
     private final Map<UUID, Long> retryAt = new HashMap<>();
     /** The tick each player may next be served at, after an escrow that could not be read. */
     private final Map<UUID, Long> pausedUntil = new HashMap<>();
+    /** Operations whose applied listeners have run in this server run. */
+    private final Set<UUID> announced = new HashSet<>();
     private long ticks;
 
     /**
@@ -85,8 +96,8 @@ public final class SettlementService {
     }
 
     /**
-     * @param online the players this service serves. A settlement whose player has left stays unfinished until the
-     *     player is served again.
+     * @param online the players this service serves. The entity it serves for a player is the one in this collection.
+     *     A settlement whose player has left stays unfinished until the player is served again.
      * @param save the save step, verified as {@link PlayerDataSaves#saveAndVerify} verifies it
      */
     public SettlementService(MinecraftServer server, AlinaStorage storage, UUID worldId,
@@ -111,32 +122,57 @@ public final class SettlementService {
     }
 
     /**
-     * Begins an operation for the player: rolls the reward with a seed taken from the new operation id, runs the
-     * removal, and saves the escrow. Server thread only.
+     * Begins an operation for the player: rolls the reward with a seed taken from the new operation id, takes the proof
+     * with the request's removal, and saves the escrow. Server thread only.
      *
-     * @return the operation id, or empty when the player already has a pending operation of the same kind and
-     *     subject. Then nothing changes.
-     * @throws IllegalArgumentException when the reward's loot table is not on this server
+     * <p>A refused begin changes nothing: the proof is back where it was, the escrow is not written, and nothing is
+     * saved. The caller must keep its own state, such as a commission's board slot, and try again later. A begin is
+     * refused when the player already has an operation with the same kind, subject and tier; when the escrow with the new
+     * operation would be over {@link #ESCROW_LIMIT_BYTES}; and when the removal or the encoding throws (the failure is
+     * logged).
+     *
+     * @return the operation id, or empty when the operation was refused
+     * @throws IllegalArgumentException when the reward's loot table is not on this server, before anything changes
      */
     public Optional<UUID> begin(ServerPlayer player, SettlementRequest request) {
         requireServerThread();
         List<PendingOperation> pending = read(player);
         for (PendingOperation operation : pending) {
-            if (operation.kind() == request.kind() && operation.subjectId().equals(request.subjectId())) {
+            if (operation.kind() == request.kind() && operation.subjectId().equals(request.subjectId())
+                    && operation.tier() == request.tier()) {
                 return Optional.empty();
             }
         }
         UUID operationId = UUID.randomUUID();
         List<ItemStack> rolled = request.reward().map(table -> roll(table, player, operationId)).orElse(List.of());
-        List<ItemStack> removed = copies(request.removal().remove(player));
-        PendingOperation operation = new PendingOperation(operationId, request.kind(), request.subjectId(),
-                request.tier(), request.revisionId(), worldId, request.reputationDelta(), request.effect(),
-                Instant.now(), rolled, rolled, removed, Optional.empty());
-        List<PendingOperation> next = new ArrayList<>(pending);
-        next.add(operation);
-        String json = EscrowJson.encode(next, registries());
+        Inventory inventory = player.getInventory();
+        ItemStack[] before = snapshot(inventory, inventory.getContainerSize());
+        List<PendingOperation> next;
+        String json;
+        try {
+            List<ItemStack> removed = Stacks.split(copies(request.removal().remove(player)));
+            PendingOperation operation = new PendingOperation(operationId, request.kind(), request.subjectId(),
+                    request.tier(), request.revisionId(), worldId, request.reputationDelta(), request.effect(),
+                    Instant.now(), rolled, rolled.stream().map(ItemStack::copy).toList(), removed, Optional.empty(),
+                    request.commissionCategory(), request.commissionKind());
+            next = new ArrayList<>(pending);
+            next.add(operation);
+            json = EscrowJson.encode(next, registries());
+        } catch (RuntimeException failure) {
+            restore(inventory, before);
+            Alina.LOGGER.error("Alina could not prepare operation {} for {}; the proof is back in the inventory",
+                    operationId, player.getUUID(), failure);
+            return Optional.empty();
+        }
+        int bytes = Stacks.modifiedUtf8Length(json);
+        if (bytes > ESCROW_LIMIT_BYTES) {
+            restore(inventory, before);
+            Alina.LOGGER.warn("Alina refused operation {} for {}: its escrow would be {} bytes, over the {} byte limit; "
+                    + "the proof is back in the inventory", operationId, player.getUUID(), bytes, ESCROW_LIMIT_BYTES);
+            return Optional.empty();
+        }
         write(player, json);
-        player.getInventory().setChanged();
+        inventory.setChanged();
         if (save.save(player, json)) {
             markVerified(next);
         } else {
@@ -148,13 +184,16 @@ public final class SettlementService {
         return Optional.of(operationId);
     }
 
-    /** Advances each online player's escrow by at most one step. Called every server tick. */
+    /**
+     * Advances each online player's escrow by at most one step. Called every server tick. A player who is dead, or whose
+     * entity was removed, is skipped: the escrow stays as it is until the player's live entity is served.
+     */
     public void tick() {
         requireServerThread();
         ticks++;
         for (ServerPlayer player : List.copyOf(online.get())) {
             UUID character = player.getUUID();
-            if (busy.contains(character) || ticks < pausedUntil.getOrDefault(character, 0L)) {
+            if (!player.isAlive() || busy.contains(character) || ticks < pausedUntil.getOrDefault(character, 0L)) {
                 continue;
             }
             try {
@@ -167,9 +206,21 @@ public final class SettlementService {
         }
     }
 
-    /** Adds a listener that runs on the server thread each time an operation's reward reaches its player. */
+    /**
+     * Adds a listener that runs on the server thread each time an operation's reward reaches its player. It gets the
+     * operation once, after the delivery is saved.
+     */
     public void addSettledListener(Consumer<SettledOperation> listener) {
-        listeners.add(Objects.requireNonNull(listener, "listener"));
+        settledListeners.add(Objects.requireNonNull(listener, "listener"));
+    }
+
+    /**
+     * Adds a listener that runs on the server thread once per operation in this server run, when a verified save first
+     * records the storage result. The reward may still be pending then. The listener gets a {@link SettledOperation}, as
+     * the settled listeners do, with the result it was recorded with.
+     */
+    public void addAppliedListener(Consumer<SettledOperation> listener) {
+        appliedListeners.add(Objects.requireNonNull(listener, "listener"));
     }
 
     /** The player's pending operations, as the escrow holds them. Server thread only. */
@@ -230,20 +281,26 @@ public final class SettlementService {
                 server.execute(() -> applied(player, op.operationId(), result, failure)));
     }
 
-    private void applied(ServerPlayer player, UUID operationId, ApplyResult result, Throwable failure) {
-        busy.remove(player.getUUID());
+    /**
+     * Runs when storage has answered for {@code attempted}. The answer is applied only to that entity, while it is alive
+     * and is still the player's online entity. Entities are compared with {@code ==}: {@code Entity.equals} compares
+     * ids, and a respawn gives the new entity the old id.
+     */
+    private void applied(ServerPlayer attempted, UUID operationId, ApplyResult result, Throwable failure) {
+        busy.remove(attempted.getUUID());
         if (failure != null) {
             Alina.LOGGER.warn("Alina could not apply settlement operation {} for {}; it is tried again in 5 seconds",
-                    operationId, player.getUUID(), failure);
+                    operationId, attempted.getUUID(), failure);
             return;
         }
-        if (!isOnline(player)) {
-            // The escrow still lacks the result. The next join calls storage again, and gets the same answer.
+        if (liveEntity(attempted.getUUID()) != attempted || !attempted.isAlive()) {
+            // The entity that made the call is dead or replaced, so the result is not recorded in the escrow the
+            // live entity holds. That entity is served at its next tick, calls storage again, and gets fresh false.
             retryAt.remove(operationId);
             return;
         }
         try {
-            List<PendingOperation> ops = read(player);
+            List<PendingOperation> ops = read(attempted);
             Optional<PendingOperation> op = ops.stream()
                     .filter(candidate -> candidate.operationId().equals(operationId))
                     .findFirst();
@@ -251,25 +308,31 @@ public final class SettlementService {
                 retryAt.remove(operationId);
                 return;
             }
-            commit(player, ops, op.get(), result);
+            commit(attempted, ops, op.get(), result);
         } catch (RuntimeException failed) {
-            pausedUntil.put(player.getUUID(), ticks + RETRY_TICKS);
+            pausedUntil.put(attempted.getUUID(), ticks + RETRY_TICKS);
             Alina.LOGGER.error("Alina could not deliver settlement operation {} for {}; paused for 5 seconds",
-                    operationId, player.getUUID(), failed);
+                    operationId, attempted.getUUID(), failed);
         }
     }
 
     /**
-     * Delivers the stacks that fit, then saves the escrow with the storage result recorded. A save that does not
-     * verify puts the inventory and the escrow back as they were, so the operation is attempted again from its saved
-     * state.
+     * Delivers the stacks that fit, then saves the escrow with the storage result recorded. A save that does not verify
+     * puts the inventory and the escrow back as they were, so the operation is attempted again from its saved state. A
+     * step with a recorded result that moves no stack saves nothing.
      */
     private void commit(ServerPlayer player, List<PendingOperation> ops, PendingOperation op, ApplyResult result) {
         Inventory inventory = player.getInventory();
         String previous = player.getAttached(SettlementModule.ESCROW);
-        ItemStack[] slots = snapshot(inventory);
+        boolean recorded = op.applied().isPresent();
+        ItemStack[] main = snapshot(inventory, inventory.getNonEquipmentItems().size());
         List<ItemStack> remaining = insert(inventory, op.reward());
-        boolean finished = remaining.isEmpty();
+        if (recorded && !moved(op.reward(), remaining)) {
+            // The escrow already holds the result and nothing went into the inventory: there is nothing to save.
+            retryAt.put(op.operationId(), ticks + RETRY_TICKS);
+            return;
+        }
+        boolean finished = remaining.stream().allMatch(ItemStack::isEmpty);
         PendingOperation updated = op.withApplied(result).withReward(remaining);
         List<PendingOperation> next = new ArrayList<>();
         for (PendingOperation candidate : ops) {
@@ -279,11 +342,20 @@ public final class SettlementService {
                 next.add(updated);
             }
         }
-        String json = next.isEmpty() ? null : EscrowJson.encode(next, registries());
+        String json;
+        try {
+            json = next.isEmpty() ? null : EscrowJson.encode(next, registries());
+        } catch (RuntimeException failure) {
+            restore(inventory, main);
+            retryAt.put(op.operationId(), ticks + RETRY_TICKS);
+            Alina.LOGGER.error("Alina could not encode the escrow of {} for operation {}; the delivery is tried again "
+                    + "in 5 seconds", player.getUUID(), op.operationId(), failure);
+            return;
+        }
         write(player, json);
         inventory.setChanged();
         if (!save.save(player, json)) {
-            restore(inventory, slots);
+            restore(inventory, main);
             write(player, previous);
             inventory.setChanged();
             retryAt.put(op.operationId(), ticks + RETRY_TICKS);
@@ -293,16 +365,35 @@ public final class SettlementService {
         }
         markVerified(next);
         unverified.remove(op.operationId());
+        if (!recorded) {
+            announce(player, updated, result);
+        }
         if (finished) {
             retryAt.remove(op.operationId());
-            settle(player, op, result);
+            settle(player, updated, result);
         } else {
             retryAt.put(op.operationId(), ticks + RETRY_TICKS);
         }
     }
 
+    /** Runs the applied listeners, once per operation in this server run. */
+    private void announce(ServerPlayer player, PendingOperation op, ApplyResult result) {
+        if (!announced.add(op.operationId())) {
+            return;
+        }
+        SettledOperation applied = settledOf(player, op, result);
+        for (Consumer<SettledOperation> listener : appliedListeners) {
+            try {
+                listener.accept(applied);
+            } catch (RuntimeException failure) {
+                Alina.LOGGER.error("An applied listener failed for operation {}", op.operationId(), failure);
+            }
+        }
+    }
+
     /** Marks the operation settled in storage, write-behind, and tells the listeners. */
     private void settle(ServerPlayer player, PendingOperation op, ApplyResult result) {
+        announced.remove(op.operationId());
         storage.markOperation(op.operationId(), OperationStep.SETTLED, Optional.empty(), Instant.now())
                 .whenComplete((ignored, failure) -> {
                     if (failure != null) {
@@ -310,8 +401,8 @@ public final class SettlementService {
                                 op.operationId(), failure);
                     }
                 });
-        SettledOperation settled = new SettledOperation(player, operation(op, player.getUUID()), result);
-        for (Consumer<SettledOperation> listener : listeners) {
+        SettledOperation settled = settledOf(player, op, result);
+        for (Consumer<SettledOperation> listener : settledListeners) {
             try {
                 listener.accept(settled);
             } catch (RuntimeException failure) {
@@ -340,31 +431,64 @@ public final class SettlementService {
                 .withParameter(LootContextParams.ORIGIN, player.position())
                 .create(LootContextParamSets.GIFT);
         long seed = operationId.getMostSignificantBits() ^ operationId.getLeastSignificantBits();
-        return copies(server.reloadableRegistries().getLootTable(key).getRandomItems(params, seed));
+        return Stacks.split(copies(server.reloadableRegistries().getLootTable(key).getRandomItems(params, seed)));
     }
 
-    /** Inserts each stack that fits, and returns copies of what does not fit, in order. */
-    private static List<ItemStack> insert(Inventory inventory, List<ItemStack> stacks) {
-        List<ItemStack> remaining = new ArrayList<>();
-        for (ItemStack stack : stacks) {
-            ItemStack work = stack.copy();
-            // Vanilla's add discards a stack that finds no room when the player is in creative mode. Checking for room
-            // first keeps the stack in the escrow instead.
-            if (inventory.getFreeSlot() >= 0 || inventory.getSlotWithRemainingSpace(work) >= 0) {
-                inventory.add(work);
-            }
-            if (!work.isEmpty()) {
-                remaining.add(work);
+    /**
+     * Moves each stack into the main inventory, and returns, in the same order, what did not fit (an empty stack when all
+     * of it did). A stack first fills the main stacks of the same item and components that have room, then takes empty
+     * main slots. The offhand and the armour are never touched, and nothing is discarded.
+     */
+    private static List<ItemStack> insert(Inventory inventory, List<ItemStack> reward) {
+        List<ItemStack> remaining = new ArrayList<>(reward.size());
+        for (ItemStack stack : reward) {
+            ItemStack rest = stack.isEmpty() ? ItemStack.EMPTY : place(inventory, stack);
+            remaining.add(rest.isEmpty() ? ItemStack.EMPTY : rest);
+        }
+        return List.copyOf(remaining);
+    }
+
+    /** Places as much of {@code stack} as the main inventory takes, and returns a copy of what is left. */
+    private static ItemStack place(Inventory inventory, ItemStack stack) {
+        ItemStack work = stack.copy();
+        int mainSlots = inventory.getNonEquipmentItems().size();
+        for (int slot = 0; slot < mainSlots && !work.isEmpty(); slot++) {
+            ItemStack existing = inventory.getItem(slot);
+            if (!existing.isEmpty() && ItemStack.isSameItemSameComponents(existing, work)) {
+                int moved = Math.min(existing.getMaxStackSize() - existing.getCount(), work.getCount());
+                if (moved > 0) {
+                    existing.grow(moved);
+                    work.setCount(work.getCount() - moved);
+                }
             }
         }
-        return remaining;
+        for (int slot = 0; slot < mainSlots && !work.isEmpty(); slot++) {
+            if (inventory.getItem(slot).isEmpty()) {
+                int moved = Math.min(work.getMaxStackSize(), work.getCount());
+                if (moved > 0) {
+                    inventory.setItem(slot, work.copyWithCount(moved));
+                    work.setCount(work.getCount() - moved);
+                }
+            }
+        }
+        return work;
     }
 
-    private static ItemStack[] snapshot(Inventory inventory) {
-        NonNullList<ItemStack> items = inventory.getNonEquipmentItems();
-        ItemStack[] copies = new ItemStack[items.size()];
-        for (int slot = 0; slot < copies.length; slot++) {
-            copies[slot] = items.get(slot).copy();
+    /** Whether any stack's count went down between the two parallel lists. */
+    private static boolean moved(List<ItemStack> before, List<ItemStack> after) {
+        for (int i = 0; i < before.size(); i++) {
+            if (before.get(i).getCount() != after.get(i).getCount()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Copies of the first {@code slots} inventory slots. */
+    private static ItemStack[] snapshot(Inventory inventory, int slots) {
+        ItemStack[] copies = new ItemStack[slots];
+        for (int slot = 0; slot < slots; slot++) {
+            copies[slot] = inventory.getItem(slot).copy();
         }
         return copies;
     }
@@ -390,6 +514,11 @@ public final class SettlementService {
                 op.effect(), op.createdAt());
     }
 
+    private SettledOperation settledOf(ServerPlayer player, PendingOperation op, ApplyResult result) {
+        return new SettledOperation(player, operation(op, player.getUUID()), result, op.commissionCategory(),
+                op.commissionKind());
+    }
+
     private List<PendingOperation> read(ServerPlayer player) {
         String escrow = player.getAttached(SettlementModule.ESCROW);
         return escrow == null ? List.of() : EscrowJson.decode(escrow, registries());
@@ -409,8 +538,17 @@ public final class SettlementService {
         }
     }
 
-    private boolean isOnline(ServerPlayer player) {
-        return online.get().contains(player);
+    /**
+     * The entity the service serves for the player's id now, or null. Entities are compared by identity elsewhere, never
+     * with {@code Entity.equals}.
+     */
+    private ServerPlayer liveEntity(UUID character) {
+        for (ServerPlayer candidate : online.get()) {
+            if (candidate.getUUID().equals(character)) {
+                return candidate;
+            }
+        }
+        return null;
     }
 
     private HolderLookup.Provider registries() {

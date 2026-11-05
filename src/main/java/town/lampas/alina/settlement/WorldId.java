@@ -2,16 +2,27 @@ package town.lampas.alina.settlement;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.UUID;
 
 /**
- * The world id every settlement operation carries (ALINA-PLAN §7). It is a UUID in {@code alina/world_id.txt}
- * under the world folder: made on the first start and read on each start after. A file that does not hold a
- * UUID stops the start, because the operations in player data belong to the id in it.
+ * The world id every settlement operation carries (ALINA-PLAN section 7). It is a UUID in {@code alina/world_id.txt}
+ * under the world folder: made on the first start and read on each start after. A file that does not hold a UUID stops
+ * the start, because the operations in player data belong to the id in it.
+ *
+ * <p>What it catches: player data moved into another world, whose operations carry the other world's id, so they are
+ * listed for reconciliation and never applied; and a lost or recreated id file, which gives the world a new id, so the
+ * operations of the old id are listed rather than applied.
+ *
+ * <p>What it does not catch: a copied or restored world keeps its id file. A copy that shares the database with the
+ * original therefore has the same id as the original, and both would apply the same operations. Only the one-writer
+ * rule (ALINA-PLAN section 7, not enforced yet) prevents that.
  */
 final class WorldId {
     static final String DIRECTORY = "alina";
@@ -34,9 +45,17 @@ final class WorldId {
             }
             Files.createDirectories(directory);
             UUID id = UUID.randomUUID();
-            // Written beside the file and then moved over it, so a crash cannot leave a part-written id behind.
+            // Written beside the file, forced to disk, and then moved over it, so a crash cannot leave a part-written id
+            // behind and the id is on disk before the file takes its name.
             Path temporary = directory.resolve(FILE + ".tmp");
-            Files.writeString(temporary, id + "\n", StandardCharsets.UTF_8);
+            try (FileChannel channel = FileChannel.open(temporary, StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
+                ByteBuffer text = ByteBuffer.wrap((id + "\n").getBytes(StandardCharsets.UTF_8));
+                while (text.hasRemaining()) {
+                    channel.write(text);
+                }
+                channel.force(true);
+            }
             Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE);
             return id;
         } catch (IOException e) {
