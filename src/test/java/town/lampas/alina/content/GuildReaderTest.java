@@ -173,6 +173,27 @@ class GuildReaderTest {
     }
 
     @Test
+    void aCooldownOfMoreThan3650DaysIsRefused() {
+        assertEquals(List.of("extension alina:guild, commission alina:c: cooldown must be at most 3650 days (P3650D), "
+                + "or \"board_reset\""), problems(commission("\"cooldown\": \"P3651D\",", ITEM_PROOF)));
+    }
+
+    @Test
+    void aCooldownOf3650DaysIsAccepted() {
+        GuildContent content = guild("{ \"settings\": { \"board_graph\": \"alina:guild/board\" }, \"commissions\": "
+                + commission("\"cooldown\": \"P3650D\",", ITEM_PROOF) + " }").orThrow();
+        assertEquals(Optional.of(new Cooldown.Fixed(Duration.ofDays(3650))),
+                content.commissions().get(id("alina:c")).cooldown());
+    }
+
+    @Test
+    void theBoardReachIsReadAsWritten() {
+        GuildContent content = guild("{ \"settings\": { \"board_graph\": \"alina:guild/board\", \"board_reach\": 5 } }")
+                .orThrow();
+        assertEquals(5.0, content.settings().boardReach());
+    }
+
+    @Test
     void categoryMustBeAToF() {
         assertEquals(List.of("extension alina:guild, commission alina:c: category must be one of A, B, C, D, E or F"),
                 problems(commission("", ITEM_PROOF).replace("\"F\"", "\"G\"")));

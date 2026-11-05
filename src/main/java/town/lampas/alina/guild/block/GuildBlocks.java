@@ -14,7 +14,10 @@ import town.lampas.alina.Alina;
 
 /**
  * Registers the Notice Board block and its block item. Called from {@code GuildModule.init}. The fields register when this
- * class loads, which {@link #init} triggers. The block cannot be broken in survival.
+ * class loads, which {@link #init} triggers. The block cannot be broken in survival: its destroy time is -1, so a
+ * survival player's break progress is zero and pistons cannot move it. Explosions do not break it, because of its
+ * blast resistance. The wither and the ender dragon are kept from it by the {@code minecraft:wither_immune} and
+ * {@code minecraft:dragon_immune} tags, which the data files under {@code data/minecraft/tags/block/} add it to.
  */
 public final class GuildBlocks {
     private static final ResourceKey<Block> NOTICE_BOARD_KEY =

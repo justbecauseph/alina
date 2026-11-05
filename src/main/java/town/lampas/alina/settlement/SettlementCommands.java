@@ -30,7 +30,9 @@ public final class SettlementCommands {
             CommandDispatcher<CommandSourceStack> dispatcher,
             CommandBuildContext buildContext,
             Commands.CommandSelection selection) {
+        // The root is gated as well as the child: see GuildCommands.register.
         dispatcher.register(Commands.literal("alina")
+                .requires(GAMEMASTERS)
                 .then(Commands.literal("settlement")
                         .requires(GAMEMASTERS)
                         .then(Commands.literal("pending")

@@ -51,18 +51,21 @@ public final class GuildCommands {
             CommandDispatcher<CommandSourceStack> dispatcher,
             CommandBuildContext buildContext,
             Commands.CommandSelection selection) {
+        // The root is gated too. Brigadier merges the alina registrations of Alina's modules into one node that keeps
+        // the requirement of whichever registered first, and a player would otherwise be offered an empty /alina.
         dispatcher.register(Commands.literal("alina")
+                .requires(GAMEMASTERS)
                 .then(Commands.literal("guild")
                         .requires(GAMEMASTERS)
                         .then(Commands.literal("board").executes(GuildCommands::board))
                         .then(Commands.literal("show")
                                 .then(Commands.argument("player", EntityArgument.player())
                                         .executes(GuildCommands::show)))
-                        .then(operation("accept", "Accepted", (service, player, commission) ->
+                        .then(operation("accept", "Started accepting", (service, player, commission) ->
                                 service.accept(player, commission)))
-                        .then(operation("turn_in", "Turned in", (service, player, commission) ->
+                        .then(operation("turn_in", "Started turning in", (service, player, commission) ->
                                 service.turnIn(player, commission)))
-                        .then(operation("abandon", "Abandoned", (service, player, commission) ->
+                        .then(operation("abandon", "Started abandoning", (service, player, commission) ->
                                 service.abandon(player, commission)))
                         .then(Commands.literal("reset")
                                 .then(Commands.argument("player", EntityArgument.player())
@@ -159,8 +162,13 @@ public final class GuildCommands {
         Optional<Refusal> run(GuildService service, ServerPlayer player, Identifier commission);
     }
 
-    /** {@code /alina guild <name> <player> <commission>}: runs the operation and reports the refusal or the success. */
-    private static LiteralArgumentBuilder<CommandSourceStack> operation(String name, String done, Operation operation) {
+    /**
+     * {@code /alina guild <name> <player> <commission>}: runs the operation and reports the refusal, or that it started.
+     * The storage write is still in flight when the operation returns, and a failed write is reported only to the
+     * player, so the source is not told that the operation succeeded.
+     */
+    private static LiteralArgumentBuilder<CommandSourceStack> operation(
+            String name, String started, Operation operation) {
         return Commands.literal(name)
                 .then(Commands.argument("player", EntityArgument.player())
                         .then(commissionArgument().executes(context -> {
@@ -172,8 +180,8 @@ public final class GuildCommands {
                                 source.sendFailure(refusal.get().message());
                                 return 0;
                             }
-                            source.sendSuccess(() -> Component.literal(done + " " + commission + " for "
-                                    + player.getName().getString()), true);
+                            source.sendSuccess(() -> Component.literal(started + " " + commission + " for "
+                                    + player.getName().getString() + ". The player is told the result."), true);
                             return 1;
                         })));
     }

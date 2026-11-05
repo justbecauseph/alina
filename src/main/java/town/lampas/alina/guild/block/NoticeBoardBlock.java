@@ -20,8 +20,9 @@ import town.lampas.haruhi.api.HaruhiServices;
 import town.lampas.haruhi.dialogue.api.DialogueAnchor;
 
 /**
- * The Notice Board (ALINA-PLAN §8.4). Using it opens the content's board graph, anchored to the block: the conversation ends
- * when the player moves beyond {@code board_reach} blocks from it.
+ * The Notice Board (ALINA-PLAN §8.4). Using it opens the content's board graph, anchored to the block: the conversation
+ * ends when the player moves beyond {@code board_reach} blocks from it. A player farther than the reach is told to step
+ * closer. A graph missing from the active content is reported as an empty board.
  */
 public final class NoticeBoardBlock extends Block {
     public static final MapCodec<NoticeBoardBlock> CODEC = simpleCodec(NoticeBoardBlock::new);
@@ -53,6 +54,11 @@ public final class NoticeBoardBlock extends Block {
     private static void open(ServerPlayer player, Level level, BlockPos pos) {
         GuildSettings settings = AlinaContent.guild().settings();
         DialogueAnchor anchor = new DialogueAnchor(level.dimension(), Vec3.atCenterOf(pos), settings.boardReach());
+        if (!anchor.holds(player)) {
+            player.sendSystemMessage(GuildText.tooFar());
+            return;
+        }
+        // Past the reach check, openAt is false when the board graph is missing from the active content.
         if (!HaruhiServices.dialogue().openAt(player, settings.boardGraph(), anchor)) {
             player.sendSystemMessage(GuildText.boardMissing());
         }
