@@ -185,6 +185,22 @@ class AchievementsReaderTest {
                 + "achievement cannot be a parent"), problems);
     }
 
+    /**
+     * A hidden parent with its own problem is still a hidden parent: the child's problem is reported in the same pass,
+     * not on a second validation after the parent's problem is fixed.
+     */
+    @Test
+    void aHiddenParentThatFailsToParseIsStillReportedForItsChild() {
+        List<String> problems = problems(
+                "\"alina:a\": { \"tab\": \"alina:t\", \"title\": \"A\", \"description\": \"D\","
+                        + " \"icon\": { \"id\": \"minecraft:no_such_item\" }, \"hidden\": true, " + KILLS + " }",
+                achievement("alina:b", KILLS + ", \"parent\": \"alina:a\""));
+        assertEquals(2, problems.size(), problems.toString());
+        assertTrue(problems.get(0).startsWith("extension alina:achievements, achievement alina:a"), problems.toString());
+        assertEquals("extension alina:achievements, achievement alina:b: parent 'alina:a' is hidden, and a hidden "
+                + "achievement cannot be a parent", problems.get(1));
+    }
+
     @Test
     void aHiddenAchievementMayBeAChild() {
         assertEquals(List.of(), problems(

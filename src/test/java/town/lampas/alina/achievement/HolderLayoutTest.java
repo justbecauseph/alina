@@ -20,7 +20,7 @@ import town.lampas.alina.content.AchievementsContent;
 
 /**
  * The holder order and the positions of {@link HolderLayout}: a tab's root first, then its achievements with every
- * parent before its children, and vanilla's layout over every holder.
+ * parent before its children, and Alina's row rule over every holder, checked to exact values.
  */
 class HolderLayoutTest {
 
@@ -89,11 +89,53 @@ class HolderLayoutTest {
         }
     }
 
+    /** The same content as {@link #sample()}, with its tabs and achievements inserted in the opposite order. */
+    private static AchievementsContent sampleInReverseOrder() {
+        return content(
+                List.of(tab(OTHER), tab(HALL)),
+                List.of(
+                        Ach.of("far").in(OTHER).criterion("go", 1).build(),
+                        Ach.of("hermit").hidden().criterion("hide", 1).build(),
+                        Ach.of("bell").childOf("greeter").criterion("rings", 1).tier(2).tier(5).build(),
+                        Ach.of("visitor").childOf("greeter").criterion("visit", 37).build(),
+                        Ach.of("greeter").criterion("greet", 1).build()));
+    }
+
+    /**
+     * The positions of {@link #sample()} by the rule of {@link HolderLayout}: a tab's root at the origin; the hall's
+     * greeter has bell (tiers 1 and 2, the bell chain on row 0) and visitor (row 1) below it, as bell sorts before visitor;
+     * the hidden hermit is a leaf on row 2, so it is placed though it is withheld; the other tab starts at row 0 again.
+     */
     @Test
-    void theLayoutOfAContentIsTheSameEachTime() {
-        AchievementsContent content = sample();
-        assertEquals(HolderLayout.of(content).position(AdvancementSync.holderId(id("visitor"), 1)),
-                HolderLayout.of(content).position(AdvancementSync.holderId(id("visitor"), 1)));
+    void theRowsFollowTheRuleExactly() {
+        assertExactPositions(HolderLayout.of(sample()));
+    }
+
+    /** Vanilla's walk of identity-hashed siblings made this differ between builds; Alina's rule does not depend on insertion. */
+    @Test
+    void theSameContentInAnotherInsertionOrderHasTheSameHoldersAndPositions() {
+        HolderLayout first = HolderLayout.of(sample());
+        HolderLayout second = HolderLayout.of(sampleInReverseOrder());
+        assertEquals(ids(first), ids(second), "the holders in tree order");
+        assertExactPositions(second);
+        for (HolderLayout.Slot slot : first.slots()) {
+            assertEquals(first.position(slot.id()), second.position(slot.id()), slot.id().toString());
+        }
+    }
+
+    private static List<Identifier> ids(HolderLayout layout) {
+        return layout.slots().stream().map(HolderLayout.Slot::id).toList();
+    }
+
+    private static void assertExactPositions(HolderLayout layout) {
+        assertEquals(new HolderLayout.Position(0f, 0f), layout.position(AdvancementSync.tabHolderId(HALL)));
+        assertEquals(new HolderLayout.Position(1f, 0f), layout.position(AdvancementSync.holderId(id("greeter"), 1)));
+        assertEquals(new HolderLayout.Position(2f, 0f), layout.position(AdvancementSync.holderId(id("bell"), 1)));
+        assertEquals(new HolderLayout.Position(3f, 0f), layout.position(AdvancementSync.holderId(id("bell"), 2)));
+        assertEquals(new HolderLayout.Position(2f, 1f), layout.position(AdvancementSync.holderId(id("visitor"), 1)));
+        assertEquals(new HolderLayout.Position(1f, 2f), layout.position(AdvancementSync.holderId(id("hermit"), 1)));
+        assertEquals(new HolderLayout.Position(0f, 0f), layout.position(AdvancementSync.tabHolderId(OTHER)));
+        assertEquals(new HolderLayout.Position(1f, 0f), layout.position(AdvancementSync.holderId(id("far"), 1)));
     }
 
     private static Identifier id(String path) {

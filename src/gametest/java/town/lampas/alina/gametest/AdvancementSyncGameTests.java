@@ -36,7 +36,7 @@ import town.lampas.haruhi.api.HaruhiServices;
  * Server GameTests for the advancement sync (ALINA-PLAN §9.4, spike S1). Most tests build a {@link SyncRig}: their own
  * {@link AdvancementSync} over a view they set, and mock players outside the server's list. The sync runs synchronously,
  * so those tests check the packets in the tick they run, and the hold tests tick the rig. The last test joins a player
- * through the server's own mixin and module, and waits for the server's sync to send the first reset packet.
+ * through the server's own mixin and module, and checks the server's sync sends the first reset packet.
  */
 public final class AdvancementSyncGameTests {
     private static final String BUNDLE = "bundle.json";
@@ -48,6 +48,7 @@ public final class AdvancementSyncGameTests {
     private static final Identifier HERMIT = Alina.id("sync_test/hermit");
     private static final Identifier PAIR = Alina.id("sync_test/pair");
     private static final Identifier NEWCOMER = Alina.id("sync_test/newcomer");
+    private static final Identifier RECLUSE = Alina.id("sync_test/recluse");
     private static final Identifier VANILLA = Identifier.fromNamespaceAndPath("minecraft", "story/root");
 
     private static final Identifier TAB_HOLDER = AdvancementSync.tabHolderId(TAB);
@@ -58,6 +59,12 @@ public final class AdvancementSyncGameTests {
     private static final Identifier HERMIT_HOLDER = AdvancementSync.holderId(HERMIT, 1);
     private static final Identifier PAIR_HOLDER = AdvancementSync.holderId(PAIR, 1);
     private static final Identifier NEWCOMER_HOLDER = AdvancementSync.holderId(NEWCOMER, 1);
+    private static final Identifier RECLUSE_1_HOLDER = AdvancementSync.holderId(RECLUSE, 1);
+    private static final Identifier RECLUSE_2_HOLDER = AdvancementSync.holderId(RECLUSE, 2);
+
+    /** The holders of {@code bundle.json} that are visible with no achievement earned: the tab and six Alina holders. */
+    private static final Set<Identifier> VISIBLE_WITH_GREETER_AND_VISITOR = Set.of(TAB_HOLDER, GREETER_HOLDER,
+            VISITOR_HOLDER, BELL_HOLDER, BELL_TIER_2_HOLDER, PAIR_HOLDER);
 
     @GameTest
     public void aResetPacketAddsTheTabAndParentsBeforeChildrenAfterVanillasHolders(GameTestHelper helper) {
@@ -121,6 +128,7 @@ public final class AdvancementSyncGameTests {
         helper.assertValueEqual(sent.size(), 1, "packets for the first earn");
         ClientboundUpdateAdvancementsPacket update = sent.get(0);
         helper.assertFalse(update.shouldReset(), "the first earn's packet has the reset flag");
+        helper.assertTrue(update.shouldShowAdvancements(), "the first earn's packet has no toast flag");
         helper.assertTrue(idsOf(update.getAdded()).contains(HERMIT_HOLDER), "the hidden holder was not added");
         helper.assertTrue(update.getProgress().containsKey(HERMIT_HOLDER)
                 && update.getProgress().get(HERMIT_HOLDER).isDone(), "the earned holder's progress is not done");
@@ -128,7 +136,7 @@ public final class AdvancementSyncGameTests {
     }
 
     @GameTest
-    public void anEarnSendsOneUnresetPacketCarryingOnlyTheEarnedHoldersDoneProgress(GameTestHelper helper) {
+    public void anEarnSendsOneUnresetPacketWithToastsCarryingOnlyTheEarnedHoldersDoneProgress(GameTestHelper helper) {
         SyncRig rig = SyncRig.create(helper, BUNDLE);
         ServerPlayer player = rig.newPlayer();
         rig.setView(player, Map.of());
@@ -140,10 +148,34 @@ public final class AdvancementSyncGameTests {
         helper.assertValueEqual(sent.size(), 1, "packets for one earn");
         ClientboundUpdateAdvancementsPacket update = sent.get(0);
         helper.assertFalse(update.shouldReset(), "the earn's packet has the reset flag");
+        helper.assertTrue(update.shouldShowAdvancements(), "the earn's packet has no toast flag");
         helper.assertTrue(update.getAdded().isEmpty(), "an earn of a shown achievement added holders");
         helper.assertTrue(update.getRemoved().isEmpty(), "an earn removed holders");
         helper.assertValueEqual(update.getProgress().keySet(), Set.of(GREETER_HOLDER), "the progress entries");
         helper.assertTrue(update.getProgress().get(GREETER_HOLDER).isDone(), "the earned holder's progress is not done");
+        helper.succeed();
+    }
+
+    /**
+     * A hidden tiered achievement's first earn adds all its tiers, as the client has none of them, and sends progress for
+     * the earned tier only.
+     */
+    @GameTest
+    public void aHiddenTieredAchievementsFirstEarnAddsAllItsTiersAndSendsProgressForTheEarnedTierOnly(GameTestHelper helper) {
+        SyncRig rig = SyncRig.create(helper, BUNDLE);
+        ServerPlayer player = rig.newPlayer();
+        rig.setView(player, Map.of());
+        rig.sync().appendToReset(player, new ArrayList<>(), new HashMap<>());
+
+        rig.setView(player, Map.of(RECLUSE, standing(RECLUSE, 1, 1, Map.of("seek", 1))));
+        rig.sync().earned(player, RECLUSE, 1);
+        List<ClientboundUpdateAdvancementsPacket> sent = rig.sentSince(player);
+        helper.assertValueEqual(sent.size(), 1, "packets for the first earn");
+        ClientboundUpdateAdvancementsPacket update = sent.get(0);
+        helper.assertValueEqual(Set.copyOf(idsOf(update.getAdded())), Set.of(RECLUSE_1_HOLDER, RECLUSE_2_HOLDER),
+                "the holders added: every tier of the achievement");
+        helper.assertValueEqual(update.getProgress().keySet(), Set.of(RECLUSE_1_HOLDER), "the progress entries");
+        helper.assertTrue(update.getProgress().get(RECLUSE_1_HOLDER).isDone(), "the earned tier's progress is not done");
         helper.succeed();
     }
 
@@ -171,6 +203,17 @@ public final class AdvancementSyncGameTests {
         List<ClientboundUpdateAdvancementsPacket> second = rig.sentSince(player);
         helper.assertValueEqual(second.size(), 1, "packets for the count 100 ticks after the last one");
         assertCountPacket(helper, second.get(0), VISITOR_HOLDER, 6);
+
+        // Bell's first tier is earned in the view, but no earn was reported, so the client still has it not done. The
+        // count packet carries bell's second tier and must not send the done first tier.
+        rig.setView(player, Map.of(BELL, standing(BELL, 1, 1, Map.of("ring", 3))));
+        rig.sync().progressed(player, BELL);
+        for (int tick = 0; tick < 100; tick++) {
+            rig.tick();
+        }
+        List<ClientboundUpdateAdvancementsPacket> third = rig.sentSince(player);
+        helper.assertValueEqual(third.size(), 1, "packets for the bell count");
+        assertCountPacket(helper, third.get(0), BELL_TIER_2_HOLDER, 3);
         helper.succeed();
     }
 
@@ -218,8 +261,12 @@ public final class AdvancementSyncGameTests {
         helper.succeed();
     }
 
+    /**
+     * A record that loads after the hold ended gets a full packet: no reset flag, no toasts, every visible holder with its
+     * progress. Its earned achievement shows done, and a later activation repeats no toast.
+     */
     @GameTest
-    public void aLateLoadSendsNoDoneProgressForAchievements(GameTestHelper helper) {
+    public void aLateLoadSendsAFullPacketWithProgressAndNoToasts(GameTestHelper helper) {
         SyncRig rig = SyncRig.create(helper, BUNDLE);
         ServerPlayer player = rig.newPlayer();
         helper.assertTrue(rig.sync().holdFirstPacket(player), "the hold did not begin at the first check");
@@ -238,29 +285,43 @@ public final class AdvancementSyncGameTests {
         helper.assertValueEqual(sent.size(), 1, "packets for the late load");
         ClientboundUpdateAdvancementsPacket late = sent.get(0);
         helper.assertFalse(late.shouldReset(), "the late load's packet has the reset flag");
-        helper.assertTrue(idsOf(late.getAdded()).containsAll(List.of(TAB_HOLDER, GREETER_HOLDER, VISITOR_HOLDER)),
-                "the late load did not add the tab and the achievements: " + idsOf(late.getAdded()));
-        for (Map.Entry<Identifier, AdvancementProgress> entry : late.getProgress().entrySet()) {
-            helper.assertTrue(!entry.getValue().isDone() || entry.getKey().equals(TAB_HOLDER),
-                    "done progress was sent for " + entry.getKey());
-        }
-        helper.assertTrue(late.getProgress().containsKey(VISITOR_HOLDER)
-                && !late.getProgress().get(VISITOR_HOLDER).isDone(), "the visitor's count was not sent");
+        helper.assertFalse(late.shouldShowAdvancements(), "the late load's packet shows toasts");
+        helper.assertValueEqual(Set.copyOf(idsOf(late.getAdded())), VISIBLE_WITH_GREETER_AND_VISITOR,
+                "the late load's holders: every visible holder");
+        helper.assertValueEqual(late.getProgress().keySet(), VISIBLE_WITH_GREETER_AND_VISITOR,
+                "the late load's progress: every visible holder");
+        helper.assertTrue(late.getRemoved().isEmpty(), "the late load removed holders: " + late.getRemoved());
+        helper.assertTrue(late.getProgress().get(GREETER_HOLDER).isDone(), "the earned greeter was not sent done");
+        helper.assertTrue(late.getProgress().get(TAB_HOLDER).isDone(), "the tab was not sent done");
+        helper.assertFalse(late.getProgress().get(VISITOR_HOLDER).isDone(), "the visitor's count was sent as done");
+
         rig.sync().loaded(player);
         helper.assertTrue(rig.sentSince(player).isEmpty(), "a late load was sent twice");
+
+        rig.sync().contentActivated();
+        List<ClientboundUpdateAdvancementsPacket> activation = rig.sentSince(player);
+        helper.assertValueEqual(activation.size(), 1, "packets for the activation after the late load");
+        ClientboundUpdateAdvancementsPacket update = activation.get(0);
+        helper.assertFalse(update.shouldShowAdvancements(), "the activation after a late load shows toasts");
+        helper.assertValueEqual(update.getRemoved(), Set.of(TAB_HOLDER), "the activation removed the tab roots it sent");
+        helper.assertTrue(update.getProgress().get(GREETER_HOLDER).isDone(), "the earned greeter was not sent done");
         helper.succeed();
     }
 
+    /**
+     * An activation is a full packet with no toasts: it removes the tab roots, adds every visible holder of the new content,
+     * and carries every visible holder's progress, so an achievement that stays earned is sent done without a toast.
+     */
     @GameTest
-    public void aContentActivationRemovesTheOldIdsAddsTheVisibleHoldersAndSendsChangedDoneStates(GameTestHelper helper) {
+    public void aContentActivationSendsAFullPacketWithProgressAndNoToasts(GameTestHelper helper) {
         SyncRig rig = SyncRig.create(helper, BUNDLE);
         ServerPlayer player = rig.newPlayer();
         rig.setView(player, Map.of(GREETER, standing(GREETER, 1, 1, Map.of("greet", 1))));
         List<AdvancementHolder> reset = new ArrayList<>();
         rig.sync().appendToReset(player, reset, new HashMap<>());
-        Set<Identifier> before = Set.copyOf(idsOf(reset));
+        helper.assertTrue(idsOf(reset).contains(BELL_HOLDER), "the reset has no bell before the activation");
 
-        // The visitor is earned in the view, while the client has it not done. Greeter is done in both.
+        // Visitor becomes earned in the view. The new content drops bell and adds newcomer.
         rig.setView(player, Map.of(GREETER, standing(GREETER, 1, 1, Map.of("greet", 1)),
                 VISITOR, standing(VISITOR, 1, 1, Map.of("visit", 37))));
         rig.useContent(BUNDLE_NEXT);
@@ -270,44 +331,148 @@ public final class AdvancementSyncGameTests {
         helper.assertValueEqual(sent.size(), 1, "packets for the activation");
         ClientboundUpdateAdvancementsPacket update = sent.get(0);
         helper.assertFalse(update.shouldReset(), "the activation's packet has the reset flag");
-        helper.assertValueEqual(Set.copyOf(update.getRemoved()), before, "the ids removed");
-        helper.assertValueEqual(Set.copyOf(idsOf(update.getAdded())),
-                Set.of(TAB_HOLDER, GREETER_HOLDER, VISITOR_HOLDER, PAIR_HOLDER, NEWCOMER_HOLDER),
-                "the holders added: every visible holder of the new content");
-        helper.assertValueEqual(update.getProgress().keySet(), Set.of(VISITOR_HOLDER, NEWCOMER_HOLDER),
-                "the progress sent: the changed done state and the new holder");
+        helper.assertFalse(update.shouldShowAdvancements(), "the activation's packet shows toasts");
+        helper.assertValueEqual(update.getRemoved(), Set.of(TAB_HOLDER), "the ids removed: the tab roots it sent");
+        Set<Identifier> visible = Set.of(TAB_HOLDER, GREETER_HOLDER, VISITOR_HOLDER, PAIR_HOLDER, NEWCOMER_HOLDER);
+        helper.assertValueEqual(Set.copyOf(idsOf(update.getAdded())), visible, "the holders added: every visible holder");
+        helper.assertValueEqual(update.getProgress().keySet(), visible, "the progress sent: every visible holder");
         helper.assertTrue(update.getProgress().get(VISITOR_HOLDER).isDone(), "the visitor's progress is not done");
+        helper.assertTrue(update.getProgress().get(GREETER_HOLDER).isDone(), "the greeter's progress is not done");
         helper.assertFalse(update.getProgress().get(NEWCOMER_HOLDER).isDone(), "the newcomer is shown as done");
         helper.succeed();
     }
 
     /**
-     * Joins a mock player through the server's own player list, so the server's mixin and {@link AchievementModule} serve
-     * it. The first update packet that resets the client must carry the tab and the achievements of the active content.
-     * The test runs in its own environment, {@code alina:sync_join}, which the test server runs as a batch of its own, so
-     * no other test replaces the content between the join and the reset.
+     * The service tells the listeners of an activation before it earns what the new content finds met, so an earn right
+     * after the activation must see the holder the activation sent: it is not added again, and its done progress, with the
+     * toast, is the only thing sent.
+     */
+    @GameTest
+    public void anEarnRightAfterAnActivationSendsOnlyTheEarnedHoldersDoneProgressWithAToast(GameTestHelper helper) {
+        SyncRig rig = SyncRig.create(helper, BUNDLE);
+        ServerPlayer player = rig.newPlayer();
+        rig.setView(player, Map.of(GREETER, standing(GREETER, 1, 1, Map.of("greet", 1))));
+        rig.sync().appendToReset(player, new ArrayList<>(), new HashMap<>());
+
+        // Newcomer's count meets its requirement in the new content, and nothing earned it yet.
+        rig.setView(player, Map.of(GREETER, standing(GREETER, 1, 1, Map.of("greet", 1)),
+                NEWCOMER, standing(NEWCOMER, 0, 0, Map.of("arrive", 1))));
+        rig.useContent(BUNDLE_NEXT);
+        rig.sync().contentActivated();
+        helper.assertValueEqual(rig.sentSince(player).size(), 1, "packets for the activation");
+
+        rig.setView(player, Map.of(GREETER, standing(GREETER, 1, 1, Map.of("greet", 1)),
+                NEWCOMER, standing(NEWCOMER, 1, 1, Map.of("arrive", 1))));
+        rig.sync().earned(player, NEWCOMER, 1);
+        List<ClientboundUpdateAdvancementsPacket> sent = rig.sentSince(player);
+        helper.assertValueEqual(sent.size(), 1, "packets for the earn");
+        ClientboundUpdateAdvancementsPacket update = sent.get(0);
+        helper.assertFalse(update.shouldReset(), "the earn's packet has the reset flag");
+        helper.assertTrue(update.shouldShowAdvancements(), "the earn's packet has no toast flag");
+        helper.assertTrue(update.getAdded().isEmpty(), "an earn re-added a holder the activation had sent: "
+                + idsOf(update.getAdded()));
+        helper.assertTrue(update.getRemoved().isEmpty(), "an earn removed holders");
+        helper.assertValueEqual(update.getProgress().keySet(), Set.of(NEWCOMER_HOLDER), "the progress entries");
+        helper.assertTrue(update.getProgress().get(NEWCOMER_HOLDER).isDone(), "the newcomer's progress is not done");
+        helper.succeed();
+    }
+
+    /** A cycle start sends the achievement's holders' progress, not done, and no toast. */
+    @GameTest
+    public void aCycleStartSendsTheHoldersProgressNotDoneWithoutAToast(GameTestHelper helper) {
+        SyncRig rig = SyncRig.create(helper, BUNDLE);
+        ServerPlayer player = rig.newPlayer();
+        rig.setView(player, Map.of(GREETER, standing(GREETER, 1, 1, Map.of("greet", 1))));
+        rig.sync().appendToReset(player, new ArrayList<>(), new HashMap<>());
+
+        // The cycle has started: nothing of greeter is earned in it, and its earn count is kept.
+        rig.setView(player, Map.of(GREETER, standing(GREETER, 0, 1, Map.of())));
+        rig.sync().cycleStarted(player, GREETER);
+        List<ClientboundUpdateAdvancementsPacket> sent = rig.sentSince(player);
+        helper.assertValueEqual(sent.size(), 1, "packets for the cycle start");
+        ClientboundUpdateAdvancementsPacket update = sent.get(0);
+        helper.assertFalse(update.shouldReset(), "the cycle start's packet has the reset flag");
+        helper.assertFalse(update.shouldShowAdvancements(), "the cycle start's packet shows toasts");
+        helper.assertTrue(update.getAdded().isEmpty() && update.getRemoved().isEmpty(), "holders changed on a cycle start");
+        helper.assertValueEqual(update.getProgress().keySet(), Set.of(GREETER_HOLDER), "the progress entries");
+        helper.assertFalse(update.getProgress().get(GREETER_HOLDER).isDone(), "the cycle start sent the greeter done");
+        helper.succeed();
+    }
+
+    /**
+     * A revoke that withholds a hidden tiered achievement removes only its first tier: the client drops the descendants of
+     * a removed holder with it, so listing the later tiers as well would log a warning for each one.
+     */
+    @GameTest
+    public void aRevokedHiddenTieredAchievementListsOnlyItsFirstTierForRemoval(GameTestHelper helper) {
+        SyncRig rig = SyncRig.create(helper, BUNDLE);
+        ServerPlayer player = rig.newPlayer();
+        rig.setView(player, Map.of());
+        rig.sync().appendToReset(player, new ArrayList<>(), new HashMap<>());
+        rig.setView(player, Map.of(RECLUSE, standing(RECLUSE, 1, 1, Map.of("seek", 1))));
+        rig.sync().earned(player, RECLUSE, 1);
+        rig.sentSince(player);
+
+        // Staff revoke the achievement: with no earn left it is withheld again.
+        rig.setView(player, Map.of());
+        rig.sync().revoked(player, RECLUSE);
+        List<ClientboundUpdateAdvancementsPacket> sent = rig.sentSince(player);
+        helper.assertValueEqual(sent.size(), 1, "packets for the revoke");
+        ClientboundUpdateAdvancementsPacket update = sent.get(0);
+        helper.assertValueEqual(update.getRemoved(), Set.of(RECLUSE_1_HOLDER), "the ids removed");
+        helper.assertTrue(update.getAdded().isEmpty() && update.getProgress().isEmpty(), "the revoke sent more than removals");
+
+        // The achievement is earned again: both tiers are added, so the revoke left nothing sent behind.
+        rig.setView(player, Map.of(RECLUSE, standing(RECLUSE, 1, 1, Map.of("seek", 1))));
+        rig.sync().earned(player, RECLUSE, 1);
+        List<ClientboundUpdateAdvancementsPacket> again = rig.sentSince(player);
+        helper.assertValueEqual(again.size(), 1, "packets for the second first earn");
+        helper.assertValueEqual(Set.copyOf(idsOf(again.get(0).getAdded())), Set.of(RECLUSE_1_HOLDER, RECLUSE_2_HOLDER),
+                "the holders added after the revoke");
+        helper.succeed();
+    }
+
+    /**
+     * The first packet after a join goes through the server's own mixin and module. The hold is engaged on purpose: the
+     * first flush is run right after the join, before the record can have loaded, so vanilla's packet must be held. The
+     * reset then comes after the record loads, and must carry vanilla's holders and Alina's holders with their progress.
      */
     @GameTest(maxTicks = 400, environment = "alina:sync_join")
-    public void aJoiningPlayersFirstResetCarriesTheTabAndTheHoldersThroughTheServersOwnSync(GameTestHelper helper) {
-        AtomicReference<EmbeddedChannel> channel = new AtomicReference<>();
+    public void aJoiningPlayersFirstResetCarriesVanillasHoldersAndTheAlinaHoldersWithTheirProgress(GameTestHelper helper) {
+        AtomicReference<Joined> joined = new AtomicReference<>();
         List<ClientboundUpdateAdvancementsPacket> updates = new ArrayList<>();
         helper.startSequence()
                 .thenWaitUntil(() -> requireStartupComplete(helper))
                 .thenExecute(() -> helper.assertTrue(AchievementModule.sync() != null,
                         "the server's achievement sync is not running; the achievement module has no sync yet"))
                 .thenWaitUntil(() -> ensureFixtureActive(helper))
-                .thenExecute(() -> channel.set(joinThroughTheServer(helper)))
+                .thenExecute(() -> {
+                    Joined join = joinThroughTheServer(helper);
+                    joined.set(join);
+                    // The JOIN handler's load may complete before the player is in the server's list, and a refused load
+                    // is retried only 100 ticks later, the length of the hold. Starting the load again now that the player
+                    // is in the list makes the record load within a few ticks, so the hold is not left to that race.
+                    AchievementModule.service().join(join.player());
+                    helper.assertTrue(AchievementModule.service().view(join.player()).isEmpty(),
+                            "the record loaded before the first flush, so the hold is not exercised");
+                    join.player().getAdvancements().flushDirty(join.player(), true);
+                    drain(join.channel(), updates);
+                    helper.assertTrue(updates.isEmpty(), "a packet was sent while the first packet was held: " + updates.size());
+                })
                 .thenWaitUntil(() -> {
-                    drain(channel.get(), updates);
+                    drain(joined.get().channel(), updates);
                     ClientboundUpdateAdvancementsPacket reset = updates.stream()
                             .filter(ClientboundUpdateAdvancementsPacket::shouldReset)
                             .findFirst()
                             .orElse(null);
                     helper.assertTrue(reset != null, "the joining player has not been sent a reset packet yet");
                     List<Identifier> ids = idsOf(reset.getAdded());
-                    helper.assertTrue(ids.contains(TAB_HOLDER), "the first reset has no Alina tab: " + ids);
-                    helper.assertTrue(ids.contains(GREETER_HOLDER) && ids.contains(VISITOR_HOLDER),
-                            "the first reset has no Alina achievements: " + ids);
+                    helper.assertTrue(ids.stream().anyMatch(id -> !id.getNamespace().equals(Alina.MOD_ID)),
+                            "the first reset lost vanilla's holders: " + ids);
+                    helper.assertTrue(ids.containsAll(List.of(TAB_HOLDER, GREETER_HOLDER, VISITOR_HOLDER)),
+                            "the first reset has no Alina tab and achievements: " + ids);
+                    helper.assertTrue(reset.getProgress().keySet().containsAll(List.of(TAB_HOLDER, GREETER_HOLDER, VISITOR_HOLDER)),
+                            "the first reset has no progress for Alina's holders: " + reset.getProgress().keySet());
                 })
                 .thenSucceed();
     }
@@ -324,18 +489,21 @@ public final class AdvancementSyncGameTests {
         helper.assertTrue(AlinaContent.achievements().tabs().containsKey(TAB), "the fixture is not the active content");
     }
 
+    /** A player joined through the server's player list, with the channel its outbound packets are read from. */
+    private record Joined(ServerPlayer player, EmbeddedChannel channel) {}
+
     /**
      * Joins a mock player the way the server joins a player: the player is placed in the server's list with a connection
      * whose outbound packets the test reads. The server's services then serve the player.
      */
-    private static EmbeddedChannel joinThroughTheServer(GameTestHelper helper) {
+    private static Joined joinThroughTheServer(GameTestHelper helper) {
         MinecraftServer server = helper.getLevel().getServer();
         ServerPlayer player = (ServerPlayer) helper.makeMockServerPlayer(GameType.SURVIVAL);
         Connection connection = new Connection(PacketFlow.SERVERBOUND);
         EmbeddedChannel channel = new EmbeddedChannel(connection);
         server.getPlayerList().placeNewPlayer(connection, player,
                 CommonListenerCookie.createInitial(player.getGameProfile(), false));
-        return channel;
+        return new Joined(player, channel);
     }
 
     private static void drain(EmbeddedChannel channel, List<ClientboundUpdateAdvancementsPacket> into) {
@@ -369,10 +537,11 @@ public final class AdvancementSyncGameTests {
 
     /**
      * Checks a packet that carries only the count of {@code holder}: its one progress entry is not done and has
-     * {@code done} segments done, and no entry in it is done.
+     * {@code done} segments done, no entry in it is done, and it shows no toast.
      */
     private static void assertCountPacket(GameTestHelper helper, ClientboundUpdateAdvancementsPacket update,
             Identifier holder, int done) {
+        helper.assertFalse(update.shouldShowAdvancements(), "a count packet shows toasts");
         helper.assertValueEqual(update.getProgress().keySet(), Set.of(holder), "the progress entries");
         AdvancementProgress progress = update.getProgress().get(holder);
         helper.assertFalse(progress.isDone(), "a count was sent as done");
