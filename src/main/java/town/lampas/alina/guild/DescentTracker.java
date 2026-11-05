@@ -61,14 +61,8 @@ final class DescentTracker {
      */
     List<Identifier> check(ServerPlayer player, PlayerRecord record, GuildContent content) {
         ResourceKey<Level> dimension = player.level().dimension();
-        Vec3 position = player.position();
         List<Volume> volumes = sortedVolumes(content);
-        Set<Identifier> inside = new HashSet<>();
-        for (Volume volume : volumes) {
-            if (volume.contains(dimension, position)) {
-                inside.add(volume.id());
-            }
-        }
+        Set<Identifier> inside = volumesHolding(player, content);
         List<Identifier> entered = new ArrayList<>();
         for (Volume volume : volumes) {
             if (inside.contains(volume.id()) && !record.volumesIn.contains(volume.id())) {
@@ -111,6 +105,19 @@ final class DescentTracker {
         }
         sync(record);
         return met;
+    }
+
+    /** The content volumes that hold the player now. Entering a volume is a change in this set, not a presence in it. */
+    Set<Identifier> volumesHolding(ServerPlayer player, GuildContent content) {
+        ResourceKey<Level> dimension = player.level().dimension();
+        Vec3 position = player.position();
+        Set<Identifier> inside = new HashSet<>();
+        for (Volume volume : sortedVolumes(content)) {
+            if (volume.contains(dimension, position)) {
+                inside.add(volume.id());
+            }
+        }
+        return inside;
     }
 
     /** Opens the used_totem watch while a dive is armed, and closes it when none is. */

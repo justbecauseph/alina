@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:guild_test/board": { "start": "hello", "nodes": { "hello": { "text": "The board." } } }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "board_size": 2,
+        "active_cap": 2,
+        "reset": { "time": "04:00", "zone": "Asia/Manila" },
+        "default_cooldown": "PT20H",
+        "salt": "test",
+        "board_graph": "alina:guild_test/board",
+        "board_reach": 6
+      },
+      "commissions": {
+        "alina:guild_test/feat_items": {
+          "category": "A", "kind": "feat", "name": "Paper Feat", "hint": "Bring paper.",
+          "proof": { "type": "item", "any_of": [ { "item": { "items": "minecraft:paper" } } ] },
+          "reward": { "reputation": 3 }
+        },
+        "alina:guild_test/greeter": {
+          "category": "F", "kind": "feat", "name": "Greeter", "hint": "Meet the Receptionist twice.",
+          "proof": { "type": "criterion", "trigger": "alina:manual", "conditions": { "key": "met" }, "count": 2 }
+        }
+      }
+    }
+  }
+}
