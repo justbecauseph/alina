@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:dialogue_test/board": {
+      "start": "board",
+      "nodes": {
+        "board": {
+          "text": "Today's board.",
+          "choices": [
+            { "provider": { "type": "alina:guild/board", "next": "board" } },
+            { "text": "Turn in a commission.", "next": "turn_in" },
+            { "text": "Drop a commission.", "next": "abandon" },
+            { "text": "Review your standing.", "next": "status" },
+            { "text": "Leave.", "next": "bye" }
+          ]
+        },
+        "turn_in": {
+          "text": "Which commission is done?",
+          "choices": [
+            { "provider": { "type": "alina:guild/turn_in", "next": "turn_in" } },
+            { "text": "Back.", "next": "board" }
+          ]
+        },
+        "abandon": {
+          "text": "Which commission do you drop?",
+          "choices": [
+            { "provider": { "type": "alina:guild/abandon", "next": "board" } },
+            { "text": "Back.", "next": "board" }
+          ]
+        },
+        "status": {
+          "text": "Your standing.",
+          "choices": [
+            { "provider": { "type": "alina:guild/status" } },
+            { "text": "Back.", "next": "board" }
+          ]
+        },
+        "bye": { "text": "Safe travels." }
+      }
+    }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "active_cap": 2,
+        "salt": "dialogue_test",
+        "board_graph": "alina:dialogue_test/board",
+        "board_reach": 6
+      },
+      "commissions": {
+        "alina:dialogue_test/courier": {
+          "category": "C", "kind": "feat", "name": "The Courier", "hint": "Bring a piece of paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] },
+          "reward": { "loot_table": "alina:rewards/placeholder", "reputation": 2 }
+        },
+        "alina:dialogue_test/lantern": {
+          "category": "A", "kind": "feat", "name": "The Lantern", "hint": "Bring a lantern.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:lantern" } } ] },
+          "reward": { "reputation": 1 }
+        },
+        "alina:dialogue_test/ledger": {
+          "category": "F", "kind": "feat", "name": "The Ledger", "hint": "Bring a book.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:book" } } ] },
+          "reward": { "reputation": 3 }
+        }
+      }
+    }
+  }
+}

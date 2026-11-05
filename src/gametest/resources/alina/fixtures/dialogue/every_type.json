@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:dialogue_test/every_type": {
+      "start": "board",
+      "nodes": {
+        "board": {
+          "text": "Today's board.",
+          "on_enter": [ { "type": "alina:achievement/trigger", "key": "visited_board" } ],
+          "choices": [
+            { "provider": { "type": "alina:guild/board", "next": "board" } },
+            { "provider": { "type": "alina:guild/turn_in", "next": "board" } },
+            { "provider": { "type": "alina:guild/abandon", "next": "board" } },
+            { "provider": { "type": "alina:guild/status" } },
+            { "text": "Take the courier.", "next": "board",
+              "only_if": [
+                { "type": "alina:guild/can_accept" },
+                { "type": "alina:guild/has_active" },
+                { "type": "alina:guild/reputation", "op": "gte", "value": 0 },
+                { "type": "alina:guild/commission", "commission": "alina:dialogue_test/courier", "state": "available" }
+              ],
+              "when_unavailable": "grayed_out",
+              "unavailable_message": "You cannot take the courier now.",
+              "actions": [ { "type": "alina:guild/accept", "commission": "alina:dialogue_test/courier" } ] },
+            { "text": "Hand in the lantern.", "next": "board",
+              "actions": [ { "type": "alina:guild/turn_in", "commission": "alina:dialogue_test/lantern" } ] },
+            { "text": "Drop the ledger.", "next": "board",
+              "actions": [ { "type": "alina:guild/abandon", "commission": "alina:dialogue_test/ledger" } ] },
+            { "text": "Leave.", "next": "bye" }
+          ]
+        },
+        "bye": { "text": "Safe travels.", "on_enter": [ { "type": "alina:achievement/trigger", "key": "left_board" } ] }
+      }
+    }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": { "board_graph": "alina:dialogue_test/every_type" },
+      "commissions": {
+        "alina:dialogue_test/courier": {
+          "category": "C", "kind": "feat", "name": "The Courier", "hint": "Bring a piece of paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] }
+        },
+        "alina:dialogue_test/lantern": {
+          "category": "A", "kind": "feat", "name": "The Lantern", "hint": "Bring a lantern.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:lantern" } } ] }
+        },
+        "alina:dialogue_test/ledger": {
+          "category": "F", "kind": "feat", "name": "The Ledger", "hint": "Bring a book.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:book" } } ] }
+        }
+      }
+    }
+  }
+}
