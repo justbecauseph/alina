@@ -45,7 +45,7 @@
         "active_cap": 2,
         "salt": "dialogue_test",
         "board_graph": "alina:dialogue_test/board",
-        "board_reach": 6
+        "board_reach": 5
       },
       "commissions": {
         "alina:dialogue_test/courier": {

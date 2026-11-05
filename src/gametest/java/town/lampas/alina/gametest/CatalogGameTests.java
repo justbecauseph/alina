@@ -489,8 +489,13 @@ public final class CatalogGameTests {
     public void d2InfiltrationBrewIsNotMetByABottleWithoutAnAmplifier(GameTestHelper helper) {
         whenStarted(helper, () -> {
             Proof.Items proof = items(fixtureProof("d2_infiltration_brew.json", "alina:catalog/d2_infiltration_brew"));
+            // The bottle has an amplifier of 0 by default, so the component is removed to make the bottle with none.
+            ItemStack bottle = new ItemStack(Items.OMINOUS_BOTTLE);
+            bottle.remove(DataComponents.OMINOUS_BOTTLE_AMPLIFIER);
+            helper.assertTrue(bottle.get(DataComponents.OMINOUS_BOTTLE_AMPLIFIER) == null,
+                    "the bottle still has an amplifier");
             Inventory inventory = mockPlayer(helper).getInventory();
-            inventory.setItem(0, new ItemStack(Items.OMINOUS_BOTTLE));
+            inventory.setItem(0, bottle);
             assertNotMet(helper, inventory, proof, "an ominous bottle with no amplifier");
         });
     }
@@ -706,9 +711,13 @@ public final class CatalogGameTests {
                     """);
             Player player = mockPlayer(helper);
             Inventory inventory = player.getInventory();
-            inventory.setItem(39, new ItemStack(Items.DIAMOND_HELMET));
-            inventory.setItem(36, new ItemStack(Items.DIAMOND_BOOTS));
-            assertNotMet(helper, inventory, diamond, "a diamond in an armour slot is not a diamond");
+            // The feet, legs, chest and head slots, then the body armour and saddle slots. The planner searches none of
+            // them and no other slot holds a diamond, so the proof can be met only by searching one of these.
+            for (int slot : new int[] {36, 37, 38, 39, Inventory.SLOT_BODY_ARMOR, Inventory.SLOT_SADDLE}) {
+                inventory.setItem(slot, new ItemStack(Items.DIAMOND, 64));
+                helper.assertTrue(inventory.getItem(slot).is(Items.DIAMOND), "the diamond is not in slot " + slot);
+            }
+            assertNotMet(helper, inventory, diamond, "a diamond in an armour slot");
             player.containerMenu.setCarried(new ItemStack(Items.DIAMOND, 5));
             assertNotMet(helper, inventory, diamond, "the carried stack");
             ItemStack shulker = new ItemStack(Items.SHULKER_BOX);
