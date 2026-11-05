@@ -8,7 +8,9 @@ import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -96,6 +98,8 @@ public final class AchievementGameTests {
     private static final long HELD_TICKS = 150;
     /** Ticks a check waits so that a cycle check (every 20 ticks) and a reload have run. */
     private static final long SETTLE_TICKS = 40;
+    /** Ticks a record may take to load after its player comes online: the first tick they are online applies the result. */
+    private static final long ONLINE_LOAD_TICKS = 3;
 
     // Earns and counting.
 
@@ -372,6 +376,44 @@ public final class AchievementGameTests {
                     helper.assertValueEqual(earnedTiers(rig, player, LATE_SEEN), 1, "late_seen at load");
                     helper.assertValueEqual(storedState(rig, player, LATE_SEEN).map(AchievementState::earnCount).orElse(0),
                             1, "the earn written to storage");
+                }
+            }
+        });
+    }
+
+    /**
+     * A join before the player is in the server's list: the record loads while the player is offline, and its loaded state is
+     * applied on the first tick the player is online. A retry interval would make the record come about a hundred ticks later.
+     */
+    @GameTest(maxTicks = 400)
+    public void aRecordLoadedBeforeItsPlayerIsOnlineIsAppliedWhenThePlayerIs(GameTestHelper helper) {
+        AtomicBoolean loadCompleted = new AtomicBoolean();
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE, delegate -> observingLoads(delegate, loadCompleted));
+        ServerPlayer player = rig.newOfflinePlayer();
+        rig.service().join(player);
+        AtomicLong waitUntil = new AtomicLong();
+        AtomicLong cameOnlineAt = new AtomicLong();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            switch (step.get()) {
+                case 0 -> {
+                    helper.assertTrue(loadCompleted.get(), "the load has not completed in storage");
+                    // The server runs the load's completion on a later tick than storage's, so the test waits for it.
+                    waitUntil.set(rig.ticks() + SETTLE_TICKS);
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertTrue(rig.ticks() >= waitUntil.get(), "waiting for the load's completion on the server");
+                    helper.assertTrue(!loaded(rig, player), "the record loaded while its player was offline");
+                    rig.comeOnline(player);
+                    cameOnlineAt.set(rig.ticks());
+                    advance(helper, step, 2);
+                }
+                default -> {
+                    helper.assertTrue(loaded(rig, player), "the record has not loaded " + (rig.ticks() - cameOnlineAt.get())
+                            + " ticks after its player came online");
+                    helper.assertTrue(rig.ticks() - cameOnlineAt.get() <= ONLINE_LOAD_TICKS, "the record loaded late");
                 }
             }
         });
@@ -1238,7 +1280,7 @@ public final class AchievementGameTests {
         AchievementRig rig = AchievementRig.create(helper, BUNDLE);
         ServerPlayer player = rig.joined();
         ContentBundle bundle = parseOrFail(helper, BUNDLE);
-        AchievementModule.conditionViews(rig.service()::view);
+        conditionsRead(rig, player);
         Pending revokeDaily = new Pending();
         AtomicInteger step = new AtomicInteger();
         helper.succeedWhen(() -> {
@@ -1294,7 +1336,57 @@ public final class AchievementGameTests {
                             "tier 1 is false in the new cycle, though a cycle was completed");
                     helper.assertTrue(conditionHolds(helper, player, bundle, LADDER, OptionalInt.empty()),
                             "the ladder is false in the new cycle, though a cycle was completed");
-                    AchievementModule.conditionViews(null);
+                    CONDITION_SERVICES.remove(player);
+                }
+            }
+        });
+    }
+
+    /**
+     * A staff revoke of tier 3 of a completed first cycle takes that tier's earn out of the earn count, so the condition no longer
+     * reads the completed cycle as tier 3 earned. Tier 2 stays earned.
+     */
+    @GameTest(maxTicks = 900)
+    public void aRevokedTierOfACompletedFirstCycleIsNotEarnedByTheCondition(GameTestHelper helper) {
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE);
+        ServerPlayer player = rig.joined();
+        ContentBundle bundle = parseOrFail(helper, BUNDLE);
+        conditionsRead(rig, player);
+        Pending revokeTier = new Pending();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    AlinaTriggers.MANUAL.trigger(player, "climb");
+                    AlinaTriggers.MANUAL.trigger(player, "climb");
+                    AlinaTriggers.MANUAL.trigger(player, "climb");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, CLIMBER), 3, "the three tiers after three events");
+                    helper.assertValueEqual(earnCountOf(rig, player, CLIMBER), 3, "the earn count of the completed cycle");
+                    helper.assertTrue(conditionHolds(helper, player, bundle, CLIMBER, OptionalInt.of(3)),
+                            "tier 3 is false before the revoke");
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    // The revoke is its own step: a call that is refused, or not yet finished, is run again from here, and
+                    // the checks of the step before must not run after it. Refused while an earn is pending or in the escrow.
+                    staff(helper, revokeTier, () -> rig.service().revoke(player, CLIMBER, OptionalInt.of(3)));
+                    advance(helper, step, 3);
+                }
+                default -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, CLIMBER), 2, "the tiers after revoking tier 3");
+                    helper.assertValueEqual(earnCountOf(rig, player, CLIMBER), 2, "the earn count after revoking tier 3");
+                    helper.assertValueEqual(storedState(rig, player, CLIMBER).map(AchievementState::tier).orElse(-1), 2,
+                            "the stored tier after revoking tier 3");
+                    helper.assertTrue(!conditionHolds(helper, player, bundle, CLIMBER, OptionalInt.of(3)),
+                            "tier 3 is true after its revoke");
+                    helper.assertTrue(conditionHolds(helper, player, bundle, CLIMBER, OptionalInt.of(2)),
+                            "tier 2 is false after the revoke of tier 3");
+                    CONDITION_SERVICES.remove(player);
                 }
             }
         });
@@ -1403,6 +1495,63 @@ public final class AchievementGameTests {
                 default -> {
                     helper.assertValueEqual(earnedTiers(rig, player, CLIMBER), 1, "the first tier of the new cycle");
                     helper.assertValueEqual(earnCountOf(rig, player, CLIMBER), 4, "the earn count after the new cycle's first tier");
+                }
+            }
+        });
+    }
+
+    /**
+     * An untiered achievement earned while it had no repeat is complete in its current cycle once its content gains one: it is
+     * not earned again at once, and its next cycle starts once the cooldown has passed from its last earn.
+     */
+    @GameTest(maxTicks = 900)
+    public void anUntieredEarnBeforeARepeatIsCompleteUntilTheCooldownEnds(GameTestHelper helper) {
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE);
+        ServerPlayer player = rig.joined();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    AlinaTriggers.MANUAL.trigger(player, "note");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, QUIET_NOTE), 1, "quiet_note before the repeat");
+                    helper.assertValueEqual(earnCountOf(rig, player, QUIET_NOTE), 1, "the earn count before the repeat");
+                    helper.assertTrue(availableAtOf(rig, player, QUIET_NOTE).isEmpty(), "quiet_note has an availableAt before the repeat");
+                    rig.useContent(BUNDLE_REPEAT);
+                    rig.service().contentActivated();
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, QUIET_NOTE), 1, "quiet_note after the repeat was added");
+                    helper.assertValueEqual(earnCountOf(rig, player, QUIET_NOTE), 1, "quiet_note earned again at once");
+                    helper.assertTrue(availableAtOf(rig, player, QUIET_NOTE).equals(Optional.of(rig.clock().instant()
+                            .plus(DAILY_COOLDOWN))), "the cooldown does not run from the last earn: " + availableAtOf(rig, player,
+                            QUIET_NOTE));
+                    // An event in the cooldown counts for nothing: the cycle is complete.
+                    AlinaTriggers.MANUAL.trigger(player, "note");
+                    rig.clock().advance(DAILY_COOLDOWN.minusMinutes(1));
+                    advance(helper, step, 3);
+                }
+                case 3 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, QUIET_NOTE), 1, "quiet_note during its cooldown");
+                    helper.assertValueEqual(earnCountOf(rig, player, QUIET_NOTE), 1, "quiet_note earned again in its cooldown");
+                    rig.clock().advance(Duration.ofMinutes(1));
+                    advance(helper, step, 4);
+                }
+                case 4 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, QUIET_NOTE), 0, "quiet_note after its cooldown");
+                    helper.assertValueEqual(viewCount(rig, player, QUIET_NOTE, "note"), 0, "the count of the new cycle");
+                    helper.assertValueEqual(earnCountOf(rig, player, QUIET_NOTE), 1, "the earn count kept by the new cycle");
+                    AlinaTriggers.MANUAL.trigger(player, "note");
+                    advance(helper, step, 5);
+                }
+                default -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, QUIET_NOTE), 1, "quiet_note in the new cycle");
+                    helper.assertValueEqual(earnCountOf(rig, player, QUIET_NOTE), 2, "the earn count after the new cycle's earn");
                 }
             }
         });
@@ -1622,6 +1771,20 @@ public final class AchievementGameTests {
                 : null);
     }
 
+    /** Storage whose {@code loadCharacter} calls set {@code completed} when they complete. Every call reaches {@code delegate}. */
+    @SuppressWarnings("unchecked")
+    private static AlinaStorage observingLoads(AlinaStorage delegate, AtomicBoolean completed) {
+        return (AlinaStorage) Proxy.newProxyInstance(AlinaStorage.class.getClassLoader(),
+                new Class<?>[] {AlinaStorage.class},
+                (proxy, called, args) -> {
+                    Object result = invoke(delegate, called, args);
+                    if (called.getName().equals("loadCharacter")) {
+                        ((CompletableFuture<CharacterState>) result).whenComplete((state, failure) -> completed.set(true));
+                    }
+                    return result;
+                });
+    }
+
     /**
      * Storage whose {@code loadCharacter} calls complete with the delegate's snapshot only once the gate that was current when
      * the call was made completes. The snapshot is read at once, as a storage read is.
@@ -1661,6 +1824,21 @@ public final class AchievementGameTests {
         } catch (InvocationTargetException failure) {
             throw failure.getCause();
         }
+    }
+
+    /**
+     * The services the condition tests read, by player. {@link AchievementModule#conditionViews} is one static, and GameTests
+     * run together, so a test that reset it would leave another test's condition reading the server's own service. Players are
+     * keyed by identity, because two mock players can share an id.
+     */
+    private static final Map<ServerPlayer, AchievementService> CONDITION_SERVICES =
+            Collections.synchronizedMap(new IdentityHashMap<>());
+
+    /** Points the condition at the rig's service for {@code player}. A test removes the player from {@link #CONDITION_SERVICES}. */
+    private static void conditionsRead(AchievementRig rig, ServerPlayer player) {
+        CONDITION_SERVICES.put(player, rig.service());
+        AchievementModule.conditionViews(who -> Optional.ofNullable(CONDITION_SERVICES.get(who))
+                .flatMap(service -> service.view(who)));
     }
 
     /** The condition of a fixture's achievement, parsed through haruhi and evaluated for the player. */

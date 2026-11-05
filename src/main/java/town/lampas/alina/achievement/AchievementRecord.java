@@ -10,6 +10,7 @@ import java.util.UUID;
 import net.minecraft.resources.Identifier;
 import town.lampas.alina.criteria.CriterionWatchers;
 import town.lampas.alina.storage.AchievementState;
+import town.lampas.alina.storage.CharacterState;
 import town.lampas.alina.storage.CriterionKey;
 
 /**
@@ -37,6 +38,17 @@ final class AchievementRecord {
     boolean metCheckDue;
     /** The server tick a failed load may be tried again at. */
     long retryAt;
+    /**
+     * A load's result that arrived while its player was not online. The tick applies it on the first tick the player is
+     * online, and a settlement result that lands first drops it.
+     */
+    CharacterState held;
+    /**
+     * The untiered repeatables found complete in their current cycle without an {@code availableAt}, because they were
+     * earned before the content gave them a repeat. Found when the record loads and when the content activates; see
+     * {@link AchievementService}.
+     */
+    final Set<Identifier> preRepeat = new HashSet<>();
     /** The stored state of each achievement, with this record's earns applied. */
     final Map<Identifier, AchievementState> states = new HashMap<>();
     /** Each criterion's count in the current cycle. */

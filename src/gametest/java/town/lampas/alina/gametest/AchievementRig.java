@@ -124,16 +124,28 @@ final class AchievementRig {
     }
 
     /**
-     * A mock player that is not in the server's player list. Its connection is an embedded channel, so the chat messages
-     * sent to the player are kept for {@link #messages}. It is online for this rig's services.
+     * A mock player that is not in the server's player list and not yet in this rig's online list. Its connection is an
+     * embedded channel, so the chat messages sent to the player are kept for {@link #messages}. {@link #comeOnline} puts it
+     * in the online list.
      */
-    ServerPlayer newPlayer() {
+    ServerPlayer newOfflinePlayer() {
         ServerPlayer player = (ServerPlayer) helper.makeMockServerPlayer(GameType.SURVIVAL);
         Connection connection = new Connection(PacketFlow.SERVERBOUND);
         channels.put(player.getUUID(), new EmbeddedChannel(connection));
         new ServerGamePacketListenerImpl(server, connection, player,
                 CommonListenerCookie.createInitial(player.getGameProfile(), false));
+        return player;
+    }
+
+    /** Puts a player from {@link #newOfflinePlayer} in the online list. The services serve it from the next tick. */
+    void comeOnline(ServerPlayer player) {
         online.add(player);
+    }
+
+    /** A mock player that is online for this rig's services: {@link #newOfflinePlayer}, then {@link #comeOnline}. */
+    ServerPlayer newPlayer() {
+        ServerPlayer player = newOfflinePlayer();
+        comeOnline(player);
         return player;
     }
 

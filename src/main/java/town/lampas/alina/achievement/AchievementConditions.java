@@ -19,7 +19,8 @@ import town.lampas.haruhi.dialogue.api.ParseContext;
  * {@code tier}. Without a tier it is true once the achievement has been earned, in any cycle, or an earn of it is being
  * settled. With a tier k it is true when tier k has been earned in any cycle: either the current cycle's earned tiers reach
  * k, or a cycle has been completed (the earn count is at least the number of tiers, since a complete cycle earns every
- * tier). While the player's record loads, the condition is false.
+ * tier). A staff revoke of tier k takes out the earns of the tiers it removes, so a revoked tier of a completed cycle drops the
+ * count below the number of tiers. While the player's record loads, the condition is false.
  */
 final class AchievementConditions {
     private static final String TYPE = "alina:achievement";

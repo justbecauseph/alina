@@ -14,7 +14,8 @@
         "alina:test/quiet_note": {
           "tab": "alina:test", "title": "Quiet Note", "description": "Write a note.", "icon": { "id": "minecraft:paper" },
           "announce": false,
-          "criteria": { "note": { "trigger": "alina:manual", "conditions": { "key": "note" } } }
+          "criteria": { "note": { "trigger": "alina:manual", "conditions": { "key": "note" } } },
+          "repeat": { "cooldown": "PT1H" }
         },
         "alina:test/loud_note": {
           "tab": "alina:test", "title": "Loud Note", "description": "Shout a note.", "icon": { "id": "minecraft:paper" },

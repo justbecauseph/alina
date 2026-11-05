@@ -62,8 +62,10 @@ import town.lampas.haruhi.api.HaruhiServices;
  *
  * <p><b>Records.</b> {@link #join} loads the character's {@code CharacterState} (its achievements and criterion counts)
  * from storage; until it arrives, {@link #view} is empty. A failed load is retried every {@link #RETRY_TICKS} while the
- * player is online. Storage calls for one character run one after another, in order, loads included, and every storage
- * completion runs on the server thread and is dropped once the server has stopped running tasks, as in the Guild
+ * player is online. A loaded state whose player is not online yet is held, and applied on the first tick the player is
+ * online; a player who leaves first takes it with the record. Storage calls for one character run one after another, in
+ * order, loads included, and every storage completion runs on the server thread and is dropped once the server has
+ * stopped running tasks, as in the Guild
  * service. The operations in the player's settlement escrow when the record loads are earns being settled, and a record
  * whose load overlapped a storage result of one of them is loaded again. A loaded record is never loaded again while
  * the player stays online: a storage result for an earn this service began in this run is already in the record, and a
@@ -76,11 +78,15 @@ import town.lampas.haruhi.api.HaruhiServices;
  * be written or is in the escrow, a new cycle starts: the criterion counts are reset first, then the stored state is
  * written with tier 0 and no {@code availableAt}, keeping the earn count and last earn time, and the listeners get
  * {@link AchievementListener#cycleStarted}. A cycle start that does not finish both writes is tried again, so a crash
- * between them leaves counts at 0 and the old cooldown, never old counts in a new cycle. A repeatable whose stored state
- * shows the cycle complete without an {@code availableAt} (it was earned before the content gave it {@code repeat}) is
- * treated as available at its last earn time plus the cooldown. In the current cycle an achievement without tiers is earned
- * when its stored state exists and, for a repeatable, has an {@code availableAt}; a tiered achievement has earned the
- * tiers up to its stored tier.
+ * between them leaves counts at 0 and the old cooldown, never old counts in a new cycle. A tiered repeatable whose stored
+ * state shows its last tier without an {@code availableAt} (it was earned before the content gave it {@code repeat}) is
+ * treated as available at its last earn time plus the cooldown. An untiered repeatable gets the same treatment from
+ * {@link #findPreRepeat}, when its record loads or the content activates, if its stored state has an earn count and no
+ * {@code availableAt}, and its counts still meet its requirements. That is not checked on each count: a cycle start
+ * resets the counts, and the counts of the new cycle can meet the requirements again, which is an earn of the new cycle.
+ * In the current cycle an achievement without tiers is earned when its stored state exists and, for a repeatable, has an
+ * {@code availableAt} or was found by {@link #findPreRepeat}; a tiered achievement has earned the tiers up to its stored
+ * tier.
  *
  * <p><b>Counting.</b> While a criterion's achievement is not complete in the current cycle and the criterion is below
  * its target, a {@code CriterionWatchers} watch counts its events: the target is the criterion's {@code count}, or for a
@@ -207,6 +213,11 @@ public final class AchievementService {
             if (entity == null) {
                 continue;
             }
+            if (record.held != null) {
+                // A load that arrived while the player was offline: applied on the first tick they are online.
+                applyHeld(record, entity);
+                continue;
+            }
             if (!record.loaded) {
                 if (!record.loadInFlight && ticks >= record.retryAt) {
                     startLoad(record);
@@ -249,6 +260,7 @@ public final class AchievementService {
                 continue;
             }
             record.metCheckDue = true;
+            findPreRepeat(record);
             ServerPlayer entity = online(record.id);
             if (entity != null) {
                 cycleStarts(record, entity);
@@ -312,12 +324,13 @@ public final class AchievementService {
     }
 
     /**
-     * For staff: without a tier, deletes the achievement's stored state and counts; with tier k, keeps tiers below k:
-     * the stored tier becomes k - 1 and the count at most tier k's count minus 1. Grants no reward back and takes none
-     * away. Refused while the record loads and while an earn of the achievement is waiting to be written or is in the
-     * escrow. The record changes only after the writes succeed; the future completes then, with empty, and the listeners
-     * get {@link AchievementListener#revoked}. A failed write changes nothing in the record and completes with the
-     * failure's text.
+     * For staff: without a tier, deletes the achievement's stored state and counts; with tier k, keeps tiers below k: the
+     * stored tier becomes k - 1, the earn count drops by the tiers removed (the current cycle's tiers from k up, one earn
+     * each), and the count is at most tier k's count minus 1. Grants no reward back and takes none away. Refused while the
+     * record loads and while an earn of the achievement is waiting to be written or is in the escrow. The record changes
+     * only after the writes succeed; the future completes then, with empty, and the listeners get
+     * {@link AchievementListener#revoked}. A failed write changes nothing in the record and completes with the failure's
+     * text.
      */
     public CompletableFuture<Optional<String>> revoke(ServerPlayer player, Identifier achievement, OptionalInt tier) {
         CompletableFuture<Optional<String>> done = new CompletableFuture<>();
@@ -354,11 +367,21 @@ public final class AchievementService {
             // A settlement result landed during the load, so the load may predate it. The tick loads again.
             return;
         }
+        // A result for a player who is not online waits for them: the tick applies it on the first tick they are online.
+        record.held = state;
         ServerPlayer entity = online(record.id);
-        if (entity == null) {
-            retryLoad(record, "Alina loaded the achievements of " + record.id + " without its player", null);
-            return;
+        if (entity != null) {
+            applyHeld(record, entity);
         }
+    }
+
+    /**
+     * Applies the held load result to the record, with its player online. The escrow is read from the player's entity
+     * now. A failed escrow read drops the result and tries the load again.
+     */
+    private void applyHeld(AchievementRecord record, ServerPlayer entity) {
+        CharacterState state = record.held;
+        record.held = null;
         List<PendingOperation> escrow;
         try {
             escrow = settlement.pendingFor(entity);
@@ -413,6 +436,28 @@ public final class AchievementService {
         }
         for (AchievementEarn job : record.pending) {
             overlay(record, job);
+        }
+        findPreRepeat(record);
+    }
+
+    /**
+     * Finds the untiered repeatables earned before the content gave them a repeat. Such an achievement has an earn count
+     * and no {@code availableAt}, and its counts still meet its requirements, so its cycle is complete: it is available at
+     * its last earn time plus the cooldown, and {@link #cycleStarts} starts the next cycle then. Runs when a record loads
+     * and when the content activates. It does not run on a count: a cycle start resets the counts, and the counts of the
+     * new cycle can meet the requirements again, which must earn the achievement, not hold it.
+     */
+    private void findPreRepeat(AchievementRecord record) {
+        record.preRepeat.clear();
+        for (Achievement achievement : achievementsSorted()) {
+            Identifier id = achievement.id();
+            AchievementState state = record.states.get(id);
+            if (!achievement.tiers().isEmpty() || achievement.repeat().isEmpty() || state == null
+                    || state.availableAt().isPresent() || state.earnCount() < 1 || state.lastEarnedAt().isEmpty()
+                    || resetting(record, id) || revoking(record, id) || !requirementsMet(record, achievement)) {
+                continue;
+            }
+            record.preRepeat.add(id);
         }
     }
 
@@ -603,7 +648,7 @@ public final class AchievementService {
             if (state == null) {
                 continue;
             }
-            Optional<Instant> end = cycleEnd(state, achievement);
+            Optional<Instant> end = cycleEnd(record, state, achievement);
             if (end.isEmpty() || now.isBefore(end.get())) {
                 continue;
             }
@@ -612,6 +657,7 @@ public final class AchievementService {
                 continue;
             }
             record.states.put(id, new AchievementState(id, 0, state.earnCount(), state.lastEarnedAt(), Optional.empty()));
+            record.preRepeat.remove(id);
             record.counts.keySet().removeIf(key -> key.achievementId().equals(id));
             record.dirty.keySet().removeIf(key -> key.achievementId().equals(id));
             bumpEpoch(record, id);
@@ -952,11 +998,12 @@ public final class AchievementService {
 
     /**
      * Whether an achievement without tiers is earned in the current cycle: its stored state exists and, for a repeatable, has
-     * an {@code availableAt}; or an earn of it is in the escrow.
+     * an {@code availableAt} or was found by {@link #findPreRepeat}; or an earn of it is in the escrow.
      */
     private static boolean earnedInCycle(AchievementRecord record, Achievement achievement) {
         AchievementState state = record.states.get(achievement.id());
-        boolean stored = state != null && (achievement.repeat().isEmpty() || state.availableAt().isPresent());
+        boolean stored = state != null && (achievement.repeat().isEmpty() || state.availableAt().isPresent()
+                || record.preRepeat.contains(achievement.id()));
         return stored || record.escrow.values().stream()
                 .anyMatch(escrowed -> escrowed.achievement().equals(achievement.id()));
     }
@@ -990,11 +1037,11 @@ public final class AchievementService {
 
     /**
      * When a repeatable's complete cycle becomes available again, or empty when the stored state does not show a complete
-     * cycle. The stored {@code availableAt} is the end. A tiered state whose last tier is stored, but which has no
-     * {@code availableAt} (it was earned before the content gave the achievement a cooldown), ends at its last earn time plus
-     * the cooldown.
+     * cycle. The stored {@code availableAt} is the end. A complete cycle without an {@code availableAt} ends at its last earn
+     * time plus the cooldown: a tiered state whose last tier is stored, or an untiered one {@link #findPreRepeat} found.
      */
-    private static Optional<Instant> cycleEnd(AchievementState state, Achievement achievement) {
+    private static Optional<Instant> cycleEnd(AchievementRecord record, AchievementState state,
+            Achievement achievement) {
         Optional<Duration> cooldown = achievement.repeat();
         if (cooldown.isEmpty()) {
             return Optional.empty();
@@ -1002,7 +1049,10 @@ public final class AchievementService {
         if (state.availableAt().isPresent()) {
             return state.availableAt();
         }
-        if (achievement.tiers().isEmpty() || state.tier() < achievement.tiers().size()) {
+        boolean complete = achievement.tiers().isEmpty()
+                ? record.preRepeat.contains(achievement.id())
+                : state.tier() >= achievement.tiers().size();
+        if (!complete) {
             return Optional.empty();
         }
         return state.lastEarnedAt().map(at -> at.plus(cooldown.get()));
@@ -1072,7 +1122,9 @@ public final class AchievementService {
                 .anyMatch(escrowed -> escrowed.achievement().equals(achievement.id()));
         Optional<Instant> availableAt = Optional.empty();
         if (state != null) {
-            availableAt = achievement.repeat().isPresent() && complete ? cycleEnd(state, achievement) : state.availableAt();
+            availableAt = achievement.repeat().isPresent() && complete
+                    ? cycleEnd(record, state, achievement)
+                    : state.availableAt();
         }
         return new AchievementStanding(
                 achievement.id(),
@@ -1195,7 +1247,11 @@ public final class AchievementService {
             done.complete(Optional.of(id + " tier " + tier.getAsInt() + " is not earned."));
             return;
         }
-        AchievementState next = new AchievementState(id, kept, old.earnCount(), old.lastEarnedAt(), Optional.empty());
+        // One earn is removed for each tier from k up to the highest earned in this cycle. The floor at 0 is there because
+        // AchievementState refuses a negative count, so a state whose count is below its tier cannot fail the revoke.
+        int removed = highestInCycle(record, achievement) - kept;
+        int earns = Math.max(0, old.earnCount() - removed);
+        AchievementState next = new AchievementState(id, kept, earns, old.lastEarnedAt(), Optional.empty());
         CriterionKey key = new CriterionKey(id, onlyCriterion(achievement));
         int cap = achievement.tiers().get(tier.getAsInt() - 1).count() - 1;
         Map<CriterionKey, Integer> capped = new HashMap<>();
@@ -1228,6 +1284,7 @@ public final class AchievementService {
                 return;
             }
             if (isCurrent(record)) {
+                record.preRepeat.remove(id);
                 if (next == null) {
                     record.states.remove(id);
                     record.counts.keySet().removeIf(key -> key.achievementId().equals(id));
@@ -1250,9 +1307,9 @@ public final class AchievementService {
     // Settlement listeners.
 
     /**
-     * Storage recorded a settlement result. A result that arrives while the record's load is in flight drops that load, which
-     * may predate it. A reward this service began is already counted in the record. Any other reward in the escrow is counted
-     * now, the way storage counts it.
+     * Storage recorded a settlement result. A result that arrives while the record's load is in flight, or its state is
+     * held, drops that load, which may predate it. A reward this service began is already counted in the record. Any other
+     * reward in the escrow is counted now, the way storage counts it.
      */
     private void applied(SettledOperation settled) {
         if (!listenerOnServer("storage result of an operation", settled.player().getUUID())) {
@@ -1266,8 +1323,9 @@ public final class AchievementService {
         if (record == null) {
             return;
         }
-        if (record.loadInFlight) {
+        if (record.loadInFlight || record.held != null) {
             // The load may have read storage before this result, so its result is dropped and the tick loads again.
+            record.held = null;
             record.reloadRequested = true;
         }
         AchievementRecord.Escrowed escrowed = record.escrow.get(operation.operationId());
