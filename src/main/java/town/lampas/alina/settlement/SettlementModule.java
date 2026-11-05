@@ -30,7 +30,9 @@ public final class SettlementModule {
     public static void init() {
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             UUID worldId = WorldId.loadOrCreate(server.getWorldPath(LevelResource.ROOT));
-            running = new SettlementService(server, AlinaServices.storage(), worldId);
+            SettlementService service = new SettlementService(server, AlinaServices.storage(), worldId);
+            SettlementTriggers.register(service);
+            running = service;
         });
         ServerLifecycleEvents.SERVER_STOPPED.register(server -> running = null);
         ServerTickEvents.END_SERVER_TICK.register(server -> {

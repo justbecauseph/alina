@@ -21,8 +21,21 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.GameType;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
+import com.mojang.serialization.DataResult;
+import com.mojang.serialization.JsonOps;
+import net.minecraft.advancements.CriterionTriggerInstance;
+import net.minecraft.advancements.triggers.CriterionTrigger;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.RegistryOps;
 import town.lampas.alina.Alina;
+import town.lampas.alina.content.CriterionSpec;
+import town.lampas.alina.criteria.CriterionWatchers;
 import town.lampas.alina.settlement.PendingOperation;
+import town.lampas.alina.settlement.SettlementTriggers;
+import town.lampas.haruhi.api.HaruhiServices;
+import town.lampas.haruhi.content.model.ContentBundle;
 import town.lampas.alina.settlement.PlayerDataSaves;
 import town.lampas.alina.settlement.SettledOperation;
 import town.lampas.alina.settlement.SettlementModule;
@@ -264,6 +277,59 @@ public final class SettlementGameTests {
         Alina.LOGGER.info(String.format(Locale.ROOT, "S3 saveAndVerify ms: min %.2f .. median %.2f .. max %.2f",
                 millis[0], median, millis[S3_RUNS - 1]));
         helper.succeed();
+    }
+
+    /** The active content for the trigger test: the courier commission, in category C, repeatable. */
+    private static final String COURIER_BUNDLE = """
+            { "schema": 1,
+              "dialogues": { "alina:settlement_test/board": { "start": "hello", "nodes": { "hello": { "text": "Board." } } } },
+              "extensions": { "alina:guild": {
+                "settings": { "board_graph": "alina:settlement_test/board" },
+                "commissions": { "alina:settlement_test/courier": {
+                  "category": "C", "kind": "repeatable", "name": "Courier", "hint": "Bring paper.",
+                  "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] } } } } } }
+            """;
+
+    @GameTest(maxTicks = 400)
+    public void aSettledTurnInFiresTheReputationAndCommissionTriggers(GameTestHelper helper) {
+        Rig rig = rig(helper, new InMemoryStorage());
+        rig.player().getInventory().setItem(0, new ItemStack(Items.PAPER));
+        AtomicInteger reputationEvents = new AtomicInteger();
+        AtomicInteger completions = new AtomicInteger();
+        AtomicBoolean started = new AtomicBoolean();
+        SettlementService service = serviceFor(rig);
+        SettlementTriggers.register(service);
+
+        helper.succeedWhen(() -> {
+            if (!started.get()) {
+                helper.assertTrue(HaruhiServices.content().isStartupComplete(), "startup activation has not finished");
+                DataResult<ContentBundle> bundle = HaruhiServices.content().parseAndValidate(COURIER_BUNDLE);
+                helper.assertTrue(bundle.result().isPresent(),
+                        "the courier bundle was refused: " + bundle.error().map(error -> error.message()).orElse(""));
+                HaruhiServices.content().activateUnstored(bundle.result().orElseThrow());
+                CriterionWatchers.watch(rig.player().getUUID(), alinaSpec(helper, "alina:reputation_changed",
+                        "{ \"reputation\": { \"min\": " + REPUTATION + " } }"), player -> reputationEvents.incrementAndGet());
+                CriterionWatchers.watch(rig.player().getUUID(), alinaSpec(helper, "alina:commission_completed",
+                        "{ \"commission\": \"alina:settlement_test/courier\", \"category\": \"C\", \"kind\": \"repeatable\" }"),
+                        player -> completions.incrementAndGet());
+                begin(helper, service, rig, turnIn(takeOnePaper(), PLACEHOLDER));
+                started.set(true);
+            }
+            service.tick();
+            helper.assertValueEqual(count(rig.player(), Items.EMERALD), 1, "emeralds in the inventory");
+            helper.assertValueEqual(reputationEvents.get(), 1, "reputation_changed events at the new reputation");
+            helper.assertValueEqual(completions.get(), 1, "commission_completed events for the courier");
+            CriterionWatchers.clear(rig.player().getUUID());
+        });
+    }
+
+    private static CriterionSpec alinaSpec(GameTestHelper helper, String trigger, String conditions) {
+        Identifier id = Identifier.parse(trigger);
+        CriterionTrigger<?> type = BuiltInRegistries.TRIGGER_TYPES.getValue(id);
+        RegistryOps<JsonElement> ops = RegistryOps.create(JsonOps.INSTANCE, helper.getLevel().getServer().registryAccess());
+        CriterionTriggerInstance instance = type.codec().parse(ops, JsonParser.parseString(conditions))
+                .getOrThrow(message -> new IllegalStateException("conditions do not parse: " + message));
+        return new CriterionSpec(id, instance, 1);
     }
 
     /** One test's player, storage, world id and save step. */
