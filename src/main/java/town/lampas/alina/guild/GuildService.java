@@ -1,21 +1,52 @@
 package town.lampas.alina.guild;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import town.lampas.alina.Alina;
 import town.lampas.alina.content.AlinaContent;
+import town.lampas.alina.content.Commission;
+import town.lampas.alina.content.Cooldown;
 import town.lampas.alina.content.GuildContent;
+import town.lampas.alina.content.GuildSettings;
+import town.lampas.alina.content.Proof;
+import town.lampas.alina.criteria.AlinaTriggers;
+import town.lampas.alina.criteria.CriterionWatchers;
+import town.lampas.alina.guild.board.BoardDay;
+import town.lampas.alina.guild.board.BoardDraw;
+import town.lampas.alina.guild.proof.ItemPlan;
+import town.lampas.alina.guild.proof.ItemProofPlanner;
+import town.lampas.alina.settlement.PendingOperation;
+import town.lampas.alina.settlement.SettledOperation;
+import town.lampas.alina.settlement.SettlementRequest;
 import town.lampas.alina.settlement.SettlementService;
 import town.lampas.alina.storage.AlinaStorage;
+import town.lampas.alina.storage.CharacterState;
+import town.lampas.alina.storage.CommissionState;
+import town.lampas.alina.storage.CommissionStatus;
+import town.lampas.alina.storage.Operation;
+import town.lampas.alina.storage.OperationEffect;
+import town.lampas.alina.storage.OperationKind;
+import town.lampas.alina.storage.StoredBoard;
 import town.lampas.haruhi.api.HaruhiServices;
 
 /**
@@ -70,6 +101,27 @@ public final class GuildService {
     /** Server ticks between descent tracker checks of players with no armed dive. */
     public static final long DESCENT_CHECK_TICKS = 5;
 
+    private final MinecraftServer server;
+    private final AlinaStorage storage;
+    private final SettlementService settlement;
+    private final Supplier<GuildContent> contentSource;
+    private final LongSupplier revisionId;
+    private final Clock clock;
+    private final Supplier<? extends Collection<ServerPlayer>> online;
+    private final BooleanSupplier contentReady;
+    private final PlayerWrites writes = new PlayerWrites();
+    private final DescentTracker descent;
+    private final Map<UUID, PlayerRecord> records = new HashMap<>();
+    private long loadGenerations;
+    private long ticks;
+    /** The content as the last tick saw it, so names of commissions a new content removes can still be shown. */
+    private GuildContent known = GuildContent.EMPTY;
+    /** The board day held: loading or loaded. Null before the first request and after a failed one. */
+    private LocalDate boardDate;
+    private boolean boardLoading;
+    private long boardRetryAt;
+    private Board board;
+
     /**
      * The service of the running server: the server's player list, the system clock, the active {@code alina:guild}
      * content and revision, and haruhi's startup activation.
@@ -90,27 +142,105 @@ public final class GuildService {
     public GuildService(MinecraftServer server, AlinaStorage storage, SettlementService settlement,
             Supplier<GuildContent> content, LongSupplier revisionId, Clock clock,
             Supplier<? extends Collection<ServerPlayer>> online, BooleanSupplier contentReady) {
-        throw new UnsupportedOperationException("not built yet");
+        this.server = Objects.requireNonNull(server, "server");
+        this.storage = Objects.requireNonNull(storage, "storage");
+        this.settlement = Objects.requireNonNull(settlement, "settlement");
+        this.contentSource = Objects.requireNonNull(content, "content");
+        this.revisionId = Objects.requireNonNull(revisionId, "revisionId");
+        this.clock = Objects.requireNonNull(clock, "clock");
+        this.online = Objects.requireNonNull(online, "online");
+        this.contentReady = Objects.requireNonNull(contentReady, "contentReady");
+        this.descent = new DescentTracker(server);
+        settlement.addAppliedListener(this::applied);
+        settlement.addSettledListener(this::settled);
     }
 
     /** Starts loading the player's record. A record already loaded or loading is loaded again. */
     public void join(ServerPlayer player) {
-        throw new UnsupportedOperationException("not built yet");
+        requireServerThread();
+        PlayerRecord previous = records.remove(player.getUUID());
+        if (previous != null) {
+            retire(previous);
+        }
+        PlayerRecord record = new PlayerRecord(player.getUUID());
+        records.put(record.id, record);
+        startLoad(record);
     }
 
     /** Writes the player's pending progress, stops their tracking and drops their record. */
     public void leave(ServerPlayer player) {
-        throw new UnsupportedOperationException("not built yet");
+        requireServerThread();
+        PlayerRecord record = records.remove(player.getUUID());
+        if (record != null) {
+            retire(record);
+        }
     }
 
     /** Called every server tick: board day, load retries, progress flushes and the descent tracker. */
     public void tick() {
-        throw new UnsupportedOperationException("not built yet");
+        requireServerThread();
+        ticks++;
+        GuildContent content = contentSource.get();
+        known = content;
+        if (contentReady.getAsBoolean()) {
+            advanceBoard(content.settings());
+        }
+        boolean descentDue = ticks % DESCENT_CHECK_TICKS == 0;
+        for (ServerPlayer player : List.copyOf(online.get())) {
+            PlayerRecord record = records.get(player.getUUID());
+            if (record == null) {
+                continue;
+            }
+            if (!record.loaded) {
+                if (!record.loadInFlight && ticks >= record.retryAt) {
+                    startLoad(record);
+                }
+                continue;
+            }
+            if (descentDue || !record.armed.isEmpty()) {
+                for (Identifier commission : descent.check(player, record, content)) {
+                    meet(record, commission);
+                }
+            }
+        }
+        if (ticks % FLUSH_TICKS == 0) {
+            for (PlayerRecord record : List.copyOf(records.values())) {
+                if (record.loaded) {
+                    flush(record);
+                }
+            }
+        }
+        writes.prune();
     }
 
     /** Called when haruhi activates a bundle. See the class comment. */
     public void contentActivated() {
-        throw new UnsupportedOperationException("not built yet");
+        requireServerThread();
+        GuildContent content = contentSource.get();
+        for (PlayerRecord record : List.copyOf(records.values())) {
+            if (!record.loaded) {
+                continue;
+            }
+            closeTracking(record);
+            for (CommissionState row : List.copyOf(record.rows.values())) {
+                Identifier id = row.commissionId();
+                if (isActive(record, row) && !content.commissions().containsKey(id)) {
+                    withdraw(record, id);
+                }
+            }
+            for (CommissionState row : List.copyOf(record.rows.values())) {
+                if (isActive(record, row)) {
+                    startTracking(record, row.commissionId());
+                }
+            }
+        }
+        known = content;
+        if (board != null && !board.stored()) {
+            // An empty pool is drawn again, now that the content has changed.
+            board = null;
+            boardDate = null;
+            boardRetryAt = 0;
+        }
     }
 
     /**
@@ -118,27 +248,50 @@ public final class GuildService {
      * writes have finished or failed; it never fails.
      */
     public CompletableFuture<Void> stop() {
-        throw new UnsupportedOperationException("not built yet");
+        requireServerThread();
+        List<CompletableFuture<Void>> pending = new ArrayList<>();
+        for (PlayerRecord record : records.values()) {
+            closeTracking(record);
+            if (record.loaded) {
+                pending.add(flush(record));
+            }
+        }
+        records.clear();
+        return CompletableFuture.allOf(pending.toArray(new CompletableFuture<?>[0]))
+                .handle((ignored, failure) -> null);
     }
 
     /** The active {@code alina:guild} content. */
     public GuildContent content() {
-        throw new UnsupportedOperationException("not built yet");
+        return contentSource.get();
     }
 
     /** The service clock's current instant. */
     public Instant now() {
-        throw new UnsupportedOperationException("not built yet");
+        return clock.instant();
     }
 
     /** The player's record, or empty while it loads. */
     public Optional<GuildView> view(ServerPlayer player) {
-        throw new UnsupportedOperationException("not built yet");
+        requireServerThread();
+        PlayerRecord record = records.get(player.getUUID());
+        if (record == null || !record.loaded) {
+            return Optional.empty();
+        }
+        return Optional.of(viewOf(record));
     }
 
     /** Today's board, or empty while it loads. */
     public Optional<BoardView> board() {
-        throw new UnsupportedOperationException("not built yet");
+        Board current = board;
+        if (current == null) {
+            return Optional.empty();
+        }
+        GuildContent content = contentSource.get();
+        List<Identifier> ids = current.ids().stream()
+                .filter(id -> isRepeatable(content, id))
+                .toList();
+        return Optional.of(new BoardView(current.date(), current.revisionId(), ids, current.stored()));
     }
 
     /**
@@ -146,7 +299,23 @@ public final class GuildService {
      * player has not completed, by id text. Empty while the record or the board loads.
      */
     public Optional<List<Identifier>> boardEntries(ServerPlayer player) {
-        throw new UnsupportedOperationException("not built yet");
+        requireServerThread();
+        PlayerRecord record = records.get(player.getUUID());
+        if (record == null || !record.loaded) {
+            return Optional.empty();
+        }
+        Optional<BoardView> today = board();
+        if (today.isEmpty()) {
+            return Optional.empty();
+        }
+        List<Identifier> entries = new ArrayList<>(today.get().commissions());
+        contentSource.get().commissions().values().stream()
+                .filter(commission -> commission.kind() == Commission.Kind.FEAT)
+                .map(Commission::id)
+                .sorted(Comparator.comparing(Identifier::toString))
+                .filter(id -> !completed(record, id))
+                .forEach(entries::add);
+        return Optional.of(List.copyOf(entries));
     }
 
     /**
@@ -154,7 +323,49 @@ public final class GuildService {
      * board loading and not on the board (repeatables), active, settling, busy, cooldown, completed, cap reached.
      */
     public Optional<Refusal> checkAccept(ServerPlayer player, Identifier commission) {
-        throw new UnsupportedOperationException("not built yet");
+        requireServerThread();
+        PlayerRecord record = records.get(player.getUUID());
+        if (record == null || !record.loaded) {
+            return refuse(Refusal.Reason.LOADING, GuildText.loading());
+        }
+        GuildContent content = contentSource.get();
+        Commission found = content.commissions().get(commission);
+        if (found == null) {
+            return refuse(Refusal.Reason.UNKNOWN, GuildText.unknown(commission));
+        }
+        if (found.kind() == Commission.Kind.REPEATABLE) {
+            Optional<BoardView> today = board();
+            if (today.isEmpty()) {
+                return refuse(Refusal.Reason.BOARD_LOADING, GuildText.boardLoading());
+            }
+            if (!today.get().commissions().contains(commission)) {
+                return refuse(Refusal.Reason.NOT_ON_BOARD, GuildText.notOnBoard(found.name()));
+            }
+        }
+        CommissionState row = record.rows.get(commission);
+        boolean settling = record.settling.containsKey(commission);
+        if (row != null && row.status() == CommissionStatus.ACTIVE && !settling) {
+            return refuse(Refusal.Reason.ACTIVE, GuildText.active(found.name()));
+        }
+        if (settling) {
+            return refuse(Refusal.Reason.SETTLING, GuildText.settling(found.name()));
+        }
+        if (record.busy.contains(commission)) {
+            return refuse(Refusal.Reason.BUSY, GuildText.busy(found.name()));
+        }
+        Instant now = stamp();
+        if (cooldownEnd(row).filter(end -> end.isAfter(now)).isPresent()) {
+            Duration left = Duration.between(now, cooldownEnd(row).get());
+            return refuse(Refusal.Reason.COOLDOWN, GuildText.cooldown(found.name(), left));
+        }
+        if (row != null && row.status() == CommissionStatus.COMPLETED) {
+            return refuse(Refusal.Reason.COMPLETED, GuildText.completed(found.name()));
+        }
+        int cap = content.settings().activeCap();
+        if (activeCount(record) >= cap) {
+            return refuse(Refusal.Reason.CAP_REACHED, GuildText.capReached(cap));
+        }
+        return Optional.empty();
     }
 
     /**
@@ -162,17 +373,74 @@ public final class GuildService {
      * unknown, settling, not active, busy, proof not met. The proof-not-met message is the commission's hint.
      */
     public Optional<Refusal> checkTurnIn(ServerPlayer player, Identifier commission) {
-        throw new UnsupportedOperationException("not built yet");
+        requireServerThread();
+        PlayerRecord record = records.get(player.getUUID());
+        if (record == null || !record.loaded) {
+            return refuse(Refusal.Reason.LOADING, GuildText.loading());
+        }
+        Commission found = contentSource.get().commissions().get(commission);
+        if (found == null) {
+            return refuse(Refusal.Reason.UNKNOWN, GuildText.unknown(commission));
+        }
+        if (record.settling.containsKey(commission)) {
+            return refuse(Refusal.Reason.SETTLING, GuildText.settling(found.name()));
+        }
+        CommissionState row = record.rows.get(commission);
+        if (row == null || row.status() != CommissionStatus.ACTIVE) {
+            return refuse(Refusal.Reason.NOT_ACTIVE, GuildText.notActive(found.name()));
+        }
+        if (record.busy.contains(commission)) {
+            return refuse(Refusal.Reason.BUSY, GuildText.busy(found.name()));
+        }
+        if (!proofMet(player, found, row)) {
+            return refuse(Refusal.Reason.PROOF_NOT_MET, GuildText.proofNotMet(found.name(), found.hint()));
+        }
+        return Optional.empty();
     }
 
     /** Why the player cannot abandon the commission now, or empty when they can: loading, unknown, settling, not active, busy. */
     public Optional<Refusal> checkAbandon(ServerPlayer player, Identifier commission) {
-        throw new UnsupportedOperationException("not built yet");
+        requireServerThread();
+        PlayerRecord record = records.get(player.getUUID());
+        if (record == null || !record.loaded) {
+            return refuse(Refusal.Reason.LOADING, GuildText.loading());
+        }
+        Commission found = contentSource.get().commissions().get(commission);
+        if (found == null) {
+            return refuse(Refusal.Reason.UNKNOWN, GuildText.unknown(commission));
+        }
+        if (record.settling.containsKey(commission)) {
+            return refuse(Refusal.Reason.SETTLING, GuildText.settling(found.name()));
+        }
+        CommissionState row = record.rows.get(commission);
+        if (row == null || row.status() != CommissionStatus.ACTIVE) {
+            return refuse(Refusal.Reason.NOT_ACTIVE, GuildText.notActive(found.name()));
+        }
+        if (record.busy.contains(commission)) {
+            return refuse(Refusal.Reason.BUSY, GuildText.busy(found.name()));
+        }
+        return Optional.empty();
     }
 
     /** Accepts the commission, or returns why not; checks again first. See the class comment. */
     public Optional<Refusal> accept(ServerPlayer player, Identifier commission) {
-        throw new UnsupportedOperationException("not built yet");
+        requireServerThread();
+        Optional<Refusal> refused = checkAccept(player, commission);
+        if (refused.isPresent()) {
+            return refused;
+        }
+        UUID id = player.getUUID();
+        PlayerRecord record = records.get(id);
+        Commission accepted = contentSource.get().commissions().get(commission);
+        long revision = revisionId.getAsLong();
+        Instant at = stamp();
+        record.rows.put(commission, new CommissionState(
+                commission, CommissionStatus.ACTIVE, 0, at, Optional.empty(), Optional.empty(), revision));
+        record.busy.add(commission);
+        startTracking(record, commission);
+        writes.submit(id, () -> storage.acceptCommission(id, commission, revision, at))
+                .whenComplete((ignored, failure) -> server.execute(() -> acceptWritten(record, accepted, at, failure)));
+        return Optional.empty();
     }
 
     /**
@@ -180,12 +448,60 @@ public final class GuildService {
      * settlement refused to begin, and then nothing changed. On success the player gets {@link GuildText#turnedIn}.
      */
     public Optional<Refusal> turnIn(ServerPlayer player, Identifier commission) {
-        throw new UnsupportedOperationException("not built yet");
+        requireServerThread();
+        Optional<Refusal> refused = checkTurnIn(player, commission);
+        if (refused.isPresent()) {
+            return refused;
+        }
+        PlayerRecord record = records.get(player.getUUID());
+        GuildContent content = contentSource.get();
+        Commission turned = content.commissions().get(commission);
+        Instant now = stamp();
+        SettlementRequest request = new SettlementRequest(
+                OperationKind.TURN_IN,
+                commission,
+                0,
+                revisionId.getAsLong(),
+                turned.reward().lootTable(),
+                turned.reward().reputation(),
+                effect(turned, content.settings(), now),
+                removal(turned.proof()),
+                Optional.of(turned.category()),
+                Optional.of(kindName(turned)));
+        Optional<UUID> operation;
+        try {
+            operation = settlement.begin(player, request);
+        } catch (IllegalArgumentException failure) {
+            Alina.LOGGER.warn("Alina could not begin the turn-in of {} for {}; settlement refused it",
+                    commission, player.getUUID(), failure);
+            return refuse(Refusal.Reason.SETTLEMENT_REFUSED, GuildText.settlementRefused(turned.name()));
+        }
+        if (operation.isEmpty()) {
+            return refuse(Refusal.Reason.SETTLEMENT_REFUSED, GuildText.settlementRefused(turned.name()));
+        }
+        record.settling.put(commission, now);
+        stopTracking(record, commission);
+        player.sendSystemMessage(GuildText.turnedIn(turned.name()));
+        return Optional.empty();
     }
 
     /** Abandons the commission, or returns why not; checks again first. See the class comment. */
     public Optional<Refusal> abandon(ServerPlayer player, Identifier commission) {
-        throw new UnsupportedOperationException("not built yet");
+        requireServerThread();
+        Optional<Refusal> refused = checkAbandon(player, commission);
+        if (refused.isPresent()) {
+            return refused;
+        }
+        UUID id = player.getUUID();
+        PlayerRecord record = records.get(id);
+        Commission abandoned = contentSource.get().commissions().get(commission);
+        CommissionState row = record.rows.remove(commission);
+        stopTracking(record, commission);
+        record.busy.add(commission);
+        writes.submit(id, () -> storage.abandonCommission(id, commission))
+                .whenComplete((removed, failure) ->
+                        server.execute(() -> abandonWritten(record, abandoned, row, failure)));
+        return Optional.empty();
     }
 
     /**
@@ -193,7 +509,29 @@ public final class GuildService {
      * on the future; it completes after the record is updated on the server thread.
      */
     public CompletableFuture<Void> setReputation(ServerPlayer player, int reputation) {
-        throw new UnsupportedOperationException("not built yet");
+        UUID id = player.getUUID();
+        CompletableFuture<Void> done = new CompletableFuture<>();
+        Runnable start = () -> writes.submit(id, () -> storage.setReputation(id, reputation, stamp()))
+                .whenComplete((ignored, failure) -> server.execute(() -> {
+                    if (failure != null) {
+                        done.completeExceptionally(failure);
+                        return;
+                    }
+                    PlayerRecord record = records.get(id);
+                    if (record != null && record.loaded) {
+                        record.reputation = reputation;
+                    } else if (record != null) {
+                        // The load in flight may have read the old reputation, so it is repeated.
+                        record.reloadRequested = true;
+                    }
+                    done.complete(null);
+                }));
+        if (server.isSameThread()) {
+            start.run();
+        } else {
+            server.execute(start);
+        }
+        return done;
     }
 
     /**
@@ -201,6 +539,567 @@ public final class GuildService {
      * record, and stops its tracking. Refused with {@link Refusal.Reason#SETTLING} while it is being settled.
      */
     public CompletableFuture<Optional<Refusal>> reset(ServerPlayer player, Identifier commission) {
-        throw new UnsupportedOperationException("not built yet");
+        UUID id = player.getUUID();
+        CompletableFuture<Optional<Refusal>> done = new CompletableFuture<>();
+        Runnable start = () -> {
+            PlayerRecord record = records.get(id);
+            if (record == null || !record.loaded) {
+                done.complete(refuse(Refusal.Reason.LOADING, GuildText.loading()));
+                return;
+            }
+            Optional<Commission> found = Optional.ofNullable(contentSource.get().commissions().get(commission));
+            Component name = found.map(Commission::name).orElseGet(() -> Component.literal(commission.toString()));
+            if (record.settling.containsKey(commission)) {
+                done.complete(refuse(Refusal.Reason.SETTLING, GuildText.settling(name)));
+                return;
+            }
+            if (record.busy.contains(commission)) {
+                done.complete(refuse(Refusal.Reason.BUSY, GuildText.busy(name)));
+                return;
+            }
+            stopTracking(record, commission);
+            record.busy.add(commission);
+            writes.submit(id, () -> storage.clearCommission(id, commission))
+                    .whenComplete((ignored, failure) -> server.execute(() -> {
+                        if (isCurrent(record)) {
+                            record.busy.remove(commission);
+                            if (failure == null) {
+                                record.rows.remove(commission);
+                            }
+                        }
+                        if (failure != null) {
+                            done.completeExceptionally(failure);
+                        } else {
+                            done.complete(Optional.empty());
+                        }
+                    }));
+        };
+        if (server.isSameThread()) {
+            start.run();
+        } else {
+            server.execute(start);
+        }
+        return done;
+    }
+
+    // Records and storage.
+
+    private void startLoad(PlayerRecord record) {
+        long generation = ++loadGenerations;
+        record.loadGeneration = generation;
+        record.loadInFlight = true;
+        UUID id = record.id;
+        writes.submit(id, () -> storage.loadCharacter(id))
+                .whenComplete((state, failure) -> server.execute(() -> loaded(record, generation, state, failure)));
+    }
+
+    private void loaded(PlayerRecord record, long generation, CharacterState state, Throwable failure) {
+        if (!isCurrent(record) || record.loadGeneration != generation) {
+            return;
+        }
+        record.loadInFlight = false;
+        if (failure != null) {
+            record.retryAt = ticks + RETRY_TICKS;
+            Alina.LOGGER.warn("Alina could not load the Guild record of {}; it is tried again in 5 seconds",
+                    record.id, failure);
+            return;
+        }
+        ServerPlayer entity = online(record.id);
+        if (entity == null) {
+            return;
+        }
+        List<PendingOperation> pending;
+        try {
+            pending = settlement.pendingFor(entity);
+        } catch (RuntimeException failed) {
+            record.retryAt = ticks + RETRY_TICKS;
+            Alina.LOGGER.warn("Alina could not read the settlement escrow of {}; the Guild record is tried again in "
+                    + "5 seconds", record.id, failed);
+            return;
+        }
+        record.reputation = state.reputation();
+        record.rows.clear();
+        record.rows.putAll(state.commissions());
+        record.settling.clear();
+        for (PendingOperation operation : pending) {
+            if (operation.kind() == OperationKind.TURN_IN) {
+                record.settling.put(operation.subjectId(), operation.createdAt());
+            }
+        }
+        if (record.reloadRequested) {
+            record.reloadRequested = false;
+            startLoad(record);
+            return;
+        }
+        record.loaded = true;
+        GuildContent content = contentSource.get();
+        for (CommissionState row : List.copyOf(record.rows.values())) {
+            Identifier id = row.commissionId();
+            if (isActive(record, row) && !content.commissions().containsKey(id)) {
+                withdraw(record, id);
+            }
+        }
+        for (CommissionState row : List.copyOf(record.rows.values())) {
+            if (isActive(record, row)) {
+                startTracking(record, row.commissionId());
+            }
+        }
+    }
+
+    private void withdraw(PlayerRecord record, Identifier commission) {
+        Component name = knownName(commission);
+        record.rows.remove(commission);
+        stopTracking(record, commission);
+        writes.submit(record.id, () -> storage.abandonCommission(record.id, commission))
+                .whenComplete((removed, failure) -> server.execute(() -> withdrawn(record, name, failure)));
+    }
+
+    private void withdrawn(PlayerRecord record, Component name, Throwable failure) {
+        if (failure != null) {
+            Alina.LOGGER.warn("Alina could not abandon a withdrawn commission for {}; the next load tries again",
+                    record.id, failure);
+            return;
+        }
+        ServerPlayer entity = online(record.id);
+        if (entity != null) {
+            entity.sendSystemMessage(GuildText.withdrawn(name));
+        }
+    }
+
+    private void retire(PlayerRecord record) {
+        closeTracking(record);
+        if (record.loaded) {
+            flush(record);
+        }
+    }
+
+    /** Writes the record's dirty progress. The returned future is the storage call, and never fails. */
+    private CompletableFuture<Void> flush(PlayerRecord record) {
+        if (record.dirty.isEmpty()) {
+            return CompletableFuture.completedFuture(null);
+        }
+        Map<Identifier, Integer> taken = Map.copyOf(record.dirty);
+        record.dirty.clear();
+        UUID id = record.id;
+        CompletableFuture<Void> write = writes.submit(id, () -> storage.writeCommissionProgress(id, taken));
+        write.whenComplete((ignored, failure) -> server.execute(() -> flushed(record, taken, failure)));
+        return write;
+    }
+
+    private void flushed(PlayerRecord record, Map<Identifier, Integer> taken, Throwable failure) {
+        if (failure == null) {
+            return;
+        }
+        if (!isCurrent(record)) {
+            Alina.LOGGER.warn("Alina could not write the progress of {}; the progress of {} commissions is lost",
+                    record.id, taken.size(), failure);
+            return;
+        }
+        Alina.LOGGER.warn("Alina could not write the progress of {}; it is tried again on the next flush",
+                record.id, failure);
+        for (Identifier commission : taken.keySet()) {
+            CommissionState row = record.rows.get(commission);
+            if (row != null && row.status() == CommissionStatus.ACTIVE && !record.dirty.containsKey(commission)) {
+                record.dirty.put(commission, row.progress());
+            }
+        }
+    }
+
+    // Accept, abandon and turn-in completions.
+
+    private void acceptWritten(PlayerRecord record, Commission accepted, Instant at, Throwable failure) {
+        boolean current = isCurrent(record);
+        if (current) {
+            record.busy.remove(accepted.id());
+        }
+        ServerPlayer entity = online(record.id);
+        if (failure == null) {
+            if (entity != null) {
+                AlinaTriggers.COMMISSION_ACCEPTED.trigger(entity, accepted.id(), accepted.category(),
+                        kindName(accepted));
+                entity.sendSystemMessage(GuildText.accepted(accepted.name()));
+            }
+            return;
+        }
+        Alina.LOGGER.warn("Alina could not record the acceptance of {} for {}; it is available again",
+                accepted.id(), record.id, failure);
+        if (current) {
+            CommissionState row = record.rows.get(accepted.id());
+            if (row != null && row.status() == CommissionStatus.ACTIVE && at.equals(row.acceptedAt())) {
+                record.rows.remove(accepted.id());
+                stopTracking(record, accepted.id());
+            }
+        }
+        if (entity != null) {
+            entity.sendSystemMessage(GuildText.acceptFailed(accepted.name()));
+        }
+    }
+
+    private void abandonWritten(PlayerRecord record, Commission abandoned, CommissionState row, Throwable failure) {
+        boolean current = isCurrent(record);
+        if (current) {
+            record.busy.remove(abandoned.id());
+        }
+        ServerPlayer entity = online(record.id);
+        if (failure == null) {
+            if (entity != null) {
+                entity.sendSystemMessage(GuildText.abandoned(abandoned.name()));
+            }
+            return;
+        }
+        Alina.LOGGER.warn("Alina could not abandon {} for {}; the commission is active again",
+                abandoned.id(), record.id, failure);
+        if (current && !record.rows.containsKey(abandoned.id())) {
+            record.rows.put(abandoned.id(), row);
+            if (row.progress() > 0) {
+                record.dirty.put(abandoned.id(), row.progress());
+            }
+            startTracking(record, abandoned.id());
+        }
+        if (entity != null) {
+            entity.sendSystemMessage(GuildText.abandonFailed(abandoned.name()));
+        }
+    }
+
+    private void settled(SettledOperation settled) {
+        Operation operation = settled.operation();
+        if (operation.kind() != OperationKind.TURN_IN) {
+            return;
+        }
+        Identifier commission = operation.subjectId();
+        PlayerRecord record = records.get(settled.player().getUUID());
+        if (record != null) {
+            record.settling.remove(commission);
+            if (record.loaded && operation.effect() instanceof OperationEffect.CommissionSettled effect) {
+                // Normally the applied listener has set the row already. A row still active here came from a load
+                // that read storage before the result was recorded, so the effect is set now.
+                CommissionState row = record.rows.get(commission);
+                if (row != null && row.status() == CommissionStatus.ACTIVE) {
+                    commissionSettled(record, operation, effect);
+                }
+            }
+        }
+        ServerPlayer entity = online(settled.player().getUUID());
+        if (entity != null) {
+            entity.sendSystemMessage(GuildText.commissionComplete(nameOf(commission)));
+        }
+    }
+
+    /** Storage recorded a settlement result: the record takes the effect and the reputation. */
+    private void applied(SettledOperation settled) {
+        PlayerRecord record = records.get(settled.player().getUUID());
+        if (record == null) {
+            return;
+        }
+        if (!record.loaded) {
+            record.reloadRequested = true;
+            return;
+        }
+        Operation operation = settled.operation();
+        record.reputation = settled.result().reputation();
+        if (operation.kind() == OperationKind.TURN_IN && operation.effect() instanceof OperationEffect.CommissionSettled effect) {
+            commissionSettled(record, operation, effect);
+        }
+    }
+
+    private void commissionSettled(PlayerRecord record, Operation operation, OperationEffect.CommissionSettled effect) {
+        Identifier commission = effect.commissionId();
+        CommissionState row = record.rows.get(commission);
+        Instant acceptedAt = row != null ? row.acceptedAt() : operation.createdAt().truncatedTo(ChronoUnit.MICROS);
+        long revision = row != null ? row.revisionId() : operation.revisionId();
+        Optional<Instant> cooldownUntil = effect.cooldownUntil().map(end -> end.truncatedTo(ChronoUnit.MICROS));
+        record.rows.put(commission, new CommissionState(commission, effect.status(), 0, acceptedAt,
+                Optional.of(operation.createdAt().truncatedTo(ChronoUnit.MICROS)), cooldownUntil, revision));
+        stopTracking(record, commission);
+    }
+
+    // Tracking.
+
+    private void startTracking(PlayerRecord record, Identifier commission) {
+        CommissionState row = record.rows.get(commission);
+        Commission found = contentSource.get().commissions().get(commission);
+        if (row == null || row.status() != CommissionStatus.ACTIVE || record.settling.containsKey(commission)
+                || found == null) {
+            return;
+        }
+        if (!(found.proof() instanceof Proof.Criterion criterion) || row.progress() >= criterion.criterion().count()) {
+            return;
+        }
+        CriterionWatchers.Watch previous = record.watches.remove(commission);
+        if (previous != null) {
+            previous.close();
+        }
+        try {
+            record.watches.put(commission,
+                    CriterionWatchers.watch(record.id, criterion.criterion(), player -> progressed(record, commission)));
+        } catch (RuntimeException failure) {
+            Alina.LOGGER.error("Alina could not watch the criterion of {} for {}", commission, record.id, failure);
+        }
+    }
+
+    /** One matching event for a criterion proof: counts it, and closes the watch when the count is reached. */
+    private void progressed(PlayerRecord record, Identifier commission) {
+        if (!isCurrent(record) || !record.loaded) {
+            return;
+        }
+        CommissionState row = record.rows.get(commission);
+        Commission found = contentSource.get().commissions().get(commission);
+        if (row == null || row.status() != CommissionStatus.ACTIVE || record.settling.containsKey(commission)
+                || found == null || !(found.proof() instanceof Proof.Criterion criterion)) {
+            stopTracking(record, commission);
+            return;
+        }
+        int count = criterion.criterion().count();
+        int progress = Math.min(count, row.progress() + 1);
+        record.rows.put(commission, withProgress(row, progress));
+        record.dirty.put(commission, progress);
+        if (progress >= count) {
+            CriterionWatchers.Watch watch = record.watches.remove(commission);
+            if (watch != null) {
+                watch.close();
+            }
+            ServerPlayer entity = online(record.id);
+            if (entity != null) {
+                entity.sendSystemMessage(GuildText.ready(found.name()));
+            }
+        }
+    }
+
+    /** A descent proof is met: its progress is 1. */
+    private void meet(PlayerRecord record, Identifier commission) {
+        CommissionState row = record.rows.get(commission);
+        if (row == null || row.status() != CommissionStatus.ACTIVE || row.progress() != 0) {
+            return;
+        }
+        record.rows.put(commission, withProgress(row, 1));
+        record.dirty.put(commission, 1);
+        ServerPlayer entity = online(record.id);
+        Commission found = contentSource.get().commissions().get(commission);
+        if (entity != null && found != null) {
+            entity.sendSystemMessage(GuildText.ready(found.name()));
+        }
+    }
+
+    /** Stops one commission's tracking: its watch, its dive and its unwritten progress. */
+    private void stopTracking(PlayerRecord record, Identifier commission) {
+        CriterionWatchers.Watch watch = record.watches.remove(commission);
+        if (watch != null) {
+            watch.close();
+        }
+        record.dirty.remove(commission);
+        record.armed.remove(commission);
+        descent.sync(record);
+    }
+
+    /** Stops every watch and dive of the record. Its unwritten progress stays in {@code dirty}. */
+    private void closeTracking(PlayerRecord record) {
+        record.watches.values().forEach(CriterionWatchers.Watch::close);
+        record.watches.clear();
+        descent.disarmAll(record);
+    }
+
+    // Board.
+
+    private void advanceBoard(GuildSettings settings) {
+        if (boardLoading || ticks < boardRetryAt) {
+            return;
+        }
+        LocalDate today = BoardDay.dateOf(clock.instant(), settings.resetTime(), settings.zone());
+        if (!today.equals(boardDate)) {
+            requestBoard(today);
+        }
+    }
+
+    private void requestBoard(LocalDate date) {
+        boardLoading = true;
+        boardDate = date;
+        board = null;
+        storage.loadBoard(date)
+                .whenComplete((stored, failure) -> server.execute(() -> boardLoaded(date, stored, failure)));
+    }
+
+    private void boardLoaded(LocalDate date, Optional<StoredBoard> stored, Throwable failure) {
+        if (failure != null) {
+            boardFailed(date, failure);
+            return;
+        }
+        if (stored.isPresent()) {
+            adoptBoard(stored.get());
+            return;
+        }
+        GuildContent content = contentSource.get();
+        GuildSettings settings = content.settings();
+        long revision = revisionId.getAsLong();
+        long seed = BoardDraw.seed(settings.salt(), date, revision);
+        List<Commission> pool = content.commissions().values().stream()
+                .filter(commission -> commission.kind() == Commission.Kind.REPEATABLE && commission.inRotation())
+                .toList();
+        List<Identifier> ids = BoardDraw.draw(pool, settings.boardSize(), seed);
+        if (ids.isEmpty()) {
+            board = new Board(date, revision, List.of(), false);
+            boardLoading = false;
+            return;
+        }
+        storage.storeBoard(new StoredBoard(date, revision, seed, ids))
+                .whenComplete((result, storeFailure) -> server.execute(() -> boardStored(date, result, storeFailure)));
+    }
+
+    private void boardStored(LocalDate date, StoredBoard result, Throwable failure) {
+        if (failure != null) {
+            boardFailed(date, failure);
+            return;
+        }
+        adoptBoard(result);
+    }
+
+    private void adoptBoard(StoredBoard stored) {
+        board = new Board(stored.boardDate(), stored.revisionId(), stored.commissionIds(), true);
+        boardLoading = false;
+    }
+
+    private void boardFailed(LocalDate date, Throwable failure) {
+        Alina.LOGGER.warn("Alina could not load or store the Guild board for {}; it is tried again in 5 seconds",
+                date, failure);
+        boardLoading = false;
+        boardDate = null;
+        boardRetryAt = ticks + RETRY_TICKS;
+    }
+
+    /** A board as storage holds it: the ids are not filtered to the active content. */
+    private record Board(LocalDate date, long revisionId, List<Identifier> ids, boolean stored) {}
+
+    // Helpers.
+
+    private GuildView viewOf(PlayerRecord record) {
+        Instant now = stamp();
+        Map<Identifier, CommissionView> views = new HashMap<>();
+        for (CommissionState row : record.rows.values()) {
+            Identifier id = row.commissionId();
+            boolean settling = record.settling.containsKey(id);
+            switch (row.status()) {
+                case ACTIVE -> views.put(id, new CommissionView(id,
+                        settling ? Standing.SETTLING : Standing.ACTIVE,
+                        row.progress(), row.acceptedAt(), Optional.empty(), Optional.empty()));
+                case COOLDOWN -> {
+                    if (cooldownEnd(row).filter(end -> end.isAfter(now)).isPresent()) {
+                        views.put(id, new CommissionView(id, Standing.COOLDOWN, row.progress(), row.acceptedAt(),
+                                row.cooldownUntil(), row.completedAt()));
+                    }
+                }
+                case COMPLETED -> views.put(id, new CommissionView(id, Standing.COMPLETED, row.progress(),
+                        row.acceptedAt(), Optional.empty(), row.completedAt()));
+            }
+        }
+        for (Map.Entry<Identifier, Instant> entry : record.settling.entrySet()) {
+            if (!record.rows.containsKey(entry.getKey())) {
+                views.put(entry.getKey(), new CommissionView(entry.getKey(), Standing.SETTLING, 0, entry.getValue(),
+                        Optional.empty(), Optional.empty()));
+            }
+        }
+        return new GuildView(record.id, record.reputation, views);
+    }
+
+    private static boolean proofMet(ServerPlayer player, Commission commission, CommissionState row) {
+        return switch (commission.proof()) {
+            case Proof.Items items -> ItemProofPlanner.plan(player.getInventory(), items).isPresent();
+            case Proof.Criterion criterion -> row.progress() >= criterion.criterion().count();
+            case Proof.Descent descent -> row.progress() >= 1;
+        };
+    }
+
+    /** The removal of an item proof, planned now and applied by settlement inside its begin. */
+    private static SettlementRequest.Removal removal(Proof proof) {
+        if (proof instanceof Proof.Items items) {
+            return player -> {
+                ItemPlan plan = ItemProofPlanner.plan(player.getInventory(), items)
+                        .orElseThrow(() -> new IllegalStateException("the item proof is no longer met"));
+                return plan.apply(player.getInventory());
+            };
+        }
+        return player -> List.of();
+    }
+
+    private static OperationEffect effect(Commission commission, GuildSettings settings, Instant now) {
+        if (commission.kind() == Commission.Kind.FEAT) {
+            return new OperationEffect.CommissionSettled(commission.id(), CommissionStatus.COMPLETED, Optional.empty());
+        }
+        Cooldown cooldown = commission.cooldown().orElse(settings.defaultCooldown());
+        Instant until = switch (cooldown) {
+            case Cooldown.Fixed fixed -> now.plus(fixed.duration());
+            case Cooldown.UntilBoardReset reset -> BoardDay.nextReset(now, settings.resetTime(), settings.zone());
+        };
+        return new OperationEffect.CommissionSettled(commission.id(), CommissionStatus.COOLDOWN, Optional.of(until));
+    }
+
+    private static String kindName(Commission commission) {
+        return commission.kind() == Commission.Kind.REPEATABLE ? "repeatable" : "feat";
+    }
+
+    private static Optional<Instant> cooldownEnd(CommissionState row) {
+        return row == null || row.status() != CommissionStatus.COOLDOWN ? Optional.empty() : row.cooldownUntil();
+    }
+
+    private static CommissionState withProgress(CommissionState row, int progress) {
+        return new CommissionState(row.commissionId(), row.status(), progress, row.acceptedAt(), row.completedAt(),
+                row.cooldownUntil(), row.revisionId());
+    }
+
+    private static boolean isRepeatable(GuildContent content, Identifier id) {
+        Commission found = content.commissions().get(id);
+        return found != null && found.kind() == Commission.Kind.REPEATABLE;
+    }
+
+    private static Optional<Refusal> refuse(Refusal.Reason reason, Component message) {
+        return Optional.of(new Refusal(reason, message));
+    }
+
+    private boolean isActive(PlayerRecord record, CommissionState row) {
+        return row.status() == CommissionStatus.ACTIVE && !record.settling.containsKey(row.commissionId());
+    }
+
+    private static boolean completed(PlayerRecord record, Identifier commission) {
+        CommissionState row = record.rows.get(commission);
+        return row != null && row.status() == CommissionStatus.COMPLETED;
+    }
+
+    private static int activeCount(PlayerRecord record) {
+        return (int) record.rows.values().stream()
+                .filter(row -> row.status() == CommissionStatus.ACTIVE && !record.settling.containsKey(row.commissionId()))
+                .count();
+    }
+
+    private boolean isCurrent(PlayerRecord record) {
+        return records.get(record.id) == record;
+    }
+
+    private ServerPlayer online(UUID id) {
+        for (ServerPlayer candidate : online.get()) {
+            if (candidate.getUUID().equals(id)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private Component nameOf(Identifier commission) {
+        Commission found = contentSource.get().commissions().get(commission);
+        return found != null ? found.name() : Component.literal(commission.toString());
+    }
+
+    /** The name of a commission as the content before the last activation wrote it, or its id when it has no name. */
+    private Component knownName(Identifier commission) {
+        Commission found = known.commissions().get(commission);
+        return found != null ? found.name() : Component.literal(commission.toString());
+    }
+
+    /** The clock's instant at the precision storage keeps, for values written to storage and kept in records. */
+    private Instant stamp() {
+        return clock.instant().truncatedTo(ChronoUnit.MICROS);
+    }
+
+    private void requireServerThread() {
+        if (!server.isSameThread()) {
+            throw new IllegalStateException("Alina Guild runs on the server thread");
+        }
     }
 }
