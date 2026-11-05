@@ -35,9 +35,10 @@ import town.lampas.alina.content.AchievementsContent.Achievement;
  * <p><b>What the 26.2 client does</b> (read from its bytecode): a packet with the reset flag clears the client's tree
  * and progress; then it removes the packet's removed ids (with their descendants), adds its holders (adding an id that
  * is already there adds a second child under the parent, so an id is always removed before it is added again), and
- * applies its progress. In a packet without the reset flag, every progress entry that is done shows a toast when its
- * display allows toasts, whether or not it was done before. Holders compare by id, so the client keeps a holder's
- * progress across a remove and add.
+ * applies its progress. A progress entry shows a toast when the packet has no reset flag, the entry is done, the
+ * packet's {@code showAdvancements} flag is true and the display allows toasts, whether or not the entry was done
+ * before. With {@code showAdvancements} false the client still adds the holders and applies the progress, without
+ * toasts. Holders compare by id, so the client keeps a holder's progress across a remove and add.
  *
  * <p><b>Holders.</b> A tab is a root holder {@code alina:tab/<namespace>/<path>} with the tab's title, icon and
  * background, frame task, no toast, always done. An achievement without tiers is one holder
@@ -47,8 +48,10 @@ import town.lampas.alina.content.AchievementsContent.Achievement;
  * title, description, icon and frame (a tier's own title and frame when it gives them), the content's {@code toast},
  * never announce (the service announces), never hidden. A repeatable's description gains
  * {@link AchievementText#earnedTimes} (or {@link AchievementText#completedTimes}, the earn count divided by the number of
- * tiers) once earned. Positions come from vanilla's {@code TreeNodePosition} over each tab, computed once per content,
- * with tabs and achievements in id order.
+ * tiers) once earned. Positions are Alina's own, so they do not change between server runs or activations (vanilla's
+ * {@code TreeNodePosition} orders siblings by identity hash): x is the depth below the tab root, and rows are given
+ * depth first with children in id order, a leaf taking the next free row and a parent sitting on its first child's
+ * row. Tabs are in id order.
  *
  * <p><b>Progress</b> uses the holder's requirements as segments, so the vanilla screen shows {@code x/y}: one segment
  * per requirements group when the achievement has several groups (a group's segment is done when the group is met);
@@ -63,17 +66,21 @@ import town.lampas.alina.content.AchievementsContent.Achievement;
  *   <li>Reset packets (join, {@code /reload}) carry every visible Alina holder and its progress:
  *       {@link #appendToReset} adds them to vanilla's packet, so no toast fires for what was earned before. Vanilla's
  *       first packet after a join waits while {@link #holdFirstPacket} is true: until the player's record has loaded,
- *       at most 100 ticks. A record that loads later is sent in a packet without the reset flag, with no done progress
- *       (so no toasts), and its earned holders show as not done until the next reset packet; a WARN is logged.</li>
- *   <li>An earn is sent at once in a packet without the reset flag carrying only the earned holder's progress, done,
- *       so the client shows its toast; a hidden achievement's first earn also adds its holders.</li>
- *   <li>Count changes are sent at most once every 100 ticks per player, as progress of not-done holders only.</li>
- *   <li>A cycle start or a revoke sends the achievement's holders' progress, not done.</li>
- *   <li>A content activation sends each online player one packet without the reset flag: the Alina ids it sent before
- *       removed, every visible holder added, and progress only for holders whose done state differs from what it last
- *       sent or that it never sent. Text such as the earn count is refreshed only by reset packets and activations.</li>
+ *       at most 100 ticks. A record that loads later gets a full packet (below); a WARN is logged.</li>
+ *   <li>A full packet has no reset flag and {@code showAdvancements} false: it removes the tab roots it sent the player
+ *       before (removing a root removes its holders), adds every visible holder, and carries every visible holder's
+ *       progress, done or not. No toast fires. It is sent to each online player on a content activation, and to a
+ *       player whose record loaded after the first-packet hold ended.</li>
+ *   <li>An earn is sent at once in a packet without the reset flag and with {@code showAdvancements} true, carrying
+ *       only the earned holder's progress, done, so the client shows its toast; a hidden achievement's first earn also
+ *       adds its holders.</li>
+ *   <li>Count changes are sent at most once every 100 ticks per player, as progress of not-done holders, with
+ *       {@code showAdvancements} false.</li>
+ *   <li>A cycle start or a revoke sends the achievement's holders' progress, not done, with {@code showAdvancements}
+ *       false.</li>
  * </ul>
- * A done progress entry is sent only when the holder goes from not done to done, so no toast repeats.
+ * Only an earn's packet has {@code showAdvancements} true, so no toast repeats. Text such as the earn count is
+ * refreshed by reset and full packets.
  */
 public final class AdvancementSync implements AchievementListener {
     /** Server ticks vanilla's first packet waits for a record to load: 5 seconds. */

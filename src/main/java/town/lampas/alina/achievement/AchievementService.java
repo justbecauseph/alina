@@ -63,13 +63,20 @@ import town.lampas.haruhi.api.HaruhiServices;
  * player is online. Storage calls for one character run one after another, in order, loads included, and every storage
  * completion runs on the server thread and is dropped once the server has stopped running tasks, as in the Guild
  * service. The operations in the player's settlement escrow when the record loads are earns being settled, and a record
- * whose load overlapped a storage result of one of them is loaded again.
+ * whose load overlapped a storage result of one of them is loaded again. A loaded record is never loaded again while
+ * the player stays online: a storage result for an earn this service began in this run is already in the record, and a
+ * result for any other earn (one found in the escrow at load) is applied to the record the way storage applies it.
+ * Staff operations are refused while a record loads.
  *
  * <p><b>The current cycle.</b> An achievement without {@code repeat} has one cycle. A repeatable's cycle is complete
  * when it is earned (without tiers) or its last tier is earned; its stored {@code availableAt} is then the end of the
- * cooldown. Once that time has passed (checked at load and on the tick), a new cycle starts: the stored state is written
- * with tier 0 and no {@code availableAt}, keeping the earn count and last earn time, the criterion counts are reset, and
- * the listeners get {@link AchievementListener#cycleStarted}. In the current cycle an achievement without tiers is earned
+ * cooldown. Once that time has passed (checked at load and on the tick), and no earn of the achievement is waiting to
+ * be written or is in the escrow, a new cycle starts: the criterion counts are reset first, then the stored state is
+ * written with tier 0 and no {@code availableAt}, keeping the earn count and last earn time, and the listeners get
+ * {@link AchievementListener#cycleStarted}. A cycle start that does not finish both writes is tried again, so a crash
+ * between them leaves counts at 0 and the old cooldown, never old counts in a new cycle. A repeatable whose stored state
+ * shows the cycle complete without an {@code availableAt} (it was earned before the content gave it {@code repeat}) is
+ * treated as available at its last earn time plus the cooldown. In the current cycle an achievement without tiers is earned
  * when its stored state exists and, for a repeatable, has an {@code availableAt}; a tiered achievement has earned the
  * tiers up to its stored tier.
  *
@@ -77,7 +84,9 @@ import town.lampas.haruhi.api.HaruhiServices;
  * its target, a {@code CriterionWatchers} watch counts its events: the target is the criterion's {@code count}, or for a
  * tiered achievement the last tier's count. Each matching event adds 1, up to the target. Requirements are vanilla's AND
  * of ORs: a criterion is met at its count. Counts are cached and written behind every {@link #FLUSH_TICKS}, on leave and
- * on stop; an earn writes its achievement's counts through first.
+ * on stop; an earn writes its achievement's counts through first. A failed count write puts its counts back only when
+ * the achievement's cycle has not been reset or revoked since. An achievement's own earns never count towards its own
+ * criteria (an {@code alina:achievement_earned} criterion with no {@code achievement} condition).
  *
  * <p><b>Earns.</b> An achievement without tiers is earned when its requirements are met; a tiered one earns each tier
  * whose count its criterion reaches, in order. Met-but-not-earned is also found when a record loads (counts written
