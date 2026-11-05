@@ -1,0 +1,16 @@
+pluginManagement {
+	repositories {
+		maven {
+			name = 'Fabric'
+			url = 'https://maven.fabricmc.net/'
+		}
+		mavenCentral()
+		gradlePluginPortal()
+	}
+}
+
+rootProject.name = 'alina'
+
+// haruhi has no published artifact yet (ALINA-PLAN H4), so Alina builds against a haruhi checkout beside this one.
+// Gradle substitutes the town.lampas:haruhi dependency with that build.
+includeBuild('../haruhi')

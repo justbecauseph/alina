@@ -1,0 +1,336 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/justbecauseph/alina/main/docs/alina.schema.json",
+  "title": "Haruhi content bundle with Alina's extensions",
+  "description": "A haruhi content bundle (haruhi's docs/bundle.schema.json) whose extensions object holds Alina's two sections, alina:guild and alina:achievements. It checks the shape of each value. Validation on the server also checks what this schema cannot: that board_graph names a graph in the bundle, that volumes, tabs and parents exist, that triggers are registered and their conditions parse, that loot tables, tags and effects exist, that a counted criterion uses an event trigger, that tier counts rise, and that requirements name the achievement's criteria.",
+  "allOf": [
+    { "$ref": "https://raw.githubusercontent.com/justbecauseph/haruhi/main/docs/bundle.schema.json" },
+    {
+      "properties": {
+        "extensions": {
+          "properties": {
+            "alina:guild": { "$ref": "#/$defs/guild" },
+            "alina:achievements": { "$ref": "#/$defs/achievements" }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^(?:[a-z0-9_.-]+:)?[a-z0-9_./-]+$"
+    },
+    "text": {
+      "description": "A text component: a plain string, a component object or an array of components.",
+      "type": ["string", "object", "array"]
+    },
+    "duration": {
+      "description": "A positive ISO-8601 duration, such as PT20H or P7D.",
+      "type": "string",
+      "pattern": "^(?!P(0+D)?(T(0+H)?(0+M)?(0+(\\.0+)?S)?)?$)P(?!$)(\\d+D)?(T(?=\\d)(\\d+H)?(\\d+M)?(\\d+(\\.\\d+)?S)?)?$"
+    },
+    "reward": {
+      "type": "object",
+      "properties": {
+        "loot_table": { "$ref": "#/$defs/id", "description": "Rolled once with the settlement operation's seed. Must exist on the server." },
+        "reputation": { "type": "integer", "minimum": 0, "default": 0 }
+      },
+      "additionalProperties": false
+    },
+    "criterion": {
+      "type": "object",
+      "properties": {
+        "trigger": { "$ref": "#/$defs/id", "description": "A registered criterion trigger, vanilla or Alina's." },
+        "conditions": { "type": "object", "description": "The trigger's conditions, exactly as in a vanilla advancement." },
+        "count": { "type": "integer", "minimum": 1, "default": 1, "description": "Matching events needed. Above 1 only for event triggers." }
+      },
+      "required": ["trigger"],
+      "additionalProperties": false
+    },
+    "guild": {
+      "description": "Guild settings, commissions and world volumes.",
+      "type": "object",
+      "properties": {
+        "settings": { "$ref": "#/$defs/settings" },
+        "commissions": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/id" },
+          "additionalProperties": { "$ref": "#/$defs/commission" }
+        },
+        "volumes": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/id" },
+          "additionalProperties": { "$ref": "#/$defs/volume" }
+        }
+      },
+      "required": ["settings"],
+      "additionalProperties": false
+    },
+    "settings": {
+      "type": "object",
+      "properties": {
+        "board_size": { "type": "integer", "minimum": 1, "default": 5 },
+        "active_cap": { "type": "integer", "minimum": 1, "default": 3 },
+        "reset": {
+          "type": "object",
+          "properties": {
+            "time": { "type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d(:[0-5]\\d)?$", "default": "04:00" },
+            "zone": { "type": "string", "default": "Asia/Manila", "description": "A time zone id." }
+          },
+          "additionalProperties": false
+        },
+        "default_cooldown": { "$ref": "#/$defs/cooldown" },
+        "salt": { "type": "string", "default": "" },
+        "board_graph": { "$ref": "#/$defs/id", "description": "The graph the Notice Board opens; must be in the bundle." },
+        "board_reach": { "type": "number", "exclusiveMinimum": 0, "maximum": 64, "default": 6 }
+      },
+      "required": ["board_graph"],
+      "additionalProperties": false
+    },
+    "cooldown": {
+      "oneOf": [
+        { "const": "board_reset", "description": "Until the next board reset." },
+        { "$ref": "#/$defs/duration" }
+      ]
+    },
+    "commission": {
+      "type": "object",
+      "properties": {
+        "category": { "enum": ["A", "B", "C", "D", "E", "F"] },
+        "kind": { "enum": ["repeatable", "feat"] },
+        "name": { "$ref": "#/$defs/text" },
+        "hint": { "$ref": "#/$defs/text" },
+        "proof": { "$ref": "#/$defs/proof" },
+        "cooldown": { "$ref": "#/$defs/cooldown", "description": "Repeatables only; default settings.default_cooldown." },
+        "weight": { "type": "integer", "minimum": 1, "default": 1 },
+        "in_rotation": { "type": "boolean", "default": true },
+        "reward": { "$ref": "#/$defs/reward" }
+      },
+      "required": ["category", "kind", "name", "hint", "proof"],
+      "additionalProperties": false,
+      "if": { "properties": { "kind": { "const": "feat" } }, "required": ["kind"] },
+      "then": { "not": { "required": ["cooldown"] } }
+    },
+    "proof": {
+      "type": "object",
+      "required": ["type"],
+      "properties": { "type": { "enum": ["item", "criterion", "descent"] } },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "item" } } },
+          "then": {
+            "properties": {
+              "type": true,
+              "all_of": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/itemEntry" } },
+              "any_of": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/itemEntry" } }
+            },
+            "oneOf": [ { "required": ["all_of"] }, { "required": ["any_of"] } ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "criterion" } } },
+          "then": {
+            "properties": {
+              "type": true,
+              "trigger": { "$ref": "#/$defs/id" },
+              "conditions": { "type": "object" },
+              "count": { "type": "integer", "minimum": 1, "default": 1 }
+            },
+            "required": ["trigger"],
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "descent" } } },
+          "then": {
+            "properties": {
+              "type": true,
+              "start": { "$ref": "#/$defs/id" },
+              "finish": { "$ref": "#/$defs/id" }
+            },
+            "required": ["start", "finish"],
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "itemEntry": {
+      "type": "object",
+      "properties": {
+        "item": {
+          "type": "object",
+          "description": "A vanilla item predicate (items, components, predicates) without count.",
+          "not": { "required": ["count"] }
+        },
+        "checks": { "type": "array", "items": { "$ref": "#/$defs/itemCheck" } },
+        "count": { "type": "integer", "minimum": 1, "default": 1 },
+        "consume": { "type": "boolean", "default": true }
+      },
+      "required": ["item"],
+      "additionalProperties": false
+    },
+    "itemCheck": {
+      "type": "object",
+      "required": ["type"],
+      "properties": { "type": { "enum": ["alina:bees", "alina:stew_effect", "alina:instrument_tag"] } },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "alina:bees" } } },
+          "then": {
+            "properties": {
+              "type": true,
+              "count": {
+                "description": "A whole number, or { min, max }.",
+                "oneOf": [
+                  { "type": "integer" },
+                  { "type": "object", "properties": { "min": { "type": "integer" }, "max": { "type": "integer" } }, "additionalProperties": false }
+                ]
+              }
+            },
+            "required": ["count"],
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "alina:stew_effect" } } },
+          "then": {
+            "properties": { "type": true, "effect": { "$ref": "#/$defs/id" } },
+            "required": ["effect"],
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "alina:instrument_tag" } } },
+          "then": {
+            "properties": { "type": true, "tag": { "$ref": "#/$defs/id" } },
+            "required": ["tag"],
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "volume": {
+      "type": "object",
+      "properties": {
+        "dimension": { "$ref": "#/$defs/id" },
+        "from": { "$ref": "#/$defs/blockPos" },
+        "to": { "$ref": "#/$defs/blockPos" }
+      },
+      "required": ["dimension", "from", "to"],
+      "additionalProperties": false
+    },
+    "blockPos": {
+      "type": "array",
+      "items": { "type": "integer" },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "achievements": {
+      "description": "Achievement tabs and achievements, shown in the vanilla advancement screen.",
+      "type": "object",
+      "properties": {
+        "tabs": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/id" },
+          "additionalProperties": { "$ref": "#/$defs/tab" }
+        },
+        "achievements": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/id" },
+          "additionalProperties": { "$ref": "#/$defs/achievement" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "icon": {
+      "description": "An item stack: an item id, or an object with id and optionally count and components. Leave out a count of 1, the default.",
+      "oneOf": [
+        { "$ref": "#/$defs/id" },
+        {
+          "type": "object",
+          "properties": {
+            "id": { "$ref": "#/$defs/id" },
+            "count": { "type": "integer", "minimum": 2, "maximum": 99 },
+            "components": { "type": "object" }
+          },
+          "required": ["id"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "frame": { "enum": ["task", "goal", "challenge"] },
+    "tab": {
+      "type": "object",
+      "properties": {
+        "title": { "$ref": "#/$defs/text" },
+        "icon": { "$ref": "#/$defs/icon" },
+        "background": {
+          "allOf": [ { "$ref": "#/$defs/id" }, { "not": { "pattern": "(^([a-z0-9_.-]+:)?textures/)|(\\.png$)" } } ],
+          "description": "A texture id without textures/ and .png, as in vanilla: minecraft:gui/advancements/backgrounds/stone."
+        }
+      },
+      "required": ["title", "icon"],
+      "additionalProperties": false
+    },
+    "achievement": {
+      "type": "object",
+      "properties": {
+        "tab": { "$ref": "#/$defs/id" },
+        "parent": { "$ref": "#/$defs/id" },
+        "title": { "$ref": "#/$defs/text" },
+        "description": { "$ref": "#/$defs/text" },
+        "icon": { "$ref": "#/$defs/icon" },
+        "frame": { "$ref": "#/$defs/frame", "default": "task" },
+        "hidden": { "type": "boolean", "default": false },
+        "announce": { "type": "boolean", "default": true },
+        "toast": { "type": "boolean", "default": true },
+        "criteria": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "minLength": 1 },
+          "additionalProperties": { "$ref": "#/$defs/criterion" }
+        },
+        "requirements": {
+          "description": "Vanilla's AND of ORs over criterion names. Default: every criterion.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+        },
+        "tiers": {
+          "description": "Count thresholds on the one criterion, rising.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/tier" }
+        },
+        "repeat": {
+          "type": "object",
+          "properties": { "cooldown": { "$ref": "#/$defs/duration" } },
+          "required": ["cooldown"],
+          "additionalProperties": false
+        },
+        "reward": { "$ref": "#/$defs/reward" }
+      },
+      "required": ["tab", "title", "description", "icon", "criteria"],
+      "additionalProperties": false,
+      "if": { "required": ["tiers"] },
+      "then": {
+        "properties": {
+          "criteria": { "maxProperties": 1, "additionalProperties": { "not": { "required": ["count"] } } }
+        }
+      }
+    },
+    "tier": {
+      "type": "object",
+      "properties": {
+        "count": { "type": "integer", "minimum": 1 },
+        "title": { "$ref": "#/$defs/text" },
+        "frame": { "$ref": "#/$defs/frame" },
+        "reward": { "$ref": "#/$defs/reward" }
+      },
+      "required": ["count"],
+      "additionalProperties": false
+    }
+  }
+}

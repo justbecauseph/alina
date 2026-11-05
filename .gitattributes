@@ -1,0 +1,19 @@
+# Set default behavior, that will take care of files with no other rules, to lf.
+* text eol=lf
+
+# Explicitly set text files with CRLF
+*.bat text eol=crlf
+
+# Denote all files that should be treated as binary, to not be touched by git.
+*.png binary
+*.jar binary
+*.zip binary
+*.ogg binary
+*.ttf binary
+*.otf binary
+*.gif binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.nbt binary
+*.class binary

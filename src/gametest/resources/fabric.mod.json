@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "alina-gametest",
+  "version": "1.0.0",
+  "name": "Alina Game Tests",
+  "environment": "*",
+  "entrypoints": {
+    "fabric-gametest": [
+      "town.lampas.alina.gametest.ScaffoldGameTests",
+      "town.lampas.alina.gametest.StorageGameTests",
+      "town.lampas.alina.gametest.ContentGameTests"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.3",
+    "minecraft": "~26.2",
+    "fabric-api": "*",
+    "haruhi": "*",
+    "alina": "*"
+  }
+}

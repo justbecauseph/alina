@@ -1,0 +1,94 @@
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+	archivesName = project.archives_base_name
+}
+
+repositories {
+	mavenCentral()
+	// GeckoLib, which haruhi puts on the runtime classpath for runClient and the GameTests.
+	maven {
+		url = 'https://api.modrinth.com/maven'
+		content { includeGroup 'maven.modrinth' }
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// haruhi: dialogue, NPCs and the content bundle Alina's extensions live in. Substituted by the ../haruhi build.
+	implementation "town.lampas:haruhi:${project.haruhi_version}"
+
+	// PostgreSQL storage adapter, nested in the jar.
+	implementation "org.postgresql:postgresql:${project.postgresql_version}"
+	include "org.postgresql:postgresql:${project.postgresql_version}"
+	implementation "com.zaxxer:HikariCP:${project.hikaricp_version}"
+	include "com.zaxxer:HikariCP:${project.hikaricp_version}"
+
+	testImplementation platform("org.junit:junit-bom:${project.junit_version}")
+	testImplementation 'org.junit.jupiter:junit-jupiter'
+	testImplementation "org.testcontainers:testcontainers-postgresql:${project.testcontainers_version}"
+	testImplementation "org.testcontainers:testcontainers-junit-jupiter:${project.testcontainers_version}"
+	testImplementation "com.networknt:json-schema-validator:${project.json_schema_validator_version}"
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+fabricApi {
+	// Server GameTests in src/gametest, run with runGameTest.
+	configureTests {
+		createSourceSet = true
+		modId = 'alina-gametest'
+		enableGameTests = true
+		enableClientGameTests = false
+		eula = true
+	}
+}
+
+def gameTestReportFile = layout.buildDirectory.file('test-results/gameTest/TEST-alina-gametest.xml')
+
+tasks.named('runGameTest') {
+	systemProperty 'fabric-api.gametest.report-file', gameTestReportFile.get().asFile.absolutePath
+	doFirst {
+		gameTestReportFile.get().asFile.parentFile.mkdirs()
+	}
+}
+
+test {
+	useJUnitPlatform()
+	// ArchitectureTest reads the compiled main classes.
+	dependsOn 'classes'
+	systemProperty 'alina.mainClasses', sourceSets.main.output.classesDirs.asPath
+	// The schema tests read these from the project directory, so a change to them reruns the tests.
+	// AlinaSchemaTest also reads haruhi's bundle schema, which alina.schema.json builds on.
+	inputs.files(fileTree('docs') { include '*.json', '*.md' }, fileTree('content'), 'AGENTS.md',
+			'../haruhi/docs/bundle.schema.json')
+			.withPropertyName('schemaFiles')
+			.withPathSensitivity(PathSensitivity.RELATIVE)
+}
+
+processResources {
+	def version = project.version
+	inputs.property "version", version
+
+	filesMatching("fabric.mod.json") {
+		expand "version": version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+	it.options.encoding = 'UTF-8'
+}
+
+java {
+	withSourcesJar()
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+}

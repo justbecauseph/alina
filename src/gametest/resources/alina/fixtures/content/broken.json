@@ -1,0 +1,123 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:test/board": {
+      "start": "hello",
+      "nodes": {
+        "hello": {
+          "text": "The board."
+        }
+      }
+    }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "board_graph": "alina:test/board"
+      },
+      "commissions": {
+        "alina:test/horn": {
+          "category": "B",
+          "kind": "repeatable",
+          "name": "Horn",
+          "hint": "Bring a horn.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              {
+                "item": {
+                  "items": "minecraft:goat_horn"
+                },
+                "checks": [
+                  {
+                    "type": "alina:instrument_tag",
+                    "tag": "alina:not_a_tag"
+                  }
+                ]
+              }
+            ]
+          },
+          "reward": {
+            "loot_table": "alina:rewards/missing"
+          }
+        },
+        "alina:test/ghost": {
+          "category": "E",
+          "kind": "feat",
+          "name": "Ghost",
+          "hint": "Kill a ghost.",
+          "proof": {
+            "type": "criterion",
+            "trigger": "minecraft:player_killed_entity",
+            "conditions": {
+              "entity": [
+                {
+                  "condition": "minecraft:reference",
+                  "name": "alina:no_such_predicate"
+                }
+              ]
+            }
+          }
+        },
+        "alina:test/longshot": {
+          "category": "E",
+          "kind": "feat",
+          "name": "Longshot",
+          "hint": "Far.",
+          "proof": {
+            "type": "criterion",
+            "trigger": "minecraft:player_killed_entity",
+            "conditions": {
+              "entity": [
+                {
+                  "condition": "minecraft:entity_properties",
+                  "entity": "this",
+                  "predicate": {
+                    "minecraft:entity_type": "minecraft:skeleton",
+                    "minecraft:distance": {
+                      "horizontl": {
+                        "min": 50
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "volumes": {
+        "alina:test/typo": {
+          "dimension": "minecraft:overwold",
+          "from": [
+            0,
+            0,
+            0
+          ],
+          "to": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    },
+    "alina:achievements": {
+      "achievements": {
+        "alina:test/slayer": {
+          "tab": "alina:nowhere",
+          "title": "Slayer",
+          "description": "Kill zombies.",
+          "icon": {
+            "id": "minecraft:zombie_head"
+          },
+          "criteria": {
+            "kills": {
+              "trigger": "minecraft:player_killed_entity"
+            }
+          }
+        }
+      }
+    }
+  }
+}

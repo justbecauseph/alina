@@ -1,2 +1,17 @@
 .serena
 docs/PLAN.md
+# gradle
+.gradle/
+build/
+out/
+classes/
+
+# run directories
+run/
+logs/
+
+# ide
+.idea/
+*.iml
+.vscode/
+bin/
