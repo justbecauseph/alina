@@ -1,5 +1,6 @@
 package town.lampas.alina.guild.proof;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import net.minecraft.world.entity.player.Inventory;
@@ -15,6 +16,11 @@ public record ItemPlan(List<Take> takes) {
 
     public ItemPlan {
         takes = List.copyOf(takes);
+        for (int i = 1; i < takes.size(); i++) {
+            if (takes.get(i).slot() <= takes.get(i - 1).slot()) {
+                throw new IllegalArgumentException("takes must be in slot order, with at most one take per slot");
+            }
+        }
     }
 
     /** Takes {@code count} items from the inventory slot {@code slot}. */
@@ -33,6 +39,20 @@ public record ItemPlan(List<Take> takes) {
      */
     public List<ItemStack> apply(Inventory inventory) {
         Objects.requireNonNull(inventory, "inventory");
-        throw new UnsupportedOperationException("not built yet");
+        for (Take take : takes) {
+            int held = inventory.getItem(take.slot()).getCount();
+            if (held < take.count()) {
+                throw new IllegalStateException("slot " + take.slot() + " holds " + held + " items, but the plan takes "
+                        + take.count());
+            }
+        }
+        List<ItemStack> removed = new ArrayList<>(takes.size());
+        for (Take take : takes) {
+            removed.add(inventory.removeItem(take.slot(), take.count()).copy());
+        }
+        if (!takes.isEmpty()) {
+            inventory.setChanged();
+        }
+        return List.copyOf(removed);
     }
 }

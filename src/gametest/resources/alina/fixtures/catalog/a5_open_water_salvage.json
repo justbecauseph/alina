@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:catalog/board": {
+      "start": "hello",
+      "nodes": {
+        "hello": {
+          "text": "Board."
+        }
+      }
+    }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "board_graph": "alina:catalog/board"
+      },
+      "commissions": {
+        "alina:catalog/a5_open_water_salvage": {
+          "category": "A",
+          "kind": "feat",
+          "name": "Open-Water Salvage",
+          "hint": "Reel in an enchanted book or a name tag after accepting.",
+          "proof": {
+            "type": "criterion",
+            "trigger": "minecraft:fishing_rod_hooked",
+            "conditions": {
+              "item": {
+                "items": [
+                  "minecraft:enchanted_book",
+                  "minecraft:name_tag"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:catalog/board": {
+      "start": "hello",
+      "nodes": {
+        "hello": {
+          "text": "Board."
+        }
+      }
+    }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "board_graph": "alina:catalog/board"
+      },
+      "commissions": {
+        "alina:catalog/d2_infiltration_brew": {
+          "category": "D",
+          "kind": "repeatable",
+          "name": "Infiltration Brew",
+          "hint": "Bring an ominous bottle of level 4.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              {
+                "item": {
+                  "items": "minecraft:ominous_bottle",
+                  "components": {
+                    "minecraft:ominous_bottle_amplifier": 4
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
