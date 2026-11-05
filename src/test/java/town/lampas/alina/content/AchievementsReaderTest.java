@@ -177,6 +177,22 @@ class AchievementsReaderTest {
     }
 
     @Test
+    void aHiddenAchievementCannotBeAParent() {
+        List<String> problems = problems(
+                achievement("alina:a", KILLS + ", \"hidden\": true"),
+                achievement("alina:b", KILLS + ", \"parent\": \"alina:a\""));
+        assertEquals(List.of("extension alina:achievements, achievement alina:b: parent 'alina:a' is hidden, and a hidden "
+                + "achievement cannot be a parent"), problems);
+    }
+
+    @Test
+    void aHiddenAchievementMayBeAChild() {
+        assertEquals(List.of(), problems(
+                achievement("alina:a", KILLS),
+                achievement("alina:b", KILLS + ", \"parent\": \"alina:a\", \"hidden\": true")));
+    }
+
+    @Test
     void parentsDoNotLoop() {
         List<String> problems = problems(
                 achievement("alina:a", KILLS + ", \"parent\": \"alina:b\""),

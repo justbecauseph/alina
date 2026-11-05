@@ -290,7 +290,10 @@ final class AchievementsReader {
         return tiers;
     }
 
-    /** Every parent is in the same tab as its child, and following parents never loops. */
+    /**
+     * Every parent is in the same tab as its child, no parent is hidden (a hidden achievement is withheld, so its child
+     * would wait for a holder the client never gets), and following parents never loops.
+     */
     private static void checkParents(
             Map<Identifier, Achievement> achievements,
             Map<Identifier, Identifier> declaredTabs,
@@ -302,6 +305,11 @@ final class AchievementsReader {
                 if (parentTab != null && !parentTab.equals(achievement.tab())) {
                     context.problem(where + ", achievement " + achievement.id(),
                             "parent '" + parent + "' is in tab " + parentTab + ", not " + achievement.tab());
+                }
+                Achievement parentAchievement = achievements.get(parent);
+                if (parentAchievement != null && parentAchievement.hidden()) {
+                    context.problem(where + ", achievement " + achievement.id(),
+                            "parent '" + parent + "' is hidden, and a hidden achievement cannot be a parent");
                 }
             });
             Set<Identifier> seen = new HashSet<>();
