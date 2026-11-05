@@ -40,7 +40,8 @@ so on) refer to that plan.
 | `criteria` | `CriterionWatchers`: watches one player's criterion trigger events, indexed by trigger and then player; `CriteriaModule` closes a player's watches on leave |
 | `settlement` | `SettlementService` (escrow attachment, verified player-data saves, recovery, world id, reconciliation), `SettlementModule` (the attachment, the service's lifecycle and tick), `SettlementTriggers` (the reputation and commission triggers, attached to the service's listeners by `SettlementModule`) |
 | `guild` | `GuildService` (each online character's record, the daily board, accept, abandon, turn-in, criterion and descent proof tracking), `GuildModule` (its lifecycle and events), `GuildText` (player-facing text); `guild.board` (board days and the draw), `guild.proof` (the item proof planner), `guild.dialogue` (haruhi conditions, actions and providers), `guild.block` (the Notice Board), `guild.command` (`/alina guild`) |
-| `mixin` | `SimpleCriterionTriggerMixin`: hands every simple criterion trigger event to the watchers, before vanilla's early return for players with no unfinished advancement on it; `PlayerStorageAccess`: the server's `playerDataStorage`, for settlement's saves |
+| `achievement` | `AchievementService` (each online character's achievement record, counting, tiers, repeat cycles, earns), `AdvancementSync` (Alina achievements in the vanilla advancement screen), `AchievementModule` (their lifecycle and events), the `alina:achievement` condition and `/alina achievement` |
+| `mixin` | `SimpleCriterionTriggerMixin`: hands every simple criterion trigger event to the watchers, before vanilla's early return for players with no unfinished advancement on it; `PlayerStorageAccess`: the server's `playerDataStorage`, for settlement's saves; `PlayerAdvancementsMixin`: holds a join's first advancement packet for the achievement record and adds Alina's holders to every reset packet |
 | `client` | `AlinaClient` entrypoint |
 
 Initialisation, in `Alina.onInitialize`: storage, criteria, content, settlement, guild, achievement (§5). Criterion
@@ -230,3 +231,40 @@ test clock, content parsed from a fixture, players outside the server list) and 
 the player's record and a board before acting. `CatalogGameTests` holds spike S4: each catalog item proof, checked on
 the item as the game makes it. A multi-step GameTest uses `helper.startSequence()`; `succeedWhen` succeeds on the
 first tick its runnable returns.
+
+## Achievements
+
+The achievement service (ALINA-PLAN §9) is `AchievementModule.service()` on a running server; the class javadoc of
+`AchievementService` and `AdvancementSync` is the contract.
+
+- **Records** load on join like the Guild's, through ordered per-character storage calls, and are never loaded again
+  while the player stays online: a settlement result is applied to the record the way storage applies it. Staff
+  operations are refused while a record loads.
+- **Counting.** Each criterion of an achievement that is not complete in the current cycle counts its events through
+  `CriterionWatchers`, up to its count (a tiered achievement: up to the last tier's count). Counts are written behind
+  every 100 ticks, on leave and on stop, and written through before an earn. An achievement's own earns never count
+  towards its own criteria.
+- **Earns.** An achievement without tiers is earned when its requirements (vanilla's AND of ORs) are met; a tiered one
+  earns each tier its count reaches, in order. An earn with a reward goes through settlement as an
+  `ACHIEVEMENT_REWARD`; one without is written directly. The trigger `alina:achievement_earned`, the chat announcement
+  (when `announce` is set and the `show_advancement_messages` game rule is on) and the toast follow once the earn is
+  durable. An earn met but not recorded (a crash between the counts and the earn) is found and made at the next load.
+- **Repeats.** A repeatable's cycle completes when it is earned (its last tier, when tiered); after the cooldown, and
+  once no earn of it is pending or being settled, a new cycle starts: counts reset first, then the stored state
+  returns to tier 0. Storage keeps the cooldown of the highest tier, so tier rewards applied out of order cannot clear
+  it.
+- **The vanilla screen.** Alina's achievements are not in the server's advancement tree. `AdvancementSync` builds
+  holders per player (a tab root `alina:tab/<namespace>/<path>`, an achievement `alina:achievement/<namespace>/<path>`,
+  later tiers `.../tier_<k>`) and sends them inside vanilla's reset packet, so nothing earned before toasts again. A
+  join's first packet waits up to 100 ticks for the record. Later packets carry progress only; just an earn's packet
+  sets `showAdvancements`, which is what makes the 26.2 client toast. Content activations and late loads send a full
+  packet without toasts. Counts show as vanilla's `x/y`: one segment per event up to 1000, or one per requirements
+  group. Positions are Alina's own and do not change between runs. Hidden achievements are withheld until earned once
+  and cannot be parents.
+- **Condition** `alina:achievement`: `achievement` (an achievement of the bundle's `alina:achievements` section) and
+  an optional `tier`. Without `tier`, true once the achievement has been earned in any cycle; with `tier`, once that
+  tier has been earned in any cycle.
+- **Commands**, for gamemasters: `/alina achievement list <player>`, `grant <player> <achievement> [tier]` (through
+  the normal earn path, reward included) and `revoke <player> <achievement> [tier]` (no reward taken back).
+- **Seeing it in a client** (the tabs, the `x/y` text and the toasts) needs `./gradlew runClient`; GameTests check
+  the packets the server sends.
