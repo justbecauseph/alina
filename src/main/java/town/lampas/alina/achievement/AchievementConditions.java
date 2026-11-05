@@ -14,9 +14,12 @@ import town.lampas.haruhi.dialogue.api.DialogueContext;
 import town.lampas.haruhi.dialogue.api.ParseContext;
 
 /**
- * The {@code alina:achievement} dialogue condition: whether the player has earned an achievement, or a tier of it, in the
- * current cycle. Its arguments are {@code achievement} (an id of the bundle's {@code alina:achievements} section) and an
- * optional {@code tier}. While the player's record loads, the condition is false.
+ * The {@code alina:achievement} dialogue condition: whether the player has earned the achievement, or a tier of it, in any
+ * cycle. Its arguments are {@code achievement} (an id of the bundle's {@code alina:achievements} section) and an optional
+ * {@code tier}. Without a tier it is true once the achievement has been earned, in any cycle, or an earn of it is being
+ * settled. With a tier k it is true when tier k has been earned in any cycle: either the current cycle's earned tiers reach
+ * k, or a cycle has been completed (the earn count is at least the number of tiers, since a complete cycle earns every
+ * tier). While the player's record loads, the condition is false.
  */
 final class AchievementConditions {
     private static final String TYPE = "alina:achievement";
@@ -47,7 +50,8 @@ final class AchievementConditions {
                         + "this bundle");
             }
             OptionalInt tier = tierOf(json, achievement);
-            return DataResult.<DialogueCondition>success(ctx -> earned(ctx, id, tier));
+            int tiers = achievement.tiers().size();
+            return DataResult.<DialogueCondition>success(ctx -> earned(ctx, id, tier, tiers));
         } catch (Invalid e) {
             String message = context.where() + TYPE + ": " + e.getMessage();
             return DataResult.error(() -> message);
@@ -94,11 +98,15 @@ final class AchievementConditions {
         return OptionalInt.of(tier);
     }
 
-    private static boolean earned(DialogueContext context, Identifier id, OptionalInt tier) {
-        return AchievementModule.service().view(context.player())
+    /**
+     * With a tier, the current cycle reaches it or a cycle has been completed, which a complete cycle shows as an earn count of
+     * at least the number of tiers. Without a tier, the achievement has been earned in any cycle.
+     */
+    private static boolean earned(DialogueContext context, Identifier id, OptionalInt tier, int tiers) {
+        return AchievementModule.conditionView(context.player())
                 .map(view -> view.achievements().get(id))
                 .map(standing -> tier.isPresent()
-                        ? standing.earnedTiers() >= tier.getAsInt()
+                        ? standing.earnedTiers() >= tier.getAsInt() || standing.earnCount() >= tiers
                         : standing.everEarned())
                 .orElse(false);
     }

@@ -1,25 +1,38 @@
 package town.lampas.alina.gametest;
 
+import com.google.gson.JsonParser;
 import com.mojang.serialization.DataResult;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 import net.fabricmc.fabric.api.gametest.v1.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.gamerules.GameRules;
 import town.lampas.alina.Alina;
+import town.lampas.alina.achievement.AchievementListener;
+import town.lampas.alina.achievement.AchievementModule;
 import town.lampas.alina.achievement.AchievementService;
 import town.lampas.alina.achievement.AchievementStanding;
 import town.lampas.alina.achievement.AchievementView;
@@ -30,10 +43,18 @@ import town.lampas.alina.storage.AlinaStorage;
 import town.lampas.alina.storage.ApplyResult;
 import town.lampas.alina.storage.CharacterState;
 import town.lampas.alina.storage.CriterionKey;
+import town.lampas.alina.storage.Operation;
 import town.lampas.alina.storage.OperationEffect;
 import town.lampas.alina.storage.OperationKind;
+import town.lampas.alina.storage.OperationStep;
 import town.lampas.haruhi.api.HaruhiServices;
 import town.lampas.haruhi.content.model.ContentBundle;
+import town.lampas.haruhi.dialogue.api.ConditionType;
+import town.lampas.haruhi.dialogue.api.DialogueCondition;
+import town.lampas.haruhi.dialogue.api.DialogueContext;
+import town.lampas.haruhi.dialogue.api.DialogueFlags;
+import town.lampas.haruhi.dialogue.api.DialogueRegistries;
+import town.lampas.haruhi.dialogue.api.ParseContext;
 
 /**
  * Server GameTests owned by the achievement service (ALINA-PLAN §9.2 and §9.3). Each test builds an {@link AchievementRig}:
@@ -42,7 +63,9 @@ import town.lampas.haruhi.content.model.ContentBundle;
  * thread on a later tick, so a test waits with {@code succeedWhen}: a check that is not met yet throws and is run again.
  *
  * <p>A test with several steps moves on with {@link #advance}, which fails the attempt, so each step runs on its own tick
- * and only the last step returns normally. Each step checks what it waits for before it acts, so an action runs once.
+ * and only the last step returns normally. Each step checks what it waits for before it acts, so an action runs once. A
+ * staff call that the service refuses while a record loads or a write is pending is run again by the step, through
+ * {@link #staff}.
  */
 @SuppressWarnings("removal")
 public final class AchievementGameTests {
@@ -60,12 +83,19 @@ public final class AchievementGameTests {
     private static final Identifier RETRIED = Alina.id("test/retried");
     private static final Identifier FLUSH = Alina.id("test/flush");
     private static final Identifier BLOCKER = Alina.id("test/blocker");
+    private static final Identifier LADDER = Alina.id("test/ladder");
+    private static final Identifier CHAIN = Alina.id("test/chain");
+    private static final Identifier PLAIN = Alina.id("test/plain");
+    private static final Identifier PAIR = Alina.id("test/pair");
     private static final String BUNDLE = "bundle.json";
     private static final String BUNDLE_NEXT = "bundle_next.json";
+    private static final String BUNDLE_REPEAT = "bundle_repeat.json";
     /** The daily achievement's cooldown: PT1H in the fixture. */
     private static final Duration DAILY_COOLDOWN = Duration.ofHours(1);
     /** Ticks the held reward waits before its operation is released: more than one retry interval. */
     private static final long HELD_TICKS = 150;
+    /** Ticks a check waits so that a cycle check (every 20 ticks) and a reload have run. */
+    private static final long SETTLE_TICKS = 40;
 
     // Earns and counting.
 
@@ -112,7 +142,7 @@ public final class AchievementGameTests {
                     helper.assertValueEqual(storedState(rig, player, QUIET_NOTE).map(AchievementState::earnCount).orElse(0),
                             1, "the earn count written to storage");
                     helper.assertValueEqual(storedCount(rig, player, QUIET_NOTE, "note"), 1, "the count written to storage");
-                    helper.assertTrue(rig.settlement().pendingFor(player).isEmpty(), "a reward went to the escrow");
+                    helper.assertTrue(operations(rig).isEmpty(), "a no-reward earn went through settlement");
                 }
             }
         });
@@ -256,7 +286,8 @@ public final class AchievementGameTests {
 
     /**
      * A repeatable is earned, stays earned through its cooldown with no count, starts a new cycle once the cooldown has
-     * passed, and is earned again with an earn count of 2.
+     * passed, its reset reaches storage, and it is earned again with an earn count of 2. Nothing is earned at a rejoin
+     * in the new cycle.
      */
     @GameTest(maxTicks = 900)
     public void aRepeatableCoolsDownStartsANewCycleAndIsEarnedAgain(GameTestHelper helper) {
@@ -283,7 +314,8 @@ public final class AchievementGameTests {
                 case 2 -> {
                     helper.assertValueEqual(earnedTiers(rig, player, DAILY), 1, "daily during the cooldown");
                     helper.assertValueEqual(viewCount(rig, player, DAILY, "daily"), 1,
-                            "the count during the cooldown: an event in the cooldown counts nothing");
+                            "the count during the cooldown, which the earn left at its target");
+                    helper.assertValueEqual(earnCountOf(rig, player, DAILY), 1, "an event in the cooldown earned daily again");
                     rig.clock().advance(Duration.ofMinutes(1));
                     advance(helper, step, 3);
                 }
@@ -291,12 +323,29 @@ public final class AchievementGameTests {
                     helper.assertValueEqual(earnedTiers(rig, player, DAILY), 0, "daily after the cooldown");
                     helper.assertValueEqual(viewCount(rig, player, DAILY, "daily"), 0, "the count of the new cycle");
                     helper.assertValueEqual(earnCountOf(rig, player, DAILY), 1, "the earn count kept by the new cycle");
-                    AlinaTriggers.MANUAL.trigger(player, "daily");
+                    // The reset reaches storage: no availability and no counts, whatever the record shows.
+                    helper.assertTrue(storedState(rig, player, DAILY).flatMap(AchievementState::availableAt).isEmpty(),
+                            "the stored availability after the reset");
+                    helper.assertValueEqual(storedCount(rig, player, DAILY, "daily"), 0, "the stored count after the reset");
                     advance(helper, step, 4);
+                }
+                case 4 -> {
+                    rig.service().leave(player);
+                    rig.service().join(player);
+                    advance(helper, step, 5);
+                }
+                case 5 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, DAILY), 0, "daily earned at load in the new cycle");
+                    helper.assertValueEqual(viewCount(rig, player, DAILY, "daily"), 0, "the count after a rejoin");
+                    helper.assertValueEqual(earnCountOf(rig, player, DAILY), 1, "the earn count after a rejoin");
+                    AlinaTriggers.MANUAL.trigger(player, "daily");
+                    advance(helper, step, 6);
                 }
                 default -> {
                     helper.assertValueEqual(earnedTiers(rig, player, DAILY), 1, "daily in the second cycle");
                     helper.assertValueEqual(earnCountOf(rig, player, DAILY), 2, "the earn count after the second earn");
+                    helper.assertValueEqual(storedState(rig, player, DAILY).map(AchievementState::earnCount).orElse(0), 2,
+                            "the earn count in storage");
                 }
             }
         });
@@ -350,6 +399,34 @@ public final class AchievementGameTests {
         });
     }
 
+    /**
+     * An unfiltered {@code alina:achievement_earned} criterion counts other achievements' earns and not its own: the chain
+     * reaches tier 1 with one count from one other earn (quiet_note, which nothing else counts), and no further tier from its
+     * own tier earn.
+     */
+    @GameTest(maxTicks = 400)
+    public void anAchievementsOwnEarnDoesNotCountTowardsItsOwnCriteria(GameTestHelper helper) {
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE);
+        ServerPlayer player = rig.joined();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    AlinaTriggers.MANUAL.trigger(player, "note");
+                    advance(helper, step, 1);
+                }
+                default -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, QUIET_NOTE), 1, "quiet_note");
+                    helper.assertValueEqual(viewCount(rig, player, CHAIN, "earned"), 1,
+                            "the chain's count: one earn of another achievement, and none of its own");
+                    helper.assertValueEqual(earnedTiers(rig, player, CHAIN), 1, "the chain after one other earn");
+                }
+            }
+        });
+    }
+
     // Announcements.
 
     /**
@@ -395,9 +472,59 @@ public final class AchievementGameTests {
         });
     }
 
+    /**
+     * An earn whose reward begin is refused is not announced, and is not counted by a meta-achievement, until its reward is
+     * begun. Once it is begun and delivered it is announced once, and a rejoin does not announce or reward it again.
+     */
+    @GameTest(maxTicks = 900)
+    public void anEarnIsAnnouncedOnceWhenItsBeginIsRefusedAndTheRecordReloads(GameTestHelper helper) {
+        CompletableFuture<Void> release = new CompletableFuture<>();
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE, delegate -> holdingApplies(delegate, release, op -> true));
+        ServerPlayer player = rig.joined();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    helper.assertTrue(rig.settlement().begin(player, blocker()).isPresent(),
+                            "the blocking operation was refused");
+                    AlinaTriggers.MANUAL.trigger(player, "retry");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, RETRIED), 1, "the earn is recorded while refused");
+                    helper.assertTrue(rig.messages(player).stream().noneMatch(text -> text.contains("Retried")),
+                            "the earn was announced before its reward was begun");
+                    helper.assertValueEqual(viewCount(rig, player, CHAIN, "earned"), 0,
+                            "a meta-achievement counted an earn whose reward was not begun");
+                    release.complete(null);
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertValueEqual(count(player, Items.EMERALD), 5, "the reward, once");
+                    rig.service().leave(player);
+                    rig.service().join(player);
+                    advance(helper, step, 3);
+                }
+                default -> {
+                    helper.assertTrue(loaded(rig, player), "the record has not reloaded after the rejoin");
+                    helper.assertValueEqual(count(player, Items.EMERALD), 5, "the reward given once, across the rejoin");
+                    helper.assertValueEqual(rig.messages(player).stream().filter(text -> text.contains("Retried")).count(), 1L,
+                            "the announcements of Retried");
+                    helper.assertValueEqual(earnedTiers(rig, player, CHAIN), 1,
+                            "the meta-achievement counted the earn once");
+                    helper.assertValueEqual(viewCount(rig, player, CHAIN, "earned"), 1, "the meta count");
+                    helper.assertValueEqual(storedState(rig, player, RETRIED).map(AchievementState::earnCount).orElse(0), 1,
+                            "the earn count in storage");
+                }
+            }
+        });
+    }
+
     // Counts in storage, leave and join, and content activation.
 
-    /** Counts reach storage behind the flush, and survive a leave and a join. */
+    /** Counts reach storage behind the flush, and a leave writes them before the rejoin's load reads them. */
     @GameTest(maxTicks = 900)
     public void countsReachStorageAfterTheFlushAndSurviveLeaveAndJoin(GameTestHelper helper) {
         AchievementRig rig = AchievementRig.create(helper, BUNDLE);
@@ -414,19 +541,50 @@ public final class AchievementGameTests {
                 }
                 case 1 -> {
                     helper.assertValueEqual(viewCount(rig, player, FLUSH, "step"), 2, "the count in the record");
-                    helper.assertValueEqual(storedCount(rig, player, FLUSH, "step"), 2, "the count in storage after the flush");
+                    // Before the periodic flush, so only the leave can write the count.
+                    helper.assertTrue(rig.ticks() < AchievementService.FLUSH_TICKS, "the periodic flush has run");
+                    helper.assertValueEqual(storedCount(rig, player, FLUSH, "step"), 0, "the count in storage before the leave");
                     rig.service().leave(player);
                     rig.service().join(player);
                     advance(helper, step, 2);
                 }
                 case 2 -> {
                     helper.assertValueEqual(viewCount(rig, player, FLUSH, "step"), 2, "the count after a rejoin");
+                    helper.assertValueEqual(storedCount(rig, player, FLUSH, "step"), 2, "the count in storage after the leave");
                     AlinaTriggers.MANUAL.trigger(player, "step");
                     AlinaTriggers.MANUAL.trigger(player, "step");
                     AlinaTriggers.MANUAL.trigger(player, "step");
                     advance(helper, step, 3);
                 }
                 default -> helper.assertValueEqual(earnedTiers(rig, player, FLUSH), 1, "flush after five steps");
+            }
+        });
+    }
+
+    /** Stopping the service writes every record's counts, and the test waits for the writes it returns. */
+    @GameTest(maxTicks = 400)
+    public void stopWritesTheCountsOfEveryRecord(GameTestHelper helper) {
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE);
+        ServerPlayer player = rig.joined();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            switch (step.get()) {
+                case 0 -> {
+                    helper.assertTrue(loaded(rig, player), "the record has not loaded");
+                    AlinaTriggers.MANUAL.trigger(player, "step");
+                    AlinaTriggers.MANUAL.trigger(player, "step");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertValueEqual(viewCount(rig, player, FLUSH, "step"), 2, "the count in the record");
+                    helper.assertTrue(rig.ticks() < AchievementService.FLUSH_TICKS, "the periodic flush has run");
+                    helper.assertValueEqual(storedCount(rig, player, FLUSH, "step"), 0, "the count in storage before stop");
+                    rig.service().stop().join();
+                    advance(helper, step, 2);
+                }
+                default -> helper.assertValueEqual(storedCount(rig, player, FLUSH, "step"), 2,
+                        "the count in storage after stop");
             }
         });
     }
@@ -468,13 +626,66 @@ public final class AchievementGameTests {
         });
     }
 
+    /**
+     * A failed count write does not put back the counts a revoke removed while it was in flight: the revoke's delete runs
+     * after the failed write, and the counts stay gone after a leave and a rejoin.
+     */
+    @GameTest(maxTicks = 900)
+    public void aFailedCountWriteDoesNotBringBackCountsThatARevokeRemoved(GameTestHelper helper) {
+        AtomicReference<CompletableFuture<Void>> held = new AtomicReference<>();
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE, delegate -> holdingFirstCountWrite(delegate, held));
+        ServerPlayer player = rig.joined();
+        AtomicReference<CompletableFuture<Optional<String>>> revoked = new AtomicReference<>();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    AlinaTriggers.MANUAL.trigger(player, "step");
+                    AlinaTriggers.MANUAL.trigger(player, "step");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    // The periodic flush is the first count write, and it is held until the test fails it.
+                    helper.assertTrue(held.get() != null, "the count write has not started");
+                    revoked.set(rig.service().revoke(player, FLUSH, OptionalInt.empty()));
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertTrue(!revoked.get().isDone(), "the revoke finished before the count write");
+                    held.get().completeExceptionally(new IllegalStateException("injected count write failure"));
+                    advance(helper, step, 3);
+                }
+                case 3 -> {
+                    helper.assertTrue(finished(helper, revoked.get()).isEmpty(), "the revoke was refused");
+                    rig.service().leave(player);
+                    rig.service().join(player);
+                    advance(helper, step, 4);
+                }
+                default -> {
+                    helper.assertValueEqual(viewCount(rig, player, FLUSH, "step"), 0, "the count after the revoke and a rejoin");
+                    helper.assertValueEqual(storedCount(rig, player, FLUSH, "step"), 0, "the count in storage after the revoke");
+                }
+            }
+        });
+    }
+
     // Staff controls.
 
-    /** Staff grant and revoke, without a tier and with one, through the same earn path and the same storage writes. */
+    /**
+     * Staff grant and revoke, without a tier and with one, through the same earn path and the same storage writes. A revoke
+     * completes once its writes have finished, and a call refused while a write is pending is run again.
+     */
     @GameTest(maxTicks = 1200)
     public void staffGrantAndRevokeWorkWithAndWithoutATier(GameTestHelper helper) {
         AchievementRig rig = AchievementRig.create(helper, BUNDLE);
         ServerPlayer player = rig.joined();
+        Pending grantSigned = new Pending();
+        Pending revokeSigned = new Pending();
+        Pending grantClimber = new Pending();
+        Pending revokeClimberTwo = new Pending();
+        Pending revokeClimber = new Pending();
         AtomicInteger step = new AtomicInteger();
         helper.succeedWhen(() -> {
             rig.tick();
@@ -482,8 +693,7 @@ public final class AchievementGameTests {
             AchievementService service = rig.service();
             switch (step.get()) {
                 case 0 -> {
-                    helper.assertTrue(outcome(service.grant(player, SIGNED_ON, OptionalInt.empty())).isEmpty(),
-                            "the grant of signed_on was refused");
+                    staff(helper, grantSigned, () -> service.grant(player, SIGNED_ON, OptionalInt.empty()));
                     advance(helper, step, 1);
                 }
                 case 1 -> {
@@ -493,36 +703,32 @@ public final class AchievementGameTests {
                     advance(helper, step, 2);
                 }
                 case 2 -> {
-                    helper.assertTrue(outcome(service.revoke(player, SIGNED_ON, OptionalInt.empty())).isEmpty(),
-                            "the revoke of signed_on was refused");
+                    staff(helper, revokeSigned, () -> service.revoke(player, SIGNED_ON, OptionalInt.empty()));
                     advance(helper, step, 3);
                 }
                 case 3 -> {
                     helper.assertValueEqual(earnedTiers(rig, player, SIGNED_ON), 0, "signed_on after the revoke");
                     helper.assertValueEqual(earnCountOf(rig, player, SIGNED_ON), 0, "the earn count after the revoke");
-                    helper.assertTrue(stored(rig, player).achievements().get(SIGNED_ON) == null,
-                            "the state of signed_on is still in storage");
-                    helper.assertValueEqual(count(player, Items.EMERALD), 5, "the reward of the revoked grant was taken back");
-                    helper.assertTrue(outcome(service.grant(player, Alina.id("test/nope"), OptionalInt.empty())).isPresent(),
-                            "an unknown achievement was granted");
+                    helper.assertTrue(storedState(rig, player, SIGNED_ON).isEmpty(), "the state of signed_on is still in storage");
+                    helper.assertValueEqual(count(player, Items.EMERALD), 5, "a revoke takes no reward back");
+                    helper.assertTrue(refusalOf(helper, service.grant(player, Alina.id("test/nope"), OptionalInt.empty()))
+                            .get().startsWith("Unknown achievement"), "an unknown achievement was granted");
                     advance(helper, step, 4);
                 }
                 case 4 -> {
-                    helper.assertTrue(outcome(service.grant(player, CLIMBER, OptionalInt.of(2))).isEmpty(),
-                            "the grant of tier 2 was refused");
+                    staff(helper, grantClimber, () -> service.grant(player, CLIMBER, OptionalInt.of(2)));
                     advance(helper, step, 5);
                 }
                 case 5 -> {
                     helper.assertValueEqual(earnedTiers(rig, player, CLIMBER), 2, "the climber tiers after the grant");
-                    helper.assertTrue(outcome(service.grant(player, CLIMBER, OptionalInt.of(1))).isPresent(),
-                            "tier 1 was granted again");
+                    helper.assertTrue(refusalOf(helper, service.grant(player, CLIMBER, OptionalInt.of(1))).get()
+                            .contains("already earned"), "tier 1 was granted again");
                     helper.assertValueEqual(count(player, Items.DIAMOND), 1, "the diamond of the tier 2 reward");
                     helper.assertTrue(rig.settlement().pendingFor(player).isEmpty(), "the tier reward is still in the escrow");
                     advance(helper, step, 6);
                 }
                 case 6 -> {
-                    helper.assertTrue(outcome(service.revoke(player, CLIMBER, OptionalInt.of(2))).isEmpty(),
-                            "the revoke of tier 2 was refused");
+                    staff(helper, revokeClimberTwo, () -> service.revoke(player, CLIMBER, OptionalInt.of(2)));
                     advance(helper, step, 7);
                 }
                 case 7 -> {
@@ -534,17 +740,165 @@ public final class AchievementGameTests {
                     advance(helper, step, 8);
                 }
                 case 8 -> {
-                    helper.assertTrue(outcome(service.revoke(player, CLIMBER, OptionalInt.empty())).isEmpty(),
-                            "the revoke of climber was refused");
+                    staff(helper, revokeClimber, () -> service.revoke(player, CLIMBER, OptionalInt.empty()));
                     advance(helper, step, 9);
                 }
                 default -> {
                     helper.assertValueEqual(earnedTiers(rig, player, CLIMBER), 0, "climber after revoking all of it");
                     helper.assertValueEqual(viewCount(rig, player, CLIMBER, "climb"), 0, "the count after revoking all");
-                    helper.assertTrue(stored(rig, player).achievements().get(CLIMBER) == null,
-                            "the state of climber is still in storage");
-                    helper.assertValueEqual(count(player, Items.DIAMOND), 1, "the tier reward was taken back by a revoke");
+                    helper.assertTrue(storedState(rig, player, CLIMBER).isEmpty(), "the state of climber is still in storage");
+                    helper.assertValueEqual(count(player, Items.DIAMOND), 1, "a revoke takes no tier reward back");
                 }
+            }
+        });
+    }
+
+    /**
+     * A revoke whose storage write fails changes nothing in the record, and its future says so. A second revoke, once the
+     * storage works again, removes the achievement.
+     */
+    @GameTest(maxTicks = 900)
+    public void aFailedRevokeChangesNothingAndIsReported(GameTestHelper helper) {
+        // The delete is held and failed by the test, so the revoke is in flight while the record still holds the achievement.
+        AtomicReference<CompletableFuture<Void>> held = new AtomicReference<>();
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE, delegate -> holdingFirstCall(delegate, "deleteAchievement", held));
+        ServerPlayer player = rig.joined();
+        AtomicReference<CompletableFuture<Optional<String>>> first = new AtomicReference<>();
+        Pending second = new Pending();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    AlinaTriggers.MANUAL.trigger(player, "note");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, QUIET_NOTE), 1, "quiet_note before the revoke");
+                    helper.assertValueEqual(storedCount(rig, player, QUIET_NOTE, "note"), 1, "the count in storage");
+                    first.set(rig.service().revoke(player, QUIET_NOTE, OptionalInt.empty()));
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertTrue(held.get() != null, "the delete has not started");
+                    helper.assertTrue(!first.get().isDone(), "the revoke finished before its write");
+                    helper.assertValueEqual(earnedTiers(rig, player, QUIET_NOTE), 1, "the record changed before the write");
+                    held.get().completeExceptionally(new IllegalStateException("injected delete failure"));
+                    advance(helper, step, 3);
+                }
+                case 3 -> {
+                    Optional<String> refusal = refusalOf(helper, first.get());
+                    helper.assertTrue(refusal.get().startsWith("Could not revoke " + QUIET_NOTE), "the failure text: " + refusal);
+                    helper.assertValueEqual(earnedTiers(rig, player, QUIET_NOTE), 1, "the record after the failed revoke");
+                    helper.assertValueEqual(earnCountOf(rig, player, QUIET_NOTE), 1, "the earn count after the failed revoke");
+                    advance(helper, step, 4);
+                }
+                case 4 -> {
+                    staff(helper, second, () -> rig.service().revoke(player, QUIET_NOTE, OptionalInt.empty()));
+                    advance(helper, step, 5);
+                }
+                default -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, QUIET_NOTE), 0, "quiet_note after the second revoke");
+                    helper.assertTrue(storedState(rig, player, QUIET_NOTE).isEmpty(), "the state is still in storage");
+                }
+            }
+        });
+    }
+
+    /** Staff calls are refused while the record's first load is in flight, and accepted once it has loaded. */
+    @GameTest(maxTicks = 600)
+    public void aStaffCallIsRefusedWhileTheRecordLoads(GameTestHelper helper) {
+        AtomicReference<CompletableFuture<Void>> gate = new AtomicReference<>(new CompletableFuture<>());
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE, delegate -> gatedLoads(delegate, gate));
+        ServerPlayer player = rig.newPlayer();
+        rig.service().join(player);
+        Pending grantQuiet = new Pending();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            switch (step.get()) {
+                case 0 -> {
+                    helper.assertTrue(refusalOf(helper, rig.service().revoke(player, SIGNED_ON, OptionalInt.empty())).get()
+                            .contains("still loading"), "a revoke was accepted while the record loads");
+                    helper.assertTrue(refusalOf(helper, rig.service().grant(player, QUIET_NOTE, OptionalInt.empty())).get()
+                            .contains("still loading"), "a grant was accepted while the record loads");
+                    gate.get().complete(null);
+                    advance(helper, step, 1);
+                }
+                default -> {
+                    helper.assertTrue(loaded(rig, player), "the record has not loaded");
+                    staff(helper, grantQuiet, () -> rig.service().grant(player, QUIET_NOTE, OptionalInt.empty()));
+                    helper.assertValueEqual(earnedTiers(rig, player, QUIET_NOTE), 1, "quiet_note after the grant");
+                }
+            }
+        });
+    }
+
+    /**
+     * A settlement result that lands while a record's first load is in flight drops that load, which may have read storage
+     * before the result. The record loads again and counts the reward once.
+     */
+    @GameTest(maxTicks = 600)
+    public void aSettlementResultDuringTheFirstLoadIsLoadedAgain(GameTestHelper helper) {
+        AtomicReference<CompletableFuture<Void>> gate = new AtomicReference<>(new CompletableFuture<>());
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE, delegate -> gatedLoads(delegate, gate));
+        ServerPlayer player = rig.newPlayer();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            switch (step.get()) {
+                case 0 -> {
+                    // An operation from an earlier session: it is in the escrow when the player joins.
+                    helper.assertTrue(rig.settlement().begin(player, signedReward()).isPresent(), "the reward was refused");
+                    rig.service().join(player);
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    // Delivery follows the storage result in the same server task, so the result has arrived while the
+                    // load is held. Then the load is let go.
+                    helper.assertValueEqual(count(player, Items.EMERALD), 5, "the operation was not applied and delivered");
+                    gate.get().complete(null);
+                    advance(helper, step, 2);
+                }
+                default -> {
+                    helper.assertTrue(loaded(rig, player), "the record has not loaded");
+                    helper.assertValueEqual(earnedTiers(rig, player, SIGNED_ON), 1, "signed_on after the reload");
+                    helper.assertValueEqual(earnCountOf(rig, player, SIGNED_ON), 1, "the earn count after the reload");
+                    helper.assertValueEqual(count(player, Items.EMERALD), 5, "the reward, once");
+                    helper.assertValueEqual(storedState(rig, player, SIGNED_ON).map(AchievementState::earnCount).orElse(0), 1,
+                            "the earn count in storage");
+                }
+            }
+        });
+    }
+
+    /**
+     * A staff revoke of an achievement whose earn is in the escrow, its reward not yet applied, is refused until the reward has
+     * been delivered.
+     */
+    @GameTest(maxTicks = 900)
+    public void aStaffCallIsRefusedWhileAnEarnIsBeingDelivered(GameTestHelper helper) {
+        CompletableFuture<Void> release = new CompletableFuture<>();
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE, delegate -> holdingApplies(delegate, release, op -> true));
+        ServerPlayer player = rig.joined();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    AlinaTriggers.MANUAL.trigger(player, "signed");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertTrue(rig.settlement().pendingFor(player).size() == 1, "the reward is not in the escrow");
+                    helper.assertTrue(refusalOf(helper, rig.service().revoke(player, SIGNED_ON, OptionalInt.empty())).get()
+                            .contains("being recorded or delivered"), "a revoke was accepted while its reward is in the escrow");
+                    release.complete(null);
+                    advance(helper, step, 2);
+                }
+                default -> helper.assertValueEqual(count(player, Items.EMERALD), 5, "the reward, once");
             }
         });
     }
@@ -558,7 +912,7 @@ public final class AchievementGameTests {
     @GameTest(maxTicks = 900)
     public void aRefusedSettlementBeginIsTriedAgain(GameTestHelper helper) {
         CompletableFuture<Void> release = new CompletableFuture<>();
-        AchievementRig rig = AchievementRig.create(helper, BUNDLE, delegate -> holdingApplies(delegate, release));
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE, delegate -> holdingApplies(delegate, release, op -> true));
         ServerPlayer player = rig.joined();
         AtomicInteger step = new AtomicInteger();
         AtomicLong releaseAt = new AtomicLong();
@@ -585,6 +939,250 @@ public final class AchievementGameTests {
                     helper.assertTrue(rig.settlement().pendingFor(player).isEmpty(), "the escrow still holds an operation");
                     helper.assertValueEqual(storedState(rig, player, RETRIED).map(AchievementState::earnCount).orElse(0),
                             1, "the earn count in storage");
+                }
+            }
+        });
+    }
+
+    /**
+     * Storage applies a reward that a load read while it was unapplied, and that the record counted from its earn: a load mid-
+     * settlement is followed by the reward's apply, and nothing is counted twice or lost.
+     */
+    @GameTest(maxTicks = 900)
+    public void aRewardAppliedAfterALoadIsCountedOnceAndNotLostByALaterWrite(GameTestHelper helper) {
+        CompletableFuture<Void> release = new CompletableFuture<>();
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE, delegate -> holdingApplies(delegate, release, op -> true));
+        ServerPlayer player = rig.joined();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    AlinaTriggers.MANUAL.trigger(player, "ladder");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertValueEqual(rig.settlement().pendingFor(player).size(), 1, "the first rung is not in the escrow");
+                    rig.service().leave(player);
+                    rig.service().join(player);
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, LADDER), 1, "the first rung at load, from the escrow");
+                    AlinaTriggers.MANUAL.trigger(player, "ladder");
+                    advance(helper, step, 3);
+                }
+                case 3 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, LADDER), 2, "the second rung");
+                    helper.assertValueEqual(rig.settlement().pendingFor(player).size(), 1, "the first rung settled early");
+                    release.complete(null);
+                    advance(helper, step, 4);
+                }
+                default -> {
+                    helper.assertValueEqual(storedState(rig, player, LADDER).map(AchievementState::earnCount).orElse(0), 2,
+                            "the earn count in storage");
+                    helper.assertValueEqual(storedState(rig, player, LADDER).map(AchievementState::tier).orElse(-1), 2,
+                            "the stored tier");
+                    helper.assertValueEqual(count(player, Items.DIAMOND), 1, "the first rung's reward, once");
+                }
+            }
+        });
+    }
+
+    /**
+     * A later tier's reward begins only once the earlier tier's reward is applied: storage applies them in tier order, so the
+     * completing tier's availability is written last.
+     */
+    @GameTest(maxTicks = 900)
+    public void aLaterTierRewardWaitsForTheEarlierTierToBeApplied(GameTestHelper helper) {
+        CompletableFuture<Void> release = new CompletableFuture<>();
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE,
+                delegate -> holdingApplies(delegate, release, op -> op.effect() instanceof OperationEffect.AchievementEarned earned
+                        && earned.achievementId().equals(PAIR)));
+        ServerPlayer player = rig.joined();
+        AtomicLong waitUntil = new AtomicLong();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    AlinaTriggers.MANUAL.trigger(player, "pair");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertValueEqual(rig.settlement().pendingFor(player).size(), 1, "the first tier is not in the escrow");
+                    AlinaTriggers.MANUAL.trigger(player, "pair");
+                    waitUntil.set(rig.ticks() + SETTLE_TICKS);
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, PAIR), 2, "the second tier is earned");
+                    helper.assertTrue(rig.ticks() >= waitUntil.get(), "waiting for the second tier's reward to be begun");
+                    helper.assertValueEqual(rig.settlement().pendingFor(player).size(), 1,
+                            "the second tier's reward was begun before the first was applied");
+                    release.complete(null);
+                    advance(helper, step, 3);
+                }
+                default -> {
+                    helper.assertTrue(rig.settlement().pendingFor(player).isEmpty(), "an operation is still in the escrow");
+                    helper.assertValueEqual(storedState(rig, player, PAIR).map(AchievementState::tier).orElse(-1), 2,
+                            "the stored tier");
+                    helper.assertValueEqual(storedState(rig, player, PAIR).map(AchievementState::earnCount).orElse(0), 2,
+                            "the earn count in storage");
+                }
+            }
+        });
+    }
+
+    /**
+     * A cycle does not start while a reward of the old cycle is undelivered: the inventory is full, so the first rung's
+     * reward stays in the escrow through the cooldown, and the new cycle starts only after the reward has been delivered.
+     */
+    @GameTest(maxTicks = 1200)
+    public void aCycleWaitsForAnUndeliveredRewardOfTheOldCycle(GameTestHelper helper) {
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE);
+        ServerPlayer player = rig.joined();
+        AtomicLong waitUntil = new AtomicLong();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    fillMainInventory(player);
+                    AlinaTriggers.MANUAL.trigger(player, "ladder");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, LADDER), 1, "the first rung");
+                    // Applied by storage, but the stacks do not fit, so the operation stays in the escrow.
+                    helper.assertTrue(rig.settlement().pendingFor(player).stream().anyMatch(op -> op.applied().isPresent()),
+                            "the first rung's reward is not applied");
+                    AlinaTriggers.MANUAL.trigger(player, "ladder");
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, LADDER), 2, "the second rung");
+                    rig.clock().advance(DAILY_COOLDOWN.plusSeconds(1));
+                    waitUntil.set(rig.ticks() + SETTLE_TICKS);
+                    advance(helper, step, 3);
+                }
+                case 3 -> {
+                    helper.assertTrue(rig.ticks() >= waitUntil.get(), "waiting for the cycle checks after the cooldown");
+                    helper.assertValueEqual(earnedTiers(rig, player, LADDER), 2,
+                            "the cycle restarted while the first rung's reward was undelivered");
+                    emptyMainInventory(player);
+                    advance(helper, step, 4);
+                }
+                case 4 -> {
+                    helper.assertValueEqual(count(player, Items.DIAMOND), 1, "the first rung's reward, delivered");
+                    helper.assertValueEqual(earnedTiers(rig, player, LADDER), 0, "the new cycle has not started");
+                    AlinaTriggers.MANUAL.trigger(player, "ladder");
+                    advance(helper, step, 5);
+                }
+                default -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, LADDER), 1, "the first rung of the new cycle");
+                    helper.assertValueEqual(count(player, Items.DIAMOND), 2, "the first rung's reward in the new cycle");
+                    helper.assertValueEqual(earnCountOf(rig, player, LADDER), 3, "the earn count after the new cycle's rung");
+                }
+            }
+        });
+    }
+
+    /**
+     * A cycle reset deletes the counts before it writes the state. The first reset call fails, and the record leaves before
+     * the retry. On the rejoin the cycle starts again, so the achievement is not earned from the old counts.
+     */
+    @GameTest(maxTicks = 900)
+    public void aFailedResetIsStartedAgainAfterARejoinAndNotEarnedFromTheOldCounts(GameTestHelper helper) {
+        AtomicBoolean failed = new AtomicBoolean();
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE, delegate -> failingOnce(delegate, "resetCriterionProgress", failed));
+        ServerPlayer player = rig.joined();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    AlinaTriggers.MANUAL.trigger(player, "daily");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, DAILY), 1, "daily after the event");
+                    helper.assertTrue(storedState(rig, player, DAILY).flatMap(AchievementState::availableAt).isPresent(),
+                            "the earn is not in storage");
+                    rig.clock().advance(DAILY_COOLDOWN.plusSeconds(1));
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertTrue(failed.get(), "the cycle has not started its reset");
+                    rig.service().leave(player);
+                    rig.service().join(player);
+                    advance(helper, step, 3);
+                }
+                case 3 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, DAILY), 0, "daily earned from the old counts at load");
+                    helper.assertValueEqual(viewCount(rig, player, DAILY, "daily"), 0, "the count of the new cycle");
+                    helper.assertValueEqual(earnCountOf(rig, player, DAILY), 1, "the earn count after the rejoin");
+                    helper.assertTrue(storedState(rig, player, DAILY).flatMap(AchievementState::availableAt).isEmpty(),
+                            "the reset did not reach storage");
+                    helper.assertValueEqual(storedCount(rig, player, DAILY, "daily"), 0, "the old counts are still in storage");
+                }
+            }
+        });
+    }
+
+    /**
+     * A failed count write does not bring back the counts that a cycle start removed while the write was in flight. The periodic
+     * flush takes the count of a daily achievement and is held; the cooldown passes and the cycle starts; the held write fails.
+     * The reset then writes storage without the count, and a rejoin finds the achievement not earned.
+     */
+    @GameTest(maxTicks = 900)
+    public void aFailedCountWriteDoesNotBringBackCountsThatACycleStartRemoved(GameTestHelper helper) {
+        AtomicBoolean armed = new AtomicBoolean();
+        AtomicReference<CompletableFuture<Void>> held = new AtomicReference<>();
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE,
+                delegate -> holdingArmedCountWrite(delegate, armed, held));
+        ServerPlayer player = rig.joined();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    AlinaTriggers.MANUAL.trigger(player, "daily");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertTrue(storedState(rig, player, DAILY).flatMap(AchievementState::availableAt).isPresent(),
+                            "the earn is not in storage");
+                    // The next periodic flush writes daily's count, and that write is held until the test fails it.
+                    armed.set(true);
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertTrue(held.get() != null, "the periodic flush has not written the count");
+                    rig.clock().advance(DAILY_COOLDOWN.plusSeconds(1));
+                    advance(helper, step, 3);
+                }
+                case 3 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, DAILY), 0, "daily has not started its new cycle");
+                    held.get().completeExceptionally(new IllegalStateException("injected count write failure"));
+                    advance(helper, step, 4);
+                }
+                case 4 -> {
+                    helper.assertTrue(storedState(rig, player, DAILY).flatMap(AchievementState::availableAt).isEmpty(),
+                            "the reset has not reached storage");
+                    rig.service().leave(player);
+                    rig.service().join(player);
+                    advance(helper, step, 5);
+                }
+                default -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, DAILY), 0, "daily earned from a count the cycle removed");
+                    helper.assertValueEqual(viewCount(rig, player, DAILY, "daily"), 0, "the count after the rejoin");
+                    helper.assertValueEqual(storedCount(rig, player, DAILY, "daily"), 0, "the count in storage");
                 }
             }
         });
@@ -630,6 +1228,186 @@ public final class AchievementGameTests {
         });
     }
 
+    /**
+     * The condition is evaluated through the rig's service, which {@link AchievementModule#conditionViews} points it at. A
+     * daily achievement stays true through its new cycle and stops when staff revoke it. A ladder's tiers stay true through
+     * the restart of its completed cycle. Cooldowns run on the rig's clock, so the cycles start at fixed ticks.
+     */
+    @GameTest(maxTicks = 900)
+    public void theAchievementConditionIsEvaluatedInEveryCycle(GameTestHelper helper) {
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE);
+        ServerPlayer player = rig.joined();
+        ContentBundle bundle = parseOrFail(helper, BUNDLE);
+        AchievementModule.conditionViews(rig.service()::view);
+        Pending revokeDaily = new Pending();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    helper.assertTrue(!conditionHolds(helper, player, bundle, DAILY, OptionalInt.empty()),
+                            "daily is true before it is earned");
+                    helper.assertTrue(!conditionHolds(helper, player, bundle, LADDER, OptionalInt.of(2)),
+                            "tier 2 of the ladder is true before it is earned");
+                    AlinaTriggers.MANUAL.trigger(player, "daily");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertTrue(conditionHolds(helper, player, bundle, DAILY, OptionalInt.empty()),
+                            "daily is false after it is earned");
+                    rig.clock().advance(DAILY_COOLDOWN.plusSeconds(1));
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, DAILY), 0, "daily has not started its new cycle");
+                    helper.assertTrue(conditionHolds(helper, player, bundle, DAILY, OptionalInt.empty()),
+                            "daily is false in its new cycle, though a cycle was completed");
+                    advance(helper, step, 3);
+                }
+                case 3 -> {
+                    // The revoke is its own step, so a retry does not check the condition after it has begun.
+                    staff(helper, revokeDaily, () -> rig.service().revoke(player, DAILY, OptionalInt.empty()));
+                    advance(helper, step, 4);
+                }
+                case 4 -> {
+                    helper.assertTrue(!conditionHolds(helper, player, bundle, DAILY, OptionalInt.empty()),
+                            "daily is true after a staff revoke");
+                    AlinaTriggers.MANUAL.trigger(player, "ladder");
+                    AlinaTriggers.MANUAL.trigger(player, "ladder");
+                    advance(helper, step, 5);
+                }
+                case 5 -> {
+                    helper.assertTrue(conditionHolds(helper, player, bundle, LADDER, OptionalInt.of(2)),
+                            "tier 2 is false after both tiers are earned");
+                    helper.assertTrue(conditionHolds(helper, player, bundle, LADDER, OptionalInt.of(1)),
+                            "tier 1 is false after both tiers are earned");
+                    rig.clock().advance(DAILY_COOLDOWN.plusSeconds(1));
+                    advance(helper, step, 6);
+                }
+                default -> {
+                    // The completed cycle has restarted: each tier was earned in a completed cycle, so the condition holds for it.
+                    helper.assertValueEqual(earnedTiers(rig, player, LADDER), 0, "the ladder has not started its new cycle");
+                    helper.assertTrue(conditionHolds(helper, player, bundle, LADDER, OptionalInt.of(2)),
+                            "tier 2 is false in the new cycle, though a cycle was completed");
+                    helper.assertTrue(conditionHolds(helper, player, bundle, LADDER, OptionalInt.of(1)),
+                            "tier 1 is false in the new cycle, though a cycle was completed");
+                    helper.assertTrue(conditionHolds(helper, player, bundle, LADDER, OptionalInt.empty()),
+                            "the ladder is false in the new cycle, though a cycle was completed");
+                    AchievementModule.conditionViews(null);
+                }
+            }
+        });
+    }
+
+    // Content activation.
+
+    /**
+     * Listeners hear a content activation before the service starts the cycles and earns of the new content, so an earn the
+     * activation makes is told after it.
+     */
+    @GameTest(maxTicks = 600)
+    public void contentActivationTellsTheListenersBeforeItEarns(GameTestHelper helper) {
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE_NEXT);
+        ServerPlayer player = rig.newPlayer();
+        List<String> told = new ArrayList<>();
+        rig.service().addListener(new AchievementListener() {
+            @Override
+            public void contentActivated() {
+                told.add("activated");
+            }
+
+            @Override
+            public void earned(ServerPlayer earner, Identifier achievement, int tier) {
+                told.add("earned " + achievement);
+            }
+        });
+        CompletableFuture<Void> seeded = rig.storage().writeCriterionProgress(player.getUUID(),
+                Map.of(new CriterionKey(SIGNED_ON, "met"), 1), rig.clock().instant());
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            switch (step.get()) {
+                case 0 -> {
+                    helper.assertTrue(seeded.isDone(), "the counts are not in storage yet");
+                    rig.service().join(player);
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertTrue(loaded(rig, player), "the record has not loaded");
+                    helper.assertTrue(rig.service().view(player).orElseThrow().achievements().get(SIGNED_ON) == null,
+                            "signed_on is in the content before its activation");
+                    rig.useContent(BUNDLE);
+                    rig.service().contentActivated();
+                    advance(helper, step, 2);
+                }
+                default -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, SIGNED_ON), 1, "signed_on after the activation");
+                    helper.assertTrue(told.contains("earned " + SIGNED_ON), "the earn was not told: " + told);
+                    helper.assertTrue(told.indexOf("activated") >= 0
+                            && told.indexOf("activated") < told.indexOf("earned " + SIGNED_ON),
+                            "the earn was told before the activation: " + told);
+                }
+            }
+        });
+    }
+
+    /**
+     * A tiered achievement earned in full before its content gained a repeat is not earned again by the activation, and its
+     * next cycle starts a cooldown after its last earn.
+     */
+    @GameTest(maxTicks = 600)
+    public void aTieredRepeatAddedAfterItWasEarnedStartsItsNextCycle(GameTestHelper helper) {
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE);
+        ServerPlayer player = rig.joined();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    AlinaTriggers.MANUAL.trigger(player, "climb");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, CLIMBER), 1, "the first tier");
+                    AlinaTriggers.MANUAL.trigger(player, "climb");
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, CLIMBER), 2, "the second tier");
+                    AlinaTriggers.MANUAL.trigger(player, "climb");
+                    advance(helper, step, 3);
+                }
+                case 3 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, CLIMBER), 3, "the last tier");
+                    helper.assertTrue(rig.settlement().pendingFor(player).isEmpty(), "the rewards are still in the escrow");
+                    helper.assertValueEqual(storedState(rig, player, CLIMBER).map(AchievementState::tier).orElse(-1), 3,
+                            "the stored tier before the repeat");
+                    rig.useContent(BUNDLE_REPEAT);
+                    rig.service().contentActivated();
+                    advance(helper, step, 4);
+                }
+                case 4 -> {
+                    helper.assertValueEqual(earnCountOf(rig, player, CLIMBER), 3, "the earn count after the activation");
+                    helper.assertValueEqual(earnedTiers(rig, player, CLIMBER), 3, "the climber tiers after the activation");
+                    rig.clock().advance(DAILY_COOLDOWN.plusSeconds(1));
+                    advance(helper, step, 5);
+                }
+                case 5 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, CLIMBER), 0, "the new cycle has not started");
+                    helper.assertValueEqual(earnCountOf(rig, player, CLIMBER), 3, "the earn count after the new cycle");
+                    AlinaTriggers.MANUAL.trigger(player, "climb");
+                    advance(helper, step, 6);
+                }
+                default -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, CLIMBER), 1, "the first tier of the new cycle");
+                    helper.assertValueEqual(earnCountOf(rig, player, CLIMBER), 4, "the earn count after the new cycle's first tier");
+                }
+            }
+        });
+    }
+
     // Helpers.
 
     /**
@@ -659,7 +1437,7 @@ public final class AchievementGameTests {
         return standing(rig, player, id).map(AchievementStanding::earnCount).orElse(-1);
     }
 
-    private static Optional<java.time.Instant> availableAtOf(AchievementRig rig, ServerPlayer player, Identifier id) {
+    private static Optional<Instant> availableAtOf(AchievementRig rig, ServerPlayer player, Identifier id) {
         return standing(rig, player, id).flatMap(AchievementStanding::availableAt);
     }
 
@@ -681,22 +1459,44 @@ public final class AchievementGameTests {
         return stored(rig, player).criterionProgress().getOrDefault(new CriterionKey(id, criterion), 0);
     }
 
-    /** The refusal of a staff call: empty when it was done, and a refusal for a call that has not completed. */
-    private static Optional<String> outcome(CompletableFuture<Optional<String>> future) {
-        return future.isDone() && !future.isCompletedExceptionally() ? future.join() : Optional.of("not completed");
+    private static List<OperationStep> operations(AchievementRig rig) {
+        return rig.storage().listOperations(EnumSet.allOf(OperationStep.class), 10).join().stream()
+                .map(stored -> stored.step())
+                .toList();
     }
 
-    /** Counts the item in every slot of the player's inventory, the armour and the offhand included. */
-    private static int count(ServerPlayer player, Item item) {
-        var inventory = player.getInventory();
-        int total = 0;
-        for (int slot = 0; slot < inventory.getContainerSize(); slot++) {
-            ItemStack stack = inventory.getItem(slot);
-            if (stack.is(item)) {
-                total += stack.getCount();
+    /** A staff call of a step, started once: the call is refused at once while a record loads or a write is pending. */
+    private static final class Pending {
+        private CompletableFuture<Optional<String>> call;
+    }
+
+    /**
+     * Starts a staff call once and waits for it. A call the service refuses at once is run again on the next tick, because
+     * the step's check is not met yet; a call that completes later is waited for. The step passes when the call was accepted.
+     */
+    private static void staff(GameTestHelper helper, Pending pending, Supplier<CompletableFuture<Optional<String>>> start) {
+        if (pending.call == null) {
+            CompletableFuture<Optional<String>> started = start.get();
+            if (started.isDone() && !started.isCompletedExceptionally() && started.join().isPresent()) {
+                helper.assertTrue(false, "refused, tried again: " + started.join().get());
             }
+            pending.call = started;
         }
-        return total;
+        helper.assertTrue(finished(helper, pending.call).isEmpty(), "the staff call was refused");
+    }
+
+    /** The outcome of a finished staff call. A call that has not finished, or failed, fails the attempt. */
+    private static Optional<String> finished(GameTestHelper helper, CompletableFuture<Optional<String>> call) {
+        helper.assertTrue(call.isDone(), "the staff call has not finished");
+        helper.assertTrue(!call.isCompletedExceptionally(), "the staff call failed");
+        return call.join();
+    }
+
+    /** The refusal a finished staff call gave. A call that was accepted fails the attempt. */
+    private static Optional<String> refusalOf(GameTestHelper helper, CompletableFuture<Optional<String>> call) {
+        Optional<String> outcome = finished(helper, call);
+        helper.assertTrue(outcome.isPresent(), "the call was accepted, but a refusal was expected");
+        return outcome;
     }
 
     /**
@@ -717,27 +1517,238 @@ public final class AchievementGameTests {
                 Optional.empty());
     }
 
+    /** Counts the item in every slot of the player's inventory, the armour and the offhand included. */
+    private static int count(ServerPlayer player, Item item) {
+        var inventory = player.getInventory();
+        int total = 0;
+        for (int slot = 0; slot < inventory.getContainerSize(); slot++) {
+            ItemStack stack = inventory.getItem(slot);
+            if (stack.is(item)) {
+                total += stack.getCount();
+            }
+        }
+        return total;
+    }
+
+    /** Fills the main inventory with stone, so a reward's stacks have nowhere to go. */
+    private static void fillMainInventory(ServerPlayer player) {
+        var inventory = player.getInventory();
+        for (int slot = 0; slot < inventory.getNonEquipmentItems().size(); slot++) {
+            inventory.setItem(slot, new ItemStack(Items.STONE, 64));
+        }
+    }
+
+    private static void emptyMainInventory(ServerPlayer player) {
+        var inventory = player.getInventory();
+        for (int slot = 0; slot < inventory.getNonEquipmentItems().size(); slot++) {
+            inventory.setItem(slot, ItemStack.EMPTY);
+        }
+    }
+
     /**
-     * A storage whose {@code applyOperation} calls complete with the delegate's result only after {@code release} completes,
-     * so an operation stays in the escrow until the test releases it. Other calls reach {@code delegate} at once.
+     * Storage whose {@code applyOperation} calls for the held operations reach {@code delegate} only after {@code release}
+     * completes, so storage has not applied the operation, and the escrow holds it unapplied, until the test releases it.
+     * Other calls reach {@code delegate} at once.
      */
     @SuppressWarnings("unchecked")
-    private static AlinaStorage holdingApplies(AlinaStorage delegate, CompletableFuture<Void> release) {
+    private static AlinaStorage holdingApplies(AlinaStorage delegate, CompletableFuture<Void> release,
+            Predicate<Operation> held) {
         return (AlinaStorage) Proxy.newProxyInstance(AlinaStorage.class.getClassLoader(),
                 new Class<?>[] {AlinaStorage.class},
                 (proxy, called, args) -> {
-                    Object result;
-                    try {
-                        result = called.invoke(delegate, args);
-                    } catch (InvocationTargetException failure) {
-                        throw failure.getCause();
+                    if (!called.getName().equals("applyOperation") || !held.test((Operation) args[0])) {
+                        return invoke(delegate, called, args);
                     }
-                    if (!called.getName().equals("applyOperation")) {
+                    return release.thenCompose(ignored -> {
+                        try {
+                            return (CompletableFuture<ApplyResult>) invoke(delegate, called, args);
+                        } catch (Throwable failure) {
+                            return CompletableFuture.failedFuture(failure);
+                        }
+                    });
+                });
+    }
+
+    /**
+     * Storage whose first {@code writeCriterionProgress} call returns {@code held}, which the test completes, and which never
+     * reaches {@code delegate}. Other calls reach {@code delegate} at once.
+     */
+    private static AlinaStorage holdingFirstCountWrite(AlinaStorage delegate, AtomicReference<CompletableFuture<Void>> held) {
+        return intercepting(delegate, (called, args) -> {
+            if (!called.equals("writeCriterionProgress") || held.get() != null) {
+                return null;
+            }
+            CompletableFuture<Void> gate = new CompletableFuture<>();
+            held.set(gate);
+            return gate;
+        });
+    }
+
+    /**
+     * Storage whose first {@code writeCriterionProgress} call after {@code armed} is set returns {@code held}, which the test
+     * completes, and which never reaches {@code delegate}. Other calls reach {@code delegate} at once.
+     */
+    private static AlinaStorage holdingArmedCountWrite(AlinaStorage delegate, AtomicBoolean armed,
+            AtomicReference<CompletableFuture<Void>> held) {
+        return intercepting(delegate, (called, args) -> {
+            if (!called.equals("writeCriterionProgress") || !armed.get() || held.get() != null) {
+                return null;
+            }
+            CompletableFuture<Void> gate = new CompletableFuture<>();
+            held.set(gate);
+            return gate;
+        });
+    }
+
+    /**
+     * Storage whose first call of {@code method} returns {@code held}, which the test completes, and which never reaches
+     * {@code delegate}. Other calls reach {@code delegate} at once.
+     */
+    private static AlinaStorage holdingFirstCall(AlinaStorage delegate, String method, AtomicReference<CompletableFuture<Void>> held) {
+        return intercepting(delegate, (called, args) -> {
+            if (!called.equals(method) || held.get() != null) {
+                return null;
+            }
+            CompletableFuture<Void> gate = new CompletableFuture<>();
+            held.set(gate);
+            return gate;
+        });
+    }
+
+    /** Storage that fails the first call of {@code method} with an injected failure, and passes every other call on. */
+    private static AlinaStorage failingOnce(AlinaStorage delegate, String method, AtomicBoolean fired) {
+        return intercepting(delegate, (called, args) -> called.equals(method) && fired.compareAndSet(false, true)
+                ? CompletableFuture.failedFuture(new IllegalStateException("injected failure of " + method))
+                : null);
+    }
+
+    /**
+     * Storage whose {@code loadCharacter} calls complete with the delegate's snapshot only once the gate that was current when
+     * the call was made completes. The snapshot is read at once, as a storage read is.
+     */
+    @SuppressWarnings("unchecked")
+    private static AlinaStorage gatedLoads(AlinaStorage delegate, AtomicReference<CompletableFuture<Void>> gate) {
+        return (AlinaStorage) Proxy.newProxyInstance(AlinaStorage.class.getClassLoader(),
+                new Class<?>[] {AlinaStorage.class},
+                (proxy, called, args) -> {
+                    CompletableFuture<Void> hold = gate.get();
+                    Object result = invoke(delegate, called, args);
+                    if (!called.getName().equals("loadCharacter")) {
                         return result;
                     }
-                    return ((CompletableFuture<ApplyResult>) result)
-                            .thenCompose(applied -> release.thenApply(ignored -> applied));
+                    return ((CompletableFuture<CharacterState>) result)
+                            .thenCompose(state -> hold.thenApply(ignored -> state));
                 });
+    }
+
+    /**
+     * Storage whose calls go through {@code interceptor}: a non-null answer is returned in place of the call, and null passes
+     * the call on to {@code delegate}.
+     */
+    private static AlinaStorage intercepting(AlinaStorage delegate,
+            BiFunction<String, Object[], CompletableFuture<?>> interceptor) {
+        return (AlinaStorage) Proxy.newProxyInstance(AlinaStorage.class.getClassLoader(),
+                new Class<?>[] {AlinaStorage.class},
+                (proxy, called, args) -> {
+                    CompletableFuture<?> answer = interceptor.apply(called.getName(), args);
+                    return answer != null ? answer : invoke(delegate, called, args);
+                });
+    }
+
+    private static Object invoke(AlinaStorage delegate, Method called, Object[] args) throws Throwable {
+        try {
+            return called.invoke(delegate, args);
+        } catch (InvocationTargetException failure) {
+            throw failure.getCause();
+        }
+    }
+
+    /** The condition of a fixture's achievement, parsed through haruhi and evaluated for the player. */
+    private static boolean conditionHolds(GameTestHelper helper, ServerPlayer player, ContentBundle bundle, Identifier achievement,
+            OptionalInt tier) {
+        String args = tier.isPresent()
+                ? "{\"achievement\": \"" + achievement + "\", \"tier\": " + tier.getAsInt() + "}"
+                : "{\"achievement\": \"" + achievement + "\"}";
+        DialogueCondition condition = condition(helper, "alina:achievement", args,
+                new ParseContext(bundle, GRAPH, "node"));
+        return condition.test(new Ctx(player, bundle));
+    }
+
+    private static DialogueCondition condition(GameTestHelper helper, String type, String args, ParseContext context) {
+        Optional<ConditionType> conditionType = DialogueRegistries.condition(Identifier.parse(type));
+        helper.assertTrue(conditionType.isPresent(), type + " is not a registered condition");
+        DataResult<DialogueCondition> parsed = conditionType.get()
+                .parse(JsonParser.parseString(args).getAsJsonObject(), context);
+        helper.assertTrue(parsed.result().isPresent(), type + " " + args + " should parse: " + errorOf(parsed));
+        return parsed.result().get();
+    }
+
+    /** The graph a condition's context names. The achievement condition reads no graph. */
+    private static final Identifier GRAPH = Alina.id("test/graph");
+
+    /** The context a condition sees, for a player the test drives directly. */
+    private record Ctx(ServerPlayer player, ContentBundle content) implements DialogueContext {
+        @Override
+        public Optional<Entity> interlocutor() {
+            return Optional.empty();
+        }
+
+        @Override
+        public Identifier graphId() {
+            return GRAPH;
+        }
+
+        @Override
+        public String nodeId() {
+            return "node";
+        }
+
+        @Override
+        public DialogueFlags flags() {
+            throw new UnsupportedOperationException("the achievement condition reads no flags");
+        }
+
+        @Override
+        public int visits() {
+            return 0;
+        }
+
+        @Override
+        public void goTo(String nodeId) {
+            throw new UnsupportedOperationException("the achievement condition moves no node");
+        }
+
+        @Override
+        public void end() {
+            throw new UnsupportedOperationException("the achievement condition ends no conversation");
+        }
+
+        @Override
+        public void openGraph(Identifier graphId) {
+            throw new UnsupportedOperationException("the achievement condition opens no graph");
+        }
+    }
+
+    /** The operation of signed_on's reward, as a settlement request: five emeralds and two reputation. */
+    private static SettlementRequest signedReward() {
+        return new SettlementRequest(
+                OperationKind.ACHIEVEMENT_REWARD,
+                SIGNED_ON,
+                0,
+                AchievementRig.REVISION,
+                Optional.of(Alina.id("test/five_emeralds")),
+                2,
+                new OperationEffect.AchievementEarned(SIGNED_ON, 0, Optional.empty()),
+                player -> List.of(),
+                Optional.empty(),
+                Optional.empty());
+    }
+
+    /** The live fixture, parsed as the server would parse it. */
+    private static ContentBundle parseOrFail(GameTestHelper helper, String fixture) {
+        DataResult<ContentBundle> result = parse(helper, fixture);
+        helper.assertTrue(result.result().isPresent(), "the fixture " + fixture + " was refused:\n" + errorOf(result));
+        return result.result().get();
     }
 
     /** Parses a fixture through haruhi, as content is parsed. */
@@ -745,7 +1756,7 @@ public final class AchievementGameTests {
         return HaruhiServices.content().parseAndValidate(AchievementRig.fixture(helper, fixture));
     }
 
-    private static String errorOf(DataResult<ContentBundle> result) {
+    private static String errorOf(DataResult<?> result) {
         return result.error().map(error -> error.message()).orElse("");
     }
 }

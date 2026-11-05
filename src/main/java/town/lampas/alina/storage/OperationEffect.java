@@ -33,8 +33,10 @@ public sealed interface OperationEffect permits OperationEffect.CommissionSettle
     }
 
     /**
-     * One earn of an achievement or tier. The achievement keeps the higher of its old tier and {@code tier}, and
-     * {@code availableAt} is when this earn makes it available again.
+     * One earn of an achievement or tier. The achievement keeps the higher of its old tier and {@code tier}, and the earn
+     * counts once. {@code availableAt} is when this earn makes it available again. When the stored tier is above
+     * {@code tier}, the stored availability stays, so a lower tier applied late does not clear the availability of a higher
+     * one; otherwise the earn's {@code availableAt} is stored, even when it is empty.
      */
     record AchievementEarned(Identifier achievementId, int tier, Optional<Instant> availableAt)
             implements OperationEffect {

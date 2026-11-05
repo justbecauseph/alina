@@ -15,7 +15,7 @@ final class AchievementEarn {
         REWARD,
         /** An earn without a reward: its counts and its state are written. */
         DIRECT,
-        /** A new cycle: the state is written with tier 0 and the counts are deleted. */
+        /** A new cycle: the counts are deleted first, then the state is written with tier 0. */
         RESET
     }
 
@@ -23,7 +23,7 @@ final class AchievementEarn {
     final Identifier achievement;
     /** The tier earned, 1-based: 1 for an achievement without tiers, 0 for a reset. */
     final int tier;
-    /** The stored tier: 0 for an achievement without tiers, the tier for a tiered one. */
+    /** The stored tier: 0 for an achievement without tiers, the tier for a tiered one, 0 for a reset. */
     final int storageTier;
     /** The time of the earn, or of the reset. */
     final Instant at;

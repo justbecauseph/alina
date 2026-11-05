@@ -280,15 +280,19 @@ public final class InMemoryStorage implements AlinaStorage {
     }
 
     /**
-     * The row an earn leaves: the count goes up by one, the tier keeps the highest, and the availability is the new
-     * one. Reads only, so an overflowing count throws before any change.
+     * The row an earn leaves: the count goes up by one, the tier keeps the highest, and the availability is the earn's, unless
+     * the stored tier is above the earn's tier, when the stored availability stays. Reads only, so an overflowing count throws
+     * before any change.
      */
     private AchievementState earnedRow(Operation operation, OperationEffect.AchievementEarned earned) {
         AchievementState existing = achievements.getOrDefault(operation.characterId(), Map.of())
                 .get(earned.achievementId());
         int tier = existing == null ? earned.tier() : Math.max(existing.tier(), earned.tier());
         int earnCount = existing == null ? 1 : Math.addExact(existing.earnCount(), 1);
+        Optional<Instant> availableAt = existing != null && existing.tier() > earned.tier()
+                ? existing.availableAt()
+                : earned.availableAt();
         return new AchievementState(earned.achievementId(), tier, earnCount,
-                Optional.of(operation.createdAt()), earned.availableAt());
+                Optional.of(operation.createdAt()), availableAt);
     }
 }
