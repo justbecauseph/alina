@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import town.lampas.alina.content.AlinaContent;
 import town.lampas.alina.criteria.AlinaTriggers;
 import town.lampas.alina.criteria.CriteriaModule;
+import town.lampas.alina.guild.GuildModule;
 import town.lampas.alina.settlement.SettlementModule;
 import town.lampas.alina.storage.StorageModule;
 
@@ -30,5 +31,6 @@ public final class Alina implements ModInitializer {
         CriteriaModule.init();
         AlinaContent.init();
         SettlementModule.init();
+        GuildModule.init();
     }
 }

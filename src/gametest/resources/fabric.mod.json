@@ -11,7 +11,10 @@
       "town.lampas.alina.gametest.ContentGameTests",
       "town.lampas.alina.gametest.CriteriaGameTests",
       "town.lampas.alina.gametest.TriggerGameTests",
-      "town.lampas.alina.gametest.SettlementGameTests"
+      "town.lampas.alina.gametest.SettlementGameTests",
+      "town.lampas.alina.gametest.CatalogGameTests",
+      "town.lampas.alina.gametest.GuildGameTests",
+      "town.lampas.alina.gametest.GuildDialogueGameTests"
     ]
   },
   "depends": {

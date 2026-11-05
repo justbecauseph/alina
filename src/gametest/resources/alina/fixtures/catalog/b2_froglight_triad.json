@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:catalog/board": {
+      "start": "hello",
+      "nodes": {
+        "hello": {
+          "text": "Board."
+        }
+      }
+    }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "board_graph": "alina:catalog/board"
+      },
+      "commissions": {
+        "alina:catalog/b2_froglight_triad": {
+          "category": "B",
+          "kind": "repeatable",
+          "name": "Froglight Triad",
+          "hint": "Bring one ochre, one verdant and one pearlescent froglight.",
+          "proof": {
+            "type": "item",
+            "all_of": [
+              {
+                "item": {
+                  "items": "minecraft:ochre_froglight"
+                }
+              },
+              {
+                "item": {
+                  "items": "minecraft:verdant_froglight"
+                }
+              },
+              {
+                "item": {
+                  "items": "minecraft:pearlescent_froglight"
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

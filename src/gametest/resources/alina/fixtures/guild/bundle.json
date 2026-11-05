@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:guild_test/board": { "start": "hello", "nodes": { "hello": { "text": "The board." } } }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "board_size": 2,
+        "active_cap": 2,
+        "reset": { "time": "04:00", "zone": "Asia/Manila" },
+        "default_cooldown": "PT20H",
+        "salt": "test",
+        "board_graph": "alina:guild_test/board",
+        "board_reach": 6
+      },
+      "commissions": {
+        "alina:guild_test/courier": {
+          "category": "C", "kind": "repeatable", "name": "Courier", "hint": "Bring two paper and a stick.",
+          "proof": {
+            "type": "item",
+            "all_of": [
+              { "item": { "items": "minecraft:paper" }, "count": 2 },
+              { "item": { "items": "minecraft:stick" }, "count": 1, "consume": false }
+            ]
+          },
+          "reward": { "loot_table": "alina:test/five_emeralds", "reputation": 2 }
+        },
+        "alina:guild_test/horn": {
+          "category": "B", "kind": "repeatable", "name": "Horn", "hint": "Bring a bucket, or two glass bottles.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              { "item": { "items": "minecraft:glass_bottle" }, "count": 2 },
+              { "item": { "items": "minecraft:bucket" } }
+            ]
+          },
+          "cooldown": "board_reset",
+          "reward": { "loot_table": "alina:test/two_items", "reputation": 1 }
+        },
+        "alina:guild_test/off_rotation": {
+          "category": "D", "kind": "repeatable", "name": "Off the Rotation", "hint": "Bring paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] },
+          "in_rotation": false
+        },
+        "alina:guild_test/feat_items": {
+          "category": "A", "kind": "feat", "name": "Paper Feat", "hint": "Bring paper.",
+          "proof": { "type": "item", "any_of": [ { "item": { "items": "minecraft:paper" } } ] },
+          "reward": { "reputation": 3 }
+        },
+        "alina:guild_test/greeter": {
+          "category": "F", "kind": "feat", "name": "Greeter", "hint": "Meet the Receptionist twice.",
+          "proof": { "type": "criterion", "trigger": "alina:manual", "conditions": { "key": "met" }, "count": 2 }
+        },
+        "alina:guild_test/dive": {
+          "category": "E", "kind": "feat", "name": "Dive", "hint": "Dive from the high volume into the basin.",
+          "proof": {
+            "type": "descent",
+            "start": "alina:guild_test/high_dive",
+            "finish": "alina:guild_test/dive_basin"
+          }
+        },
+        "alina:guild_test/hall": {
+          "category": "F", "kind": "feat", "name": "Hall", "hint": "Walk into the high hall three times.",
+          "proof": {
+            "type": "criterion",
+            "trigger": "alina:volume_entered",
+            "conditions": { "volume": "alina:guild_test/high_dive" },
+            "count": 3
+          }
+        }
+      },
+      "volumes": {
+        "alina:guild_test/high_dive": { "dimension": "{{dimension}}", "from": [500, 200, 500], "to": [503, 201, 503] },
+        "alina:guild_test/dive_basin": { "dimension": "{{dimension}}", "from": [500, 60, 500], "to": [503, 61, 503] }
+      }
+    }
+  }
+}

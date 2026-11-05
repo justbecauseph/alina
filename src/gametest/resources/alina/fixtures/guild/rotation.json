@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:guild_test/board": { "start": "hello", "nodes": { "hello": { "text": "The board." } } }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "board_size": 2,
+        "active_cap": 2,
+        "reset": { "time": "04:00", "zone": "Asia/Manila" },
+        "default_cooldown": "PT20H",
+        "salt": "rotation",
+        "board_graph": "alina:guild_test/board",
+        "board_reach": 6
+      },
+      "commissions": {
+        "alina:guild_test/rot_one": {
+          "category": "A", "kind": "repeatable", "name": "Rotation One", "hint": "Bring paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] }
+        },
+        "alina:guild_test/rot_two": {
+          "category": "A", "kind": "repeatable", "name": "Rotation Two", "hint": "Bring paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] }
+        },
+        "alina:guild_test/rot_three": {
+          "category": "A", "kind": "repeatable", "name": "Rotation Three", "hint": "Bring paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] }
+        },
+        "alina:guild_test/rot_four": {
+          "category": "A", "kind": "repeatable", "name": "Rotation Four", "hint": "Bring paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] }
+        },
+        "alina:guild_test/rot_five": {
+          "category": "A", "kind": "repeatable", "name": "Rotation Five", "hint": "Bring paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:catalog/board": {
+      "start": "hello",
+      "nodes": {
+        "hello": {
+          "text": "Board."
+        }
+      }
+    }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "board_graph": "alina:catalog/board"
+      },
+      "commissions": {
+        "alina:catalog/a4_preserved_colony": {
+          "category": "A",
+          "kind": "repeatable",
+          "name": "Preserved Colony",
+          "hint": "Bring a bee nest at honey level 5 with three bees.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              {
+                "item": {
+                  "items": "minecraft:bee_nest",
+                  "components": {
+                    "minecraft:block_state": {
+                      "honey_level": "5"
+                    }
+                  }
+                },
+                "checks": [
+                  {
+                    "type": "alina:bees",
+                    "count": 3
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

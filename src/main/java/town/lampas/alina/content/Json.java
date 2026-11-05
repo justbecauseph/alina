@@ -88,12 +88,20 @@ final class Json {
     }
 
     /** A positive ISO-8601 duration such as {@code PT20H} or {@code P7D}. */
+    /** The longest duration content may give: 3650 days. */
+    static final Duration MAX_DURATION = Duration.ofDays(3650);
+
     static DataResult<Duration> duration(JsonElement value) {
         return string(value).flatMap(text -> {
             try {
                 Duration duration = Duration.parse(text);
-                return duration.isNegative() || duration.isZero()
-                        ? DataResult.error(() -> "must be a positive duration")
+                if (duration.isNegative() || duration.isZero()) {
+                    return DataResult.error(() -> "must be a positive duration");
+                }
+                // A cooldown is added to the current time; a duration this long cannot overflow an Instant or a
+                // PostgreSQL timestamp.
+                return duration.compareTo(MAX_DURATION) > 0
+                        ? DataResult.error(() -> "must be at most " + MAX_DURATION.toDays() + " days (P3650D)")
                         : DataResult.success(duration);
             } catch (DateTimeParseException e) {
                 return DataResult.error(() -> "'" + text + "' is not an ISO-8601 duration such as PT20H");

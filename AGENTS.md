@@ -39,6 +39,7 @@ so on) refer to that plan.
 | `content` | the `alina:guild` and `alina:achievements` bundle extensions: records, readers, validation, `AlinaContent` |
 | `criteria` | `CriterionWatchers`: watches one player's criterion trigger events, indexed by trigger and then player; `CriteriaModule` closes a player's watches on leave |
 | `settlement` | `SettlementService` (escrow attachment, verified player-data saves, recovery, world id, reconciliation), `SettlementModule` (the attachment, the service's lifecycle and tick), `SettlementTriggers` (the reputation and commission triggers, attached to the service's listeners by `SettlementModule`) |
+| `guild` | `GuildService` (each online character's record, the daily board, accept, abandon, turn-in, criterion and descent proof tracking), `GuildModule` (its lifecycle and events), `GuildText` (player-facing text); `guild.board` (board days and the draw), `guild.proof` (the item proof planner), `guild.dialogue` (haruhi conditions, actions and providers), `guild.block` (the Notice Board), `guild.command` (`/alina guild`) |
 | `mixin` | `SimpleCriterionTriggerMixin`: hands every simple criterion trigger event to the watchers, before vanilla's early return for players with no unfinished advancement on it; `PlayerStorageAccess`: the server's `playerDataStorage`, for settlement's saves |
 | `client` | `AlinaClient` entrypoint |
 
@@ -54,6 +55,8 @@ haruhi's services are read from server events onward, never during init.
   The exception is settlement's verified player-data save (`PlayerDataSaves.saveAndVerify`), which runs on the server
   thread and reads the saved `.dat` file back. ALINA-PLAN §7 needs the inventory and the escrow saved together, in one
   step, so the save cannot be left to a background thread.
+- **Player-facing text** is translatable with an English fallback (`GuildText`), with its keys in
+  `assets/alina/lang/en_us.json`. Staff command feedback is `Component.literal`.
 - **The server checks again whatever the client sends.** The client sends only haruhi's session id, node id and choice
   index.
 - **Content follows haruhi's bundle rules:** snake_case keys, unknown keys are errors at every level, ids are
@@ -84,6 +87,8 @@ Two sections under the haruhi bundle's `extensions` object. The format, with exa
   `conditions`, `count`) and `descent` (`start` and `finish` volumes).
 - `alina:achievements`: `tabs` and `achievements`. Tab `background` is a texture id without `textures/` and `.png`, as
   in vanilla (`minecraft:gui/advancements/backgrounds/stone`).
+- Durations (`cooldown`, `default_cooldown`, an achievement's `repeat.cooldown`) are ISO-8601, positive and at most
+  3650 days, so adding one to the current time cannot overflow.
 - A counted criterion (count above 1, or tiers above 1) needs an event trigger: the vanilla ones in
   `CriterionReader.COUNTED_VANILLA_TRIGGERS`, or any `alina` trigger.
 - Vanilla JSON inside the sections (criterion `conditions`, item predicates, icons, bounds) parses with vanilla's own
@@ -155,3 +160,73 @@ Turn-ins and achievement rewards go through `SettlementService` (ALINA-PLAN §7)
   themselves. Their players are not in the server's player list, so the server's own service never serves them. The one
   exception is the test of `SettlementModule.service()`, whose player is in the list, because that test is about the
   server's own service.
+
+## Guild
+
+The Guild service (ALINA-PLAN §8) is `GuildModule.service()` on a running server; its class javadoc is the contract.
+
+- **Records.** Each online character's record loads on join and is dropped on leave. Until it loads, the providers
+  show one disabled "still loading" row, the conditions are false and every operation is refused with `LOADING`.
+  Storage calls for one character run one after another, loads included (`PlayerWrites`), because the storage
+  executor is a thread pool and does not order them. Every storage completion runs on the server thread, and is dropped
+  when the server has stopped running tasks (from `SERVER_STOPPING` on, `server.execute` would run it inline on the
+  storage thread).
+- **Accept** is write-through and optimistic: the commission is active in the record at once and is `BUSY` until the
+  write finishes; a failed write takes it out again and tells the player. A repeatable must be on today's board; a feat
+  need not be. **Abandon** frees the slot at once, with no cooldown and no reward. When its write fails, the commission
+  goes back into the record only if the content still has it and the record is under the cap; otherwise the delete is
+  written once more. A failed withdrawal is written once more too.
+- **Turn-in** checks the proof, then calls `SettlementService.begin` with the item plan as the removal and the
+  commission's category and kind. The commission is `SETTLING` while its operation is in the escrow, including
+  operations from an earlier session found at load. The settlement listeners update the record when storage records the
+  result and when the reward is delivered.
+- **Board.** Once haruhi's startup activation is complete, the service holds the board of the current board day: the
+  stored one, or one drawn from the repeatables in rotation and stored. A board with an empty pool is not stored and is
+  drawn again after each activation. `board()` leaves out ids the active content no longer has as repeatables.
+- **Content activation** withdraws, for loaded records, each active commission the new content lacks (abandoned in
+  storage, with a chat message), and restarts proof tracking from the new content. It withdraws only when the active
+  bundle has an `alina:guild` section. A record that loads withdraws the same way, and only once haruhi's startup is
+  complete; haruhi runs its activation listeners before it reports startup complete, so the startup activation withdraws
+  from records loaded before it. A refused or late startup load therefore never deletes players' commissions.
+- **Proofs.** Item proofs are planned by `ItemProofPlanner`: main inventory, hotbar and off-hand only; `all_of` is a
+  matching, so one item never counts for two entries. Criterion proofs count through `CriterionWatchers` only while
+  the commission is active. Progress is written behind every 100 ticks, on leave and on stop. The descent tracker
+  arms a dive when the player enters the start volume, disarms it on gliding, Slow Falling, a totem, death or a
+  dimension change, and meets the proof when the player reaches the finish volume alive. It also fires
+  `alina:volume_entered` when a player enters a content volume; the volumes a player stands in at join are the
+  baseline and do not fire.
+- **Notice Board** (`alina:notice_board`): survival cannot break it, and the wither and the ender dragon cannot either.
+  Using it opens `settings.board_graph` with haruhi's `openAt`, anchored at the block within `board_reach`.
+- **Commands**, for gamemasters: `/alina guild board`, `show <player>`, `accept|turn_in|abandon <player>
+  <commission>`, `reset <player> <commission>`, `reputation <player> <value>`; `/alina settlement pending <player>` and
+  `/alina settlement reconciliation`.
+
+### Dialogue types
+
+Registered by `GuildDialogue`. Every type refuses unknown argument keys; a `commission` argument must name a commission
+of the bundle's `alina:guild` section, and `next` must name a node of the same graph. Provider entries show the
+commission's name only, so haruhi can match a pick by position and text.
+
+| Kind | Id | Arguments | Does |
+|---|---|---|---|
+| provider | `alina:guild/board` | `next` (optional) | Today's board commissions, then the feats the player has not completed, by id. Enabled when the player can accept, grayed with the reason otherwise; picking accepts. |
+| provider | `alina:guild/turn_in` | `next` (optional) | Each active or settling commission, by id. Enabled when the proof is met now, grayed with the hint otherwise; picking turns in. |
+| provider | `alina:guild/abandon` | `next` (optional) | Each active commission, by id; picking abandons. |
+| provider | `alina:guild/status` | none | Disabled rows: reputation, then each commission's standing (progress for a counted criterion, time left on a cooldown). |
+| condition | `alina:guild/has_active` | none | The player has an active commission. |
+| condition | `alina:guild/can_accept` | none | The player is under the active cap. |
+| condition | `alina:guild/reputation` | `op` (`eq`, `ne`, `gt`, `gte`, `lt`, `lte`), `value` | Compares the player's reputation. |
+| condition | `alina:guild/commission` | `commission`, `state` (`available`, `active`, `cooldown`, `completed`) | The commission's standing; a commission being settled matches none. |
+| action | `alina:guild/accept`, `alina:guild/turn_in`, `alina:guild/abandon` | `commission` | The operation; a refusal is sent to the player. |
+| action | `alina:achievement/trigger` | `key` | Fires `alina:manual` with the key. |
+
+A node whose only entries come from `alina:guild/status` has no enabled choice, so give it a static choice to leave.
+
+### Guild tests
+
+`GuildGameTests` builds its own `GuildService` per test (`GuildRig`: in-memory storage, its own settlement service, a
+test clock, content parsed from a fixture, players outside the server list) and never activates server content.
+`GuildDialogueGameTests` uses the server's own service and activates its fixture on the server, so its tests wait for
+the player's record and a board before acting. `CatalogGameTests` holds spike S4: each catalog item proof, checked on
+the item as the game makes it. A multi-step GameTest uses `helper.startSequence()`; `succeedWhen` succeeds on the
+first tick its runnable returns.

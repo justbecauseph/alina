@@ -28,6 +28,7 @@ public final class SettlementModule {
     private SettlementModule() {}
 
     public static void init() {
+        SettlementCommands.init();
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             UUID worldId = WorldId.loadOrCreate(server.getWorldPath(LevelResource.ROOT));
             SettlementService service = new SettlementService(server, AlinaServices.storage(), worldId);

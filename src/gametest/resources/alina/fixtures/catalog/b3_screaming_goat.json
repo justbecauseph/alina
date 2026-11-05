@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:catalog/board": {
+      "start": "hello",
+      "nodes": {
+        "hello": {
+          "text": "Board."
+        }
+      }
+    }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "board_graph": "alina:catalog/board"
+      },
+      "commissions": {
+        "alina:catalog/b3_screaming_goat": {
+          "category": "B",
+          "kind": "repeatable",
+          "name": "Horn of the Screaming Goat",
+          "hint": "Bring a goat horn that plays Admire, Call, Yearn or Dream.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              {
+                "item": {
+                  "items": "minecraft:goat_horn"
+                },
+                "checks": [
+                  {
+                    "type": "alina:instrument_tag",
+                    "tag": "minecraft:screaming_goat_horns"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

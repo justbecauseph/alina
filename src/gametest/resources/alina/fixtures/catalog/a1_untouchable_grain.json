@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:catalog/board": {
+      "start": "hello",
+      "nodes": {
+        "hello": {
+          "text": "Board."
+        }
+      }
+    }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "board_graph": "alina:catalog/board"
+      },
+      "commissions": {
+        "alina:catalog/a1_untouchable_grain": {
+          "category": "A",
+          "kind": "repeatable",
+          "name": "Untouchable Grain",
+          "hint": "Bring suspicious sand or suspicious gravel.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              {
+                "item": {
+                  "items": "minecraft:suspicious_sand"
+                }
+              },
+              {
+                "item": {
+                  "items": "minecraft:suspicious_gravel"
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

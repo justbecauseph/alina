@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:catalog/board": {
+      "start": "hello",
+      "nodes": {
+        "hello": {
+          "text": "Board."
+        }
+      }
+    }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "board_graph": "alina:catalog/board"
+      },
+      "commissions": {
+        "alina:catalog/a2_bottled_shrieker": {
+          "category": "A",
+          "kind": "repeatable",
+          "name": "Bottled Shrieker",
+          "hint": "Bring a sculk shrieker.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              {
+                "item": {
+                  "items": "minecraft:sculk_shrieker"
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
