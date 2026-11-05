@@ -97,19 +97,23 @@ import town.lampas.haruhi.api.HaruhiServices;
  *       {@code AchievementEarned(id, storage tier, availableAt)}, the storage tier being 0 for an achievement without
  *       tiers. A refused begin is tried again every {@link #RETRY_TICKS} while the player is online;</li>
  *   <li>without a reward, is written through with {@code writeAchievement}, retried the same way on failure;</li>
- *   <li>in both cases counts at once in the record, fires {@code alina:achievement_earned} with the achievement and its
+ *   <li>in both cases counts at once in the record, so it is not earned twice. Once the earn is durable (settlement
+ *       began it, or the direct write succeeded) it fires {@code alina:achievement_earned} with the achievement and its
  *       1-based tier, announces in chat when the achievement's {@code announce} is set and the
- *       {@code show_advancement_messages} game rule is on (with vanilla's {@code AdvancementType.createAnnouncement}), and
- *       tells the listeners with {@link AchievementListener#earned}.</li>
+ *       {@code show_advancement_messages} game rule is on (with vanilla's {@code AdvancementType.createAnnouncement}),
+ *       and tells the listeners with {@link AchievementListener#earned}. An earn that is never made durable before the
+ *       player leaves is found again at the next load and notified then, once.</li>
  * </ul>
  *
- * <p><b>Content activation.</b> {@link #contentActivated} stops all watches and starts them again from the new content.
+ * <p><b>Content activation.</b> {@link #contentActivated} stops all watches and starts them again from the new content,
+ * tells the listeners with {@link AchievementListener#contentActivated}, and then earns what the new content finds met.
  * Stored state of an achievement the new content lacks is kept, untouched. Counts are kept by criterion name.
  *
  * <p><b>Storage order.</b> Storage calls that change one achievement's state run in an order that keeps the stored state
  * equal to the record's: a reward operation in the escrow adds its own effect when storage applies it, so a write of the
- * achievement's state waits until no reward of that achievement is unapplied, and a reward begins only when no write of
- * that achievement is in flight. A load starts only when no earn write is in flight, so the load's result never includes
+ * achievement's state waits until no reward of that achievement is unapplied, a reward begins only when no write of
+ * that achievement is in flight, and a reward of a later tier begins only once every earlier tier's reward of that
+ * achievement has been applied. A load starts only when no earn write is in flight, so the load's result never includes
  * a write the record still counts as pending.
  */
 public final class AchievementService {
@@ -301,7 +305,10 @@ public final class AchievementService {
     /**
      * For staff: without a tier, deletes the achievement's stored state and counts; with tier k, keeps tiers below k:
      * the stored tier becomes k - 1 and the count at most tier k's count minus 1. Grants no reward back and takes none
-     * away. Completes with a refusal text, or empty when done; the listeners get {@link AchievementListener#revoked}.
+     * away. Refused while the record loads and while an earn of the achievement is waiting to be written or is in the
+     * escrow. The record changes only after the writes succeed; the future completes then, with empty, and the listeners
+     * get {@link AchievementListener#revoked}. A failed write changes nothing in the record and completes with the
+     * failure's text.
      */
     public CompletableFuture<Optional<String>> revoke(ServerPlayer player, Identifier achievement, OptionalInt tier) {
         CompletableFuture<Optional<String>> done = new CompletableFuture<>();
