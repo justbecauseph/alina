@@ -16,15 +16,18 @@ public interface AchievementListener {
     /** A count changed and nothing was earned. */
     default void progressed(ServerPlayer player, Identifier achievement) {}
 
-    /** The tier was just earned in this cycle, for the first time in it. */
+    /** The tier was earned in this cycle, for the first time in it, and the earn is now durable. */
     default void earned(ServerPlayer player, Identifier achievement, int tier) {}
 
     /** A repeatable's cooldown ended: its counts are 0 and nothing of it is earned in the new cycle. */
     default void cycleStarted(ServerPlayer player, Identifier achievement) {}
 
-    /** Staff revoked the achievement or some of its tiers. */
+    /** Staff revoked the achievement or some of its tiers; called after the writes succeeded. */
     default void revoked(ServerPlayer player, Identifier achievement) {}
 
-    /** A content bundle was activated, after the service rebuilt its tracking from it. */
+    /**
+     * A content bundle was activated. Called after the service has rebuilt its watches from it and before it starts
+     * cycles or earns what the new content finds met, so a listener sees the new content before any earn under it.
+     */
     default void contentActivated() {}
 }
