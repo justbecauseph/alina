@@ -18,10 +18,10 @@ so on) refer to that plan.
 ```
 
 - Alina depends on `town.lampas:haruhi` from the JustBecause Maven repository
-  (`https://raw.githubusercontent.com/justbecauseph/maven/main`), where haruhi's release workflow publishes it. When a
-  haruhi checkout sits beside this one, `settings.gradle` includes it, so Gradle builds against the checkout instead;
-  pass `-Palina.publishedHaruhi=true` to use the published jar anyway. Until `haruhi_version` is released there, the
-  build needs the checkout. Changes Alina needs in haruhi are made in that
+  (`https://justbecauseph.github.io/maven`, the GitHub Pages site of `justbecauseph/maven`), where haruhi's release
+  workflow publishes it. When a haruhi checkout sits beside this one, `settings.gradle` includes it, so Gradle builds
+  against the checkout instead; pass `-Palina.publishedHaruhi=true` to use the published jar anyway. Until
+  `haruhi_version` is released there, the build needs the checkout. Changes Alina needs in haruhi are made in that
   repository, released there, and then `haruhi_version` in `gradle.properties` is raised.
 - `AlinaSchemaTest` reads haruhi's bundle schema from the haruhi jar (`haruhi/bundle.schema.json`).
 - Testcontainers tests need Docker. Annotate them `@Testcontainers(disabledWithoutDocker = true)` so `build` still

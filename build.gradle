@@ -14,7 +14,7 @@ repositories {
 	// The JustBecause Maven repository, where haruhi's release workflow publishes it.
 	maven {
 		name = 'JustBecause'
-		url = 'https://raw.githubusercontent.com/justbecauseph/maven/main'
+		url = 'https://justbecauseph.github.io/maven'
 		content { includeGroup 'town.lampas' }
 	}
 }
