@@ -1,6 +1,7 @@
 package town.lampas.alina.achievement;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -16,6 +17,7 @@ import java.util.OptionalInt;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -138,6 +140,8 @@ public final class AchievementService {
     private final Map<UUID, AchievementRecord> records = new HashMap<>();
     private long loadGenerations;
     private long ticks;
+    /** The achievement whose {@code alina:achievement_earned} event is being dispatched, or null. Its own watches ignore it. */
+    private Identifier firingEarn;
 
     /** The service of the running server, over the active {@code alina:achievements} content. */
     public AchievementService(MinecraftServer server, AlinaStorage storage, SettlementService settlement) {
@@ -214,7 +218,7 @@ public final class AchievementService {
             }
             retryEarns(record);
             if (record.metCheckDue) {
-                meetIfReady(record, entity);
+                meetIfReady(record);
             }
             if (ticks % CYCLE_CHECK_TICKS == 0 && !record.loadInFlight) {
                 cycleStarts(record, entity);
@@ -230,11 +234,17 @@ public final class AchievementService {
         writes.prune();
     }
 
-    /** Called when haruhi activates a bundle. See the class comment. */
+    /**
+     * Called when haruhi activates a bundle. Stops the watches, tells the listeners, then starts each loaded record's cycles
+     * and earns from the new content.
+     */
     public void contentActivated() {
         requireServerThread();
         for (AchievementRecord record : List.copyOf(records.values())) {
             closeWatches(record);
+        }
+        notifyListeners(AchievementListener::contentActivated);
+        for (AchievementRecord record : List.copyOf(records.values())) {
             if (!record.loaded) {
                 continue;
             }
@@ -242,13 +252,12 @@ public final class AchievementService {
             ServerPlayer entity = online(record.id);
             if (entity != null) {
                 cycleStarts(record, entity);
-                refreshWatches(record);
-                meetIfReady(record, entity);
-            } else {
-                refreshWatches(record);
+            }
+            refreshWatches(record);
+            if (entity != null) {
+                meetIfReady(record);
             }
         }
-        notifyListeners(AchievementListener::contentActivated);
     }
 
     /** Writes every record's pending counts and stops all watches. The future never fails. */
@@ -312,7 +321,7 @@ public final class AchievementService {
      */
     public CompletableFuture<Optional<String>> revoke(ServerPlayer player, Identifier achievement, OptionalInt tier) {
         CompletableFuture<Optional<String>> done = new CompletableFuture<>();
-        runOnServer(() -> complete(done, () -> revokeNow(player, achievement, tier)));
+        runOnServer(() -> revokeNow(player, achievement, tier, done));
         return done;
     }
 
@@ -366,7 +375,7 @@ public final class AchievementService {
         cycleStarts(record, entity);
         refreshWatches(record);
         record.metCheckDue = true;
-        meetIfReady(record, entity);
+        meetIfReady(record);
     }
 
     private void retryLoad(AchievementRecord record, String what, Throwable failure) {
@@ -376,8 +385,10 @@ public final class AchievementService {
     }
 
     /**
-     * Replaces the record's states and counts with storage's, keeping the counts not yet written, and applies the earns
-     * still pending and the escrow's reward operations.
+     * Replaces the record's states and counts with storage's, keeping the counts not yet written. The escrow's reward
+     * operations are read in. A reward this service began and storage has not applied is counted again here, because the
+     * load may predate its apply. A reward found in the escrow at load is left to its result, which counts it. Then the
+     * pending earns are applied.
      */
     private void applyLoad(AchievementRecord record, CharacterState state, List<PendingOperation> escrow) {
         record.states.clear();
@@ -387,9 +398,17 @@ public final class AchievementService {
         record.counts.putAll(record.dirty);
         record.escrow.clear();
         for (PendingOperation operation : escrow) {
-            if (operation.kind() == OperationKind.ACHIEVEMENT_REWARD) {
-                record.escrow.put(operation.operationId(), new AchievementRecord.Escrowed(operation.subjectId(),
-                        operation.tier(), operation.applied().isPresent()));
+            if (operation.kind() != OperationKind.ACHIEVEMENT_REWARD
+                    || !operation.worldId().equals(settlement.worldId())) {
+                // An operation of another world is never applied here, so it counts nowhere in this world.
+                continue;
+            }
+            boolean applied = operation.applied().isPresent();
+            record.escrow.put(operation.operationId(), new AchievementRecord.Escrowed(operation.subjectId(),
+                    operation.tier(), applied));
+            if (!applied && record.begun.contains(operation.operationId())
+                    && operation.effect() instanceof OperationEffect.AchievementEarned earned) {
+                counted(record, earned, operation.createdAt());
             }
         }
         for (AchievementEarn job : record.pending) {
@@ -413,6 +432,13 @@ public final class AchievementService {
                 earnedState(job.achievement, stored, job.storageTier, job.at, job.availableAt));
     }
 
+    /** Applies an earn's effect to the record's state, as storage applies it when the operation is recorded. */
+    private static void counted(AchievementRecord record, OperationEffect.AchievementEarned earned, Instant at) {
+        AchievementState stored = record.states.get(earned.achievementId());
+        record.states.put(earned.achievementId(),
+                earnedState(earned.achievementId(), stored, earned.tier(), at, earned.availableAt()));
+    }
+
     /** Stops the record's watches and writes its pending counts; the record is dropped by the caller. */
     private void retire(AchievementRecord record) {
         closeWatches(record);
@@ -421,11 +447,15 @@ public final class AchievementService {
         }
     }
 
-    /** Writes the record's dirty counts. The returned future is the storage call, and never fails. */
+    /**
+     * Writes the record's dirty counts, except those of an achievement whose cycle is being reset or whose revoke is being
+     * written: their counts are settled by that step.
+     */
     private CompletableFuture<Void> flush(AchievementRecord record) {
         Map<CriterionKey, Integer> taken = new HashMap<>();
         for (Map.Entry<CriterionKey, Integer> entry : record.dirty.entrySet()) {
-            if (!resetting(record, entry.getKey().achievementId())) {
+            Identifier achievement = entry.getKey().achievementId();
+            if (!resetting(record, achievement) && !revoking(record, achievement)) {
                 taken.put(entry.getKey(), entry.getValue());
             }
         }
@@ -434,11 +464,15 @@ public final class AchievementService {
         }
         taken.keySet().forEach(record.dirty::remove);
         Map<CriterionKey, Integer> snapshot = Map.copyOf(taken);
+        Map<Identifier, Long> epochs = new HashMap<>();
+        for (CriterionKey key : snapshot.keySet()) {
+            epochs.put(key.achievementId(), epochOf(record, key.achievementId()));
+        }
         UUID id = record.id;
         Instant at = stamp();
         CompletableFuture<Void> write = writes.submit(id, () -> storage.writeCriterionProgress(id, snapshot, at));
         write.whenComplete((ignored, failure) -> onServer("count write of " + id,
-                () -> flushed(record, snapshot, failure), () -> {
+                () -> flushed(record, snapshot, epochs, failure), () -> {
                     if (failure != null) {
                         Alina.LOGGER.warn("Alina could not write the counts of {}, and the server had stopped; they are "
                                 + "lost", id, failure);
@@ -447,7 +481,13 @@ public final class AchievementService {
         return write;
     }
 
-    private void flushed(AchievementRecord record, Map<CriterionKey, Integer> taken, Throwable failure) {
+    /**
+     * A failed count write puts its counts back into dirty, so the next flush writes them again. Counts of an achievement
+     * whose cycle was reset or revoked since the write was sent are not put back: the step that reset or revoked it has
+     * settled them.
+     */
+    private void flushed(AchievementRecord record, Map<CriterionKey, Integer> taken, Map<Identifier, Long> epochs,
+            Throwable failure) {
         if (failure == null) {
             return;
         }
@@ -459,7 +499,12 @@ public final class AchievementService {
         Alina.LOGGER.warn("Alina could not write the counts of {}; they are written again on the next flush", record.id,
                 failure);
         for (CriterionKey key : taken.keySet()) {
-            record.dirty.putIfAbsent(key, record.counts.getOrDefault(key, taken.get(key)));
+            Identifier achievement = key.achievementId();
+            if (epochOf(record, achievement) != epochs.get(achievement).longValue()) {
+                continue;
+            }
+            Integer now = record.counts.get(key);
+            record.dirty.putIfAbsent(key, now != null ? now : taken.get(key));
         }
     }
 
@@ -479,10 +524,10 @@ public final class AchievementService {
     }
 
     /**
-     * Earns the tier now: the record's state takes it at once, the event and the announcement follow, and its storage step
-     * is queued. {@code tier} is 1-based; an achievement without tiers has tier 1.
+     * Earns the tier now: the record's state takes it at once, and its storage step is queued. The event, the announcement
+     * and the listeners follow once the earn is durable. {@code tier} is 1-based; an achievement without tiers has tier 1.
      */
-    private void earnTier(AchievementRecord record, ServerPlayer entity, Achievement achievement, int tier) {
+    private void earnTier(AchievementRecord record, Achievement achievement, int tier) {
         boolean tiered = !achievement.tiers().isEmpty();
         int storageTier = tiered ? tier : 0;
         boolean complete = !tiered || tier == achievement.tiers().size();
@@ -501,67 +546,75 @@ public final class AchievementService {
         record.pending.add(job);
         advanceEarn(record, job);
         refreshWatches(record);
-        AlinaTriggers.ACHIEVEMENT_EARNED.trigger(entity, achievement.id(), tier);
-        announce(entity, achievement, tier);
-        notifyListeners(listener -> listener.earned(entity, achievement.id(), tier));
     }
 
     /**
      * Earns every tier, or the one achievement, whose requirements the counts meet and which is not earned in the current
      * cycle. Returns true when something was earned.
      */
-    private boolean checkEarns(AchievementRecord record, ServerPlayer entity, Achievement achievement) {
-        if (resetting(record, achievement.id())) {
+    private boolean checkEarns(AchievementRecord record, Achievement achievement) {
+        Identifier id = achievement.id();
+        if (resetting(record, id) || revoking(record, id)) {
             return false;
         }
         if (achievement.tiers().isEmpty()) {
             if (earnedInCycle(record, achievement) || !requirementsMet(record, achievement)) {
                 return false;
             }
-            earnTier(record, entity, achievement, 1);
+            earnTier(record, achievement, 1);
             return true;
         }
         boolean any = false;
         String criterion = onlyCriterion(achievement);
-        // Read again each time: an earn fires events that can change the record.
+        // Read again each time: an earn can change the record.
         while (true) {
             int highest = highestInCycle(record, achievement);
             if (highest >= achievement.tiers().size()) {
                 break;
             }
             Tier next = achievement.tiers().get(highest);
-            if (counts(record, new CriterionKey(achievement.id(), criterion)) < next.count()) {
+            if (counts(record, new CriterionKey(id, criterion)) < next.count()) {
                 break;
             }
-            earnTier(record, entity, achievement, highest + 1);
+            earnTier(record, achievement, highest + 1);
             any = true;
         }
         return any;
     }
 
-    private void meetIfReady(AchievementRecord record, ServerPlayer entity) {
+    private void meetIfReady(AchievementRecord record) {
         if (!record.metCheckDue || !record.loaded || !contentReady.getAsBoolean()) {
             return;
         }
         record.metCheckDue = false;
         for (Achievement achievement : achievementsSorted()) {
-            checkEarns(record, entity, achievement);
+            checkEarns(record, achievement);
         }
     }
 
-    /** Starts the cycle of each repeatable whose cooldown has passed. */
+    /**
+     * Starts the cycle of each repeatable whose cooldown has passed. A cycle waits while an earn of the achievement is
+     * pending or in the escrow, so the new cycle never sees an earn of the old one.
+     */
     private void cycleStarts(AchievementRecord record, ServerPlayer entity) {
         Instant now = stamp();
         for (Achievement achievement : achievementsSorted()) {
             AchievementState state = record.states.get(achievement.id());
-            if (achievement.repeat().isEmpty() || state == null || state.availableAt().isEmpty()
-                    || now.isBefore(state.availableAt().get()) || resetting(record, achievement.id())) {
+            if (state == null) {
+                continue;
+            }
+            Optional<Instant> end = cycleEnd(state, achievement);
+            if (end.isEmpty() || now.isBefore(end.get())) {
                 continue;
             }
             Identifier id = achievement.id();
+            if (resetting(record, id) || busy(record, id)) {
+                continue;
+            }
             record.states.put(id, new AchievementState(id, 0, state.earnCount(), state.lastEarnedAt(), Optional.empty()));
             record.counts.keySet().removeIf(key -> key.achievementId().equals(id));
             record.dirty.keySet().removeIf(key -> key.achievementId().equals(id));
+            bumpEpoch(record, id);
             AchievementEarn job = AchievementEarn.reset(id, now);
             record.pending.add(job);
             advanceEarn(record, job);
@@ -590,7 +643,8 @@ public final class AchievementService {
             }
             job.countsWritten = true;
         }
-        if (directInFlight(record, job.achievement)) {
+        if (directInFlight(record, job.achievement) || revoking(record, job.achievement)
+                || earlierRewardUnapplied(record, job)) {
             job.retryAt = ticks + 1;
             return;
         }
@@ -622,7 +676,10 @@ public final class AchievementService {
                 }, NOTHING));
     }
 
-    /** Begins the reward in the escrow. A refusal leaves the step pending, to be begun again. */
+    /**
+     * Begins the reward in the escrow. A refusal leaves the step pending, to be begun again. Once the operation is in the
+     * escrow the earn is durable, and its event, announcement and listeners follow.
+     */
     private void commitReward(AchievementRecord record, AchievementEarn job, ServerPlayer entity) {
         Reward reward = job.reward;
         SettlementRequest request = new SettlementRequest(
@@ -651,17 +708,19 @@ public final class AchievementService {
                     job.achievement, record.id);
             return;
         }
-        record.escrow.put(operation.get(),
-                new AchievementRecord.Escrowed(job.achievement, job.storageTier, false));
+        record.escrow.put(operation.get(), new AchievementRecord.Escrowed(job.achievement, job.storageTier, false));
+        record.begun.add(operation.get());
         record.pending.remove(job);
+        durable(record, job);
     }
 
     /**
-     * Writes the state of a direct earn or a cycle reset. A direct earn writes its counts with its state; a reset deletes
-     * the counts after its state is written. Waits while a reward of the achievement is unapplied.
+     * Writes the state of a direct earn or a cycle reset. A direct earn writes its counts with its state. A reset deletes
+     * the counts first and then writes its state, so a failure between the two leaves the old cooldown and no counts. Waits
+     * while a reward of the achievement is unapplied, or the achievement is being revoked.
      */
     private void advanceWrite(AchievementRecord record, AchievementEarn job) {
-        if (unappliedRewards(record, job.achievement)) {
+        if (unappliedRewards(record, job.achievement) || revoking(record, job.achievement)) {
             job.retryAt = ticks + 1;
             return;
         }
@@ -669,6 +728,11 @@ public final class AchievementService {
         Identifier achievement = job.achievement;
         AchievementState state = record.states.get(achievement);
         Instant at = stamp();
+        // The state written now holds the effect of every direct earn and reset pending for the achievement, so each of
+        // them is durable once this write succeeds.
+        List<AchievementEarn> covered = record.pending.stream()
+                .filter(other -> other.kind != AchievementEarn.Kind.REWARD && other.achievement.equals(achievement))
+                .toList();
         job.inFlight = true;
         CompletableFuture<Void> write;
         if (job.kind == AchievementEarn.Kind.DIRECT) {
@@ -678,10 +742,10 @@ public final class AchievementService {
                     : storage.writeCriterionProgress(id, snapshot, at))
                     .thenCompose(ignored -> storage.writeAchievement(id, state, at)));
         } else {
-            write = writes.submit(id, () -> (state == null
-                    ? CompletableFuture.<Void>completedFuture(null)
-                    : storage.writeAchievement(id, state, at))
-                    .thenCompose(ignored -> storage.resetCriterionProgress(id, achievement)));
+            write = writes.submit(id, () -> storage.resetCriterionProgress(id, achievement)
+                    .thenCompose(ignored -> state == null
+                            ? CompletableFuture.<Void>completedFuture(null)
+                            : storage.writeAchievement(id, state, at)));
         }
         write.whenComplete((ignored, failure) -> onServer("state write of " + achievement + " for " + id, () -> {
             job.inFlight = false;
@@ -691,23 +755,52 @@ public final class AchievementService {
                         achievement, id, failure);
                 return;
             }
-            if (isCurrent(record)) {
-                record.pending.remove(job);
-                if (job.kind == AchievementEarn.Kind.RESET) {
-                    // Earns of the achievement were held while its reset was pending, so they are checked now.
-                    recheck(record, achievement);
+            if (!isCurrent(record)) {
+                return;
+            }
+            List<AchievementEarn> done = covered.stream().filter(record.pending::contains).toList();
+            record.pending.removeAll(done);
+            for (AchievementEarn earn : done) {
+                if (earn.kind == AchievementEarn.Kind.DIRECT) {
+                    durable(record, earn);
                 }
+            }
+            if (job.kind == AchievementEarn.Kind.RESET) {
+                // Earns of the achievement were held while its reset was pending, so they are checked now.
+                recheck(record, achievement);
             }
         }, NOTHING));
     }
 
     /** Checks the earns of one achievement again, for one whose checks were held by another of its pending steps. */
     private void recheck(AchievementRecord record, Identifier achievement) {
-        ServerPlayer entity = online(record.id);
         Achievement found = contentSource.get().achievements().get(achievement);
-        if (entity != null && found != null) {
-            checkEarns(record, entity, found);
+        if (found != null) {
+            checkEarns(record, found);
         }
+    }
+
+    /**
+     * Tells the player and the listeners that an earn is durable: the event, the announcement and the listeners, once. An
+     * earn whose step completes after the player has left is not announced; it is stored, so the next load finds it earned.
+     */
+    private void durable(AchievementRecord record, AchievementEarn job) {
+        ServerPlayer entity = online(record.id);
+        if (entity == null || !isCurrent(record)) {
+            return;
+        }
+        Achievement achievement = contentSource.get().achievements().get(job.achievement);
+        Identifier outer = firingEarn;
+        firingEarn = job.achievement;
+        try {
+            AlinaTriggers.ACHIEVEMENT_EARNED.trigger(entity, job.achievement, job.tier);
+        } finally {
+            firingEarn = outer;
+        }
+        if (achievement != null) {
+            announce(entity, achievement, job.tier);
+        }
+        notifyListeners(listener -> listener.earned(entity, job.achievement, job.tier));
     }
 
     /** Whether a direct earn or a reset of the achievement is being written. */
@@ -724,16 +817,52 @@ public final class AchievementService {
                 && job.achievement.equals(achievement));
     }
 
+    /**
+     * Whether a reward of the achievement that is earlier than this job's is not applied yet: in the escrow unapplied, or
+     * still to be begun. A later tier's reward waits for it, so storage applies the rewards in tier order.
+     */
+    private static boolean earlierRewardUnapplied(AchievementRecord record, AchievementEarn job) {
+        if (record.escrow.values().stream().anyMatch(escrowed -> escrowed.achievement().equals(job.achievement)
+                && !escrowed.applied())) {
+            return true;
+        }
+        for (AchievementEarn other : record.pending) {
+            if (other == job) {
+                return false;
+            }
+            if (other.kind == AchievementEarn.Kind.REWARD && other.achievement.equals(job.achievement)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** Whether a cycle reset of the achievement is still pending. */
     private static boolean resetting(AchievementRecord record, Identifier achievement) {
         return record.pending.stream().anyMatch(job -> job.kind == AchievementEarn.Kind.RESET
                 && job.achievement.equals(achievement));
     }
 
-    /** Whether any step of the achievement is pending, or a reward of it is in the escrow. */
+    /** Whether a staff revoke of the achievement is being written. */
+    private static boolean revoking(AchievementRecord record, Identifier achievement) {
+        return record.revoking.contains(achievement);
+    }
+
+    /**
+     * Whether any step of the achievement is pending, a reward of it is in the escrow, or a revoke of it is being written.
+     */
     private static boolean busy(AchievementRecord record, Identifier achievement) {
-        return record.pending.stream().anyMatch(job -> job.achievement.equals(achievement))
+        return record.revoking.contains(achievement)
+                || record.pending.stream().anyMatch(job -> job.achievement.equals(achievement))
                 || record.escrow.values().stream().anyMatch(escrowed -> escrowed.achievement().equals(achievement));
+    }
+
+    private static long epochOf(AchievementRecord record, Identifier achievement) {
+        return record.epochs.getOrDefault(achievement, 0L);
+    }
+
+    private static void bumpEpoch(AchievementRecord record, Identifier achievement) {
+        record.epochs.merge(achievement, 1L, Long::sum);
     }
 
     // Counting and watches.
@@ -743,8 +872,13 @@ public final class AchievementService {
         if (!isCurrent(record) || !record.loaded) {
             return;
         }
+        Identifier id = key.achievementId();
+        if (id.equals(firingEarn) || revoking(record, id)) {
+            // An achievement's own earns never count towards its own criteria.
+            return;
+        }
         ServerPlayer entity = online(record.id);
-        Achievement achievement = contentSource.get().achievements().get(key.achievementId());
+        Achievement achievement = contentSource.get().achievements().get(id);
         CriterionSpec spec = achievement == null ? null : achievement.criteria().get(key.criterion());
         if (entity == null || achievement == null || spec == null || completeInCycle(record, achievement)) {
             refreshWatches(record);
@@ -759,17 +893,20 @@ public final class AchievementService {
         record.counts.put(key, current + 1);
         record.dirty.put(key, current + 1);
         refreshWatches(record);
-        if (!checkEarns(record, entity, achievement)) {
-            notifyListeners(listener -> listener.progressed(entity, achievement.id()));
+        if (!checkEarns(record, achievement)) {
+            notifyListeners(listener -> listener.progressed(entity, id));
         }
     }
 
-    /** Opens the watches the record needs and closes the ones it does not, from the content and the counts. */
+    /**
+     * Opens the watches the record needs and closes the ones it does not, from the content and the counts. An achievement
+     * that is complete in the current cycle, or being revoked, has none.
+     */
     private void refreshWatches(AchievementRecord record) {
         Set<CriterionKey> wanted = new HashSet<>();
         if (record.loaded) {
             for (Achievement achievement : achievementsSorted()) {
-                if (completeInCycle(record, achievement)) {
+                if (completeInCycle(record, achievement) || revoking(record, achievement.id())) {
                     continue;
                 }
                 for (Map.Entry<String, CriterionSpec> criterion : achievement.criteria().entrySet()) {
@@ -813,6 +950,10 @@ public final class AchievementService {
 
     // Achievement state in the current cycle.
 
+    /**
+     * Whether an achievement without tiers is earned in the current cycle: its stored state exists and, for a repeatable, has
+     * an {@code availableAt}; or an earn of it is in the escrow.
+     */
     private static boolean earnedInCycle(AchievementRecord record, Achievement achievement) {
         AchievementState state = record.states.get(achievement.id());
         boolean stored = state != null && (achievement.repeat().isEmpty() || state.availableAt().isPresent());
@@ -820,8 +961,14 @@ public final class AchievementService {
                 .anyMatch(escrowed -> escrowed.achievement().equals(achievement.id()));
     }
 
-    /** The highest tier earned in the current cycle, stored or in the escrow; 0 for an achievement without tiers. */
+    /**
+     * The highest tier earned in the current cycle, stored or in the escrow; 0 for an achievement without tiers, whose
+     * earn is {@link #earnedInCycle}.
+     */
     private static int highestInCycle(AchievementRecord record, Achievement achievement) {
+        if (achievement.tiers().isEmpty()) {
+            return 0;
+        }
         int highest = 0;
         AchievementState state = record.states.get(achievement.id());
         if (state != null) {
@@ -839,6 +986,26 @@ public final class AchievementService {
         return achievement.tiers().isEmpty()
                 ? earnedInCycle(record, achievement)
                 : highestInCycle(record, achievement) >= achievement.tiers().size();
+    }
+
+    /**
+     * When a repeatable's complete cycle becomes available again, or empty when the stored state does not show a complete
+     * cycle. The stored {@code availableAt} is the end. A tiered state whose last tier is stored, but which has no
+     * {@code availableAt} (it was earned before the content gave the achievement a cooldown), ends at its last earn time plus
+     * the cooldown.
+     */
+    private static Optional<Instant> cycleEnd(AchievementState state, Achievement achievement) {
+        Optional<Duration> cooldown = achievement.repeat();
+        if (cooldown.isEmpty()) {
+            return Optional.empty();
+        }
+        if (state.availableAt().isPresent()) {
+            return state.availableAt();
+        }
+        if (achievement.tiers().isEmpty() || state.tier() < achievement.tiers().size()) {
+            return Optional.empty();
+        }
+        return state.lastEarnedAt().map(at -> at.plus(cooldown.get()));
     }
 
     private static boolean requirementsMet(AchievementRecord record, Achievement achievement) {
@@ -877,17 +1044,22 @@ public final class AchievementService {
         return result;
     }
 
-    /** The stored state after an earn: the higher tier, one more earn, the earn time and its availability. */
+    /**
+     * The stored state after an earn, as storage applies it: the higher tier, one more earn, the earn time, and the earn's
+     * availability, unless the stored tier is above the earn's tier. Then the stored availability stays.
+     */
     private static AchievementState earnedState(Identifier achievement, AchievementState old, int tier, Instant at,
             Optional<Instant> availableAt) {
         int highest = old == null ? tier : Math.max(old.tier(), tier);
         int earnCount = old == null ? 1 : old.earnCount() + 1;
-        return new AchievementState(achievement, highest, earnCount, Optional.of(at), availableAt);
+        Optional<Instant> available = old != null && old.tier() > tier ? old.availableAt() : availableAt;
+        return new AchievementState(achievement, highest, earnCount, Optional.of(at), available);
     }
 
     private AchievementStanding standingOf(AchievementRecord record, Achievement achievement) {
         AchievementState state = record.states.get(achievement.id());
         int highest = highestInCycle(record, achievement);
+        boolean complete = completeInCycle(record, achievement);
         int earnedTiers = achievement.tiers().isEmpty() ? (earnedInCycle(record, achievement) ? 1 : 0) : highest;
         Map<String, Integer> counts = new HashMap<>();
         for (String name : achievement.criteria().keySet()) {
@@ -898,23 +1070,38 @@ public final class AchievementService {
         }
         boolean settling = record.escrow.values().stream()
                 .anyMatch(escrowed -> escrowed.achievement().equals(achievement.id()));
+        Optional<Instant> availableAt = Optional.empty();
+        if (state != null) {
+            availableAt = achievement.repeat().isPresent() && complete ? cycleEnd(state, achievement) : state.availableAt();
+        }
         return new AchievementStanding(
                 achievement.id(),
                 earnedTiers,
                 highest,
                 state == null ? 0 : state.earnCount(),
                 state == null ? Optional.empty() : state.lastEarnedAt(),
-                state == null ? Optional.empty() : state.availableAt(),
+                availableAt,
                 counts,
                 settling);
     }
 
     // Staff.
 
+    private String stillLoading(ServerPlayer player) {
+        return "The achievements of " + player.getName().getString() + " are still loading.";
+    }
+
+    private String reloading(ServerPlayer player) {
+        return "The achievements of " + player.getName().getString() + " are being reloaded; try again.";
+    }
+
     private Optional<String> grantNow(ServerPlayer player, Identifier id, OptionalInt tier) {
         AchievementRecord record = records.get(player.getUUID());
         if (record == null || !record.loaded) {
-            return Optional.of("The achievements of " + player.getName().getString() + " are still loading.");
+            return Optional.of(stillLoading(player));
+        }
+        if (record.loadInFlight) {
+            return Optional.of(reloading(player));
         }
         Achievement achievement = contentSource.get().achievements().get(id);
         if (achievement == null) {
@@ -930,7 +1117,7 @@ public final class AchievementService {
             if (busy(record, id)) {
                 return Optional.of(id + " is being recorded or delivered; try again.");
             }
-            earnTier(record, player, achievement, 1);
+            earnTier(record, achievement, 1);
             return Optional.empty();
         }
         int size = achievement.tiers().size();
@@ -951,85 +1138,121 @@ public final class AchievementService {
             record.dirty.put(key, needed);
         }
         while (highestInCycle(record, achievement) < target) {
-            earnTier(record, player, achievement, highestInCycle(record, achievement) + 1);
+            earnTier(record, achievement, highestInCycle(record, achievement) + 1);
         }
         refreshWatches(record);
         return Optional.empty();
     }
 
-    private Optional<String> revokeNow(ServerPlayer player, Identifier id, OptionalInt tier) {
+    /**
+     * Refuses, or starts the revoke and completes {@code done} once its storage write has finished. The record changes in
+     * the write's completion, and only then: a failed write changes nothing and completes with its text.
+     */
+    private void revokeNow(ServerPlayer player, Identifier id, OptionalInt tier, CompletableFuture<Optional<String>> done) {
         AchievementRecord record = records.get(player.getUUID());
         if (record == null || !record.loaded) {
-            return Optional.of("The achievements of " + player.getName().getString() + " are still loading.");
+            done.complete(Optional.of(stillLoading(player)));
+            return;
+        }
+        if (record.loadInFlight) {
+            done.complete(Optional.of(reloading(player)));
+            return;
         }
         Achievement achievement = contentSource.get().achievements().get(id);
         if (achievement == null) {
-            return Optional.of("Unknown achievement " + id + ".");
+            done.complete(Optional.of("Unknown achievement " + id + "."));
+            return;
         }
         if (achievement.tiers().isEmpty() && tier.isPresent()) {
-            return Optional.of(id + " has no tiers, so no tier can be revoked.");
+            done.complete(Optional.of(id + " has no tiers, so no tier can be revoked."));
+            return;
         }
         if (tier.isPresent() && (tier.getAsInt() < 1 || tier.getAsInt() > achievement.tiers().size())) {
-            return Optional.of("Tier " + tier.getAsInt() + " is out of range; " + id + " has tiers 1 to "
-                    + achievement.tiers().size() + ".");
+            done.complete(Optional.of("Tier " + tier.getAsInt() + " is out of range; " + id + " has tiers 1 to "
+                    + achievement.tiers().size() + "."));
+            return;
         }
         if (busy(record, id)) {
-            return Optional.of(id + " is being recorded or delivered; try again.");
+            done.complete(Optional.of(id + " is being recorded or delivered; try again."));
+            return;
         }
         if (tier.isPresent() && highestInCycle(record, achievement) < tier.getAsInt()) {
-            return Optional.of(id + " tier " + tier.getAsInt() + " is not earned.");
+            done.complete(Optional.of(id + " tier " + tier.getAsInt() + " is not earned."));
+            return;
         }
         UUID character = record.id;
         Instant at = stamp();
+        record.revoking.add(id);
         if (tier.isEmpty()) {
-            record.states.remove(id);
-            record.counts.keySet().removeIf(key -> key.achievementId().equals(id));
-            record.dirty.keySet().removeIf(key -> key.achievementId().equals(id));
-            writes.submit(character, () -> storage.deleteAchievement(character, id))
-                    .whenComplete((ignored, failure) -> onServer("revoke of " + id, () -> {
-                        if (failure != null) {
-                            Alina.LOGGER.warn("Alina could not delete the achievement {} of {}", id, character, failure);
-                        }
-                    }, NOTHING));
-        } else {
-            int kept = tier.getAsInt() - 1;
-            AchievementState old = record.states.get(id);
-            if (old == null) {
-                return Optional.of(id + " tier " + tier.getAsInt() + " is not earned.");
-            }
-            AchievementState next = new AchievementState(id, kept, old.earnCount(), old.lastEarnedAt(), Optional.empty());
-            record.states.put(id, next);
-            CriterionKey key = new CriterionKey(id, onlyCriterion(achievement));
-            int cap = achievement.tiers().get(tier.getAsInt() - 1).count() - 1;
-            Map<CriterionKey, Integer> capped = new HashMap<>();
-            if (counts(record, key) > cap) {
-                record.counts.put(key, cap);
-                record.dirty.remove(key);
-                capped.put(key, cap);
-            }
-            Map<CriterionKey, Integer> snapshot = Map.copyOf(capped);
-            writes.submit(character, () -> (snapshot.isEmpty()
-                    ? CompletableFuture.<Void>completedFuture(null)
-                    : storage.writeCriterionProgress(character, snapshot, at))
-                    .thenCompose(ignored -> storage.writeAchievement(character, next, at)))
-                    .whenComplete((ignored, failure) -> onServer("revoke of " + id, () -> {
-                        if (failure != null) {
-                            Alina.LOGGER.warn("Alina could not write the revoked achievement {} of {}", id, character,
-                                    failure);
-                        }
-                    }, NOTHING));
+            CompletableFuture<Void> write = writes.submit(character, () -> storage.deleteAchievement(character, id));
+            settleRevoke(player, record, id, write, done, null, Map.of());
+            return;
         }
-        refreshWatches(record);
-        notifyListeners(listener -> listener.revoked(player, id));
-        return Optional.empty();
+        int kept = tier.getAsInt() - 1;
+        AchievementState old = record.states.get(id);
+        if (old == null) {
+            record.revoking.remove(id);
+            done.complete(Optional.of(id + " tier " + tier.getAsInt() + " is not earned."));
+            return;
+        }
+        AchievementState next = new AchievementState(id, kept, old.earnCount(), old.lastEarnedAt(), Optional.empty());
+        CriterionKey key = new CriterionKey(id, onlyCriterion(achievement));
+        int cap = achievement.tiers().get(tier.getAsInt() - 1).count() - 1;
+        Map<CriterionKey, Integer> capped = new HashMap<>();
+        if (counts(record, key) > cap) {
+            capped.put(key, cap);
+        }
+        Map<CriterionKey, Integer> snapshot = Map.copyOf(capped);
+        CompletableFuture<Void> write = writes.submit(character, () -> (snapshot.isEmpty()
+                ? CompletableFuture.<Void>completedFuture(null)
+                : storage.writeCriterionProgress(character, snapshot, at))
+                .thenCompose(ignored -> storage.writeAchievement(character, next, at)));
+        settleRevoke(player, record, id, write, done, next, snapshot);
+    }
+
+    /**
+     * Applies a revoke's result when its writes finish: the record takes the new state (or loses the achievement) and the
+     * capped counts, then the listeners are told. A failure changes nothing.
+     */
+    private void settleRevoke(ServerPlayer player, AchievementRecord record, Identifier id,
+            CompletableFuture<Void> write, CompletableFuture<Optional<String>> done, AchievementState next,
+            Map<CriterionKey, Integer> capped) {
+        write.whenComplete((ignored, failure) -> onServer("revoke of " + id + " for " + record.id, () -> {
+            record.revoking.remove(id);
+            if (failure != null) {
+                Throwable cause = failure instanceof CompletionException && failure.getCause() != null
+                        ? failure.getCause()
+                        : failure;
+                Alina.LOGGER.warn("Alina could not revoke {} of {}; nothing changed", id, record.id, cause);
+                done.complete(Optional.of("Could not revoke " + id + ": " + cause.getMessage()));
+                return;
+            }
+            if (isCurrent(record)) {
+                if (next == null) {
+                    record.states.remove(id);
+                    record.counts.keySet().removeIf(key -> key.achievementId().equals(id));
+                    record.dirty.keySet().removeIf(key -> key.achievementId().equals(id));
+                } else {
+                    record.states.put(id, next);
+                    for (Map.Entry<CriterionKey, Integer> entry : capped.entrySet()) {
+                        record.counts.put(entry.getKey(), entry.getValue());
+                        record.dirty.remove(entry.getKey());
+                    }
+                }
+                bumpEpoch(record, id);
+                refreshWatches(record);
+                notifyListeners(listener -> listener.revoked(player, id));
+            }
+            done.complete(Optional.empty());
+        }, () -> done.completeExceptionally(new IllegalStateException("the server stopped before the revoke finished"))));
     }
 
     // Settlement listeners.
 
     /**
-     * Storage recorded a settlement result. The record is loaded again once the current load (if any) has finished, for
-     * every reward, including the ones this service began: a load that read storage before the result would otherwise keep
-     * the earn out of the mirror until the next load.
+     * Storage recorded a settlement result. A result that arrives while the record's load is in flight drops that load, which
+     * may predate it. A reward this service began is already counted in the record. Any other reward in the escrow is counted
+     * now, the way storage counts it.
      */
     private void applied(SettledOperation settled) {
         if (!listenerOnServer("storage result of an operation", settled.player().getUUID())) {
@@ -1043,15 +1266,23 @@ public final class AchievementService {
         if (record == null) {
             return;
         }
-        AchievementRecord.Escrowed escrowed = record.escrow.get(operation.operationId());
-        if (escrowed != null) {
-            record.escrow.put(operation.operationId(),
-                    new AchievementRecord.Escrowed(escrowed.achievement(), escrowed.tier(), true));
+        if (record.loadInFlight) {
+            // The load may have read storage before this result, so its result is dropped and the tick loads again.
+            record.reloadRequested = true;
         }
-        record.reloadRequested = true;
+        AchievementRecord.Escrowed escrowed = record.escrow.get(operation.operationId());
+        if (escrowed == null) {
+            return;
+        }
+        record.escrow.put(operation.operationId(),
+                new AchievementRecord.Escrowed(escrowed.achievement(), escrowed.tier(), true));
+        if (!record.begun.contains(operation.operationId())
+                && operation.effect() instanceof OperationEffect.AchievementEarned earned) {
+            counted(record, earned, operation.createdAt());
+        }
     }
 
-    /** The reward reached the player: its escrow mark goes. */
+    /** The reward reached the player: its escrow mark goes. Its effect is already in the record. */
     private void settled(SettledOperation settled) {
         if (!listenerOnServer("settlement of an operation", settled.player().getUUID())) {
             return;
@@ -1063,6 +1294,7 @@ public final class AchievementService {
         AchievementRecord record = records.get(settled.player().getUUID());
         if (record != null) {
             record.escrow.remove(operation.operationId());
+            record.begun.remove(operation.operationId());
         }
     }
 

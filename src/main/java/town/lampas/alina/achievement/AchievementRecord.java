@@ -2,8 +2,10 @@ package town.lampas.alina.achievement;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import net.minecraft.resources.Identifier;
 import town.lampas.alina.criteria.CriterionWatchers;
@@ -12,8 +14,10 @@ import town.lampas.alina.storage.CriterionKey;
 
 /**
  * One online character's achievement state, held by {@link AchievementService} on the server thread. {@code states} and
- * {@code counts} mirror what storage holds after the load, with this record's earns applied: the earns that are still in
- * {@code pending}, and the reward operations in the escrow ({@code escrow}), which storage may not have applied yet.
+ * {@code counts} mirror what storage holds, with this record's earns applied: the earns still in {@code pending}, and the
+ * reward operations in the escrow ({@code escrow}), which storage may not have applied yet. The effect of every escrowed
+ * reward is in {@code states}: a reward this service began is counted from the earn, and one found in the escrow at load
+ * is counted when its result arrives.
  */
 final class AchievementRecord {
     /** A reward operation in the escrow: its achievement, its storage tier, and whether storage has applied it. */
@@ -24,7 +28,10 @@ final class AchievementRecord {
     long loadGeneration;
     boolean loaded;
     boolean loadInFlight;
-    /** Set when a settlement result lands while the record loads or after it loaded; the next load runs after it. */
+    /**
+     * Set when a settlement result lands while the record's load is in flight. That load may have read storage before the
+     * result, so its result is dropped and the tick loads again.
+     */
     boolean reloadRequested;
     /** Set when the met-but-not-earned check is due, and cleared once it has run with haruhi's startup finished. */
     boolean metCheckDue;
@@ -42,6 +49,15 @@ final class AchievementRecord {
     final List<AchievementEarn> pending = new ArrayList<>();
     /** The reward operations of this player in the escrow, by operation id. */
     final Map<UUID, Escrowed> escrow = new HashMap<>();
+    /** The reward operations this service began in this run, and that the escrow has not yet settled. */
+    final Set<UUID> begun = new HashSet<>();
+    /** The achievements whose staff revoke is being written. Their counts and earns wait until the write has finished. */
+    final Set<Identifier> revoking = new HashSet<>();
+    /**
+     * Per achievement, a number that rises each time its cycle is reset or it is revoked. A failed count write puts its
+     * counts back only while the number it was sent under is still current.
+     */
+    final Map<Identifier, Long> epochs = new HashMap<>();
 
     AchievementRecord(UUID id) {
         this.id = id;

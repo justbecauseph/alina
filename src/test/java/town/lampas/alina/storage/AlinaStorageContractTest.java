@@ -224,13 +224,42 @@ abstract class AlinaStorageContractTest {
 
     @Test
     void anAchievementEffectIncrementsTheEarnCountAndKeepsTheHighestTier() {
-        // Tiers 2, 3, 1 in that order, so the highest tier is not the last one applied. The availability is the last
-        // earn's, which is neither the latest availability nor the one of the highest tier.
+        // Tiers 2, 3, 1 in that order, so the highest tier is not the last one applied. The tier-1 earn is below the
+        // stored tier 3, so the availability of the tier-3 earn stays.
         await(storage.applyOperation(earned(OP1, FIRST_STEPS, 2, T6, T1)));
         await(storage.applyOperation(earned(OP2, FIRST_STEPS, 3, T5, T2)));
         assertEquals(new ApplyResult(true, 0), await(storage.applyOperation(earned(OP3, FIRST_STEPS, 1, T4, T3))));
 
-        assertEquals(new AchievementState(FIRST_STEPS, 3, 3, Optional.of(T3), Optional.of(T4)),
+        assertEquals(new AchievementState(FIRST_STEPS, 3, 3, Optional.of(T3), Optional.of(T5)),
+                achievement(ALICE, FIRST_STEPS));
+    }
+
+    @Test
+    void aLowerTierAppliedAfterTheHighestKeepsTheHighestTiersAvailability() {
+        // The completing tier-3 earn is applied first; the tier-2 earn of the same achievement is applied after it and
+        // carries no availability.
+        await(storage.applyOperation(earned(OP1, FIRST_STEPS, 3, T5, T1)));
+        await(storage.applyOperation(earnedWithoutAvailability(OP2, FIRST_STEPS, 2, T2)));
+
+        assertEquals(new AchievementState(FIRST_STEPS, 3, 2, Optional.of(T2), Optional.of(T5)),
+                achievement(ALICE, FIRST_STEPS));
+    }
+
+    @Test
+    void aHigherTierTakesItsAvailabilityWhenTheStoredTierIsLower() {
+        await(storage.applyOperation(earnedWithoutAvailability(OP1, FIRST_STEPS, 2, T1)));
+        await(storage.applyOperation(earned(OP2, FIRST_STEPS, 3, T5, T2)));
+
+        assertEquals(new AchievementState(FIRST_STEPS, 3, 2, Optional.of(T2), Optional.of(T5)),
+                achievement(ALICE, FIRST_STEPS));
+    }
+
+    @Test
+    void anEarnOfTheSameTierTakesItsOwnAvailability() {
+        await(storage.applyOperation(earned(OP1, FIRST_STEPS, 2, T6, T1)));
+        await(storage.applyOperation(earnedWithoutAvailability(OP2, FIRST_STEPS, 2, T2)));
+
+        assertEquals(new AchievementState(FIRST_STEPS, 2, 2, Optional.of(T2), Optional.empty()),
                 achievement(ALICE, FIRST_STEPS));
     }
 
@@ -530,6 +559,12 @@ abstract class AlinaStorageContractTest {
     private static Operation earned(UUID operationId, Identifier achievement, int tier, Instant availableAt, Instant at) {
         return new Operation(operationId, ALICE, OperationKind.ACHIEVEMENT_REWARD, achievement, tier, REVISION, WORLD,
                 REWARD, 0, new OperationEffect.AchievementEarned(achievement, tier, Optional.of(availableAt)), at);
+    }
+
+    /** An earn that makes no availability, as a tier short of the last one does. */
+    private static Operation earnedWithoutAvailability(UUID operationId, Identifier achievement, int tier, Instant at) {
+        return new Operation(operationId, ALICE, OperationKind.ACHIEVEMENT_REWARD, achievement, tier, REVISION, WORLD,
+                REWARD, 0, new OperationEffect.AchievementEarned(achievement, tier, Optional.empty()), at);
     }
 
     private CommissionState commission(UUID character, Identifier commission) {

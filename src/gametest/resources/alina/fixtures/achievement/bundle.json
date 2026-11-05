@@ -76,6 +76,37 @@
         "alina:test/flush": {
           "tab": "alina:test", "title": "Flush", "description": "Five steps.", "icon": { "id": "minecraft:paper" },
           "criteria": { "step": { "trigger": "alina:manual", "conditions": { "key": "step" }, "count": 5 } }
+        },
+        "alina:test/ladder": {
+          "tab": "alina:test", "title": "Ladder", "description": "Two rungs, then a cooldown.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "ladder": { "trigger": "alina:manual", "conditions": { "key": "ladder" } } },
+          "tiers": [
+            { "count": 1, "title": "Ladder I", "reward": { "loot_table": "alina:test/two_items" } },
+            { "count": 2, "title": "Ladder II" }
+          ],
+          "repeat": { "cooldown": "PT1H" }
+        },
+        "alina:test/chain": {
+          "tab": "alina:test", "title": "Chain", "description": "Counts every earn.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "earned": { "trigger": "alina:achievement_earned", "conditions": {} } },
+          "tiers": [
+            { "count": 1, "title": "Chain I" },
+            { "count": 2, "title": "Chain II" },
+            { "count": 3, "title": "Chain III" }
+          ]
+        },
+        "alina:test/plain": {
+          "tab": "alina:test", "title": "Plain", "description": "Two tiers, no rewards.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "plain": { "trigger": "alina:manual", "conditions": { "key": "plain" } } },
+          "tiers": [ { "count": 1, "title": "Plain I" }, { "count": 2, "title": "Plain II" } ]
+        },
+        "alina:test/pair": {
+          "tab": "alina:test", "title": "Pair", "description": "Two rewarded tiers.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "pair": { "trigger": "alina:manual", "conditions": { "key": "pair" } } },
+          "tiers": [
+            { "count": 1, "title": "Pair I", "reward": { "loot_table": "alina:test/five_emeralds" } },
+            { "count": 2, "title": "Pair II", "reward": { "loot_table": "alina:test/two_items" } }
+          ]
         }
       }
     }

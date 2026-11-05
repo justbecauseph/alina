@@ -1,0 +1,115 @@
+{
+  "schema": 1,
+  "extensions": {
+    "alina:achievements": {
+      "tabs": {
+        "alina:test": { "title": "Test", "icon": { "id": "minecraft:paper" } }
+      },
+      "achievements": {
+        "alina:test/signed_on": {
+          "tab": "alina:test", "title": "Signed On", "description": "Be met.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "met": { "trigger": "alina:manual", "conditions": { "key": "signed" } } },
+          "reward": { "loot_table": "alina:test/five_emeralds", "reputation": 2 }
+        },
+        "alina:test/quiet_note": {
+          "tab": "alina:test", "title": "Quiet Note", "description": "Write a note.", "icon": { "id": "minecraft:paper" },
+          "announce": false,
+          "criteria": { "note": { "trigger": "alina:manual", "conditions": { "key": "note" } } }
+        },
+        "alina:test/loud_note": {
+          "tab": "alina:test", "title": "Loud Note", "description": "Shout a note.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "loud": { "trigger": "alina:manual", "conditions": { "key": "loud" } } }
+        },
+        "alina:test/rule_note": {
+          "tab": "alina:test", "title": "Rule Note", "description": "Note under the rule.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "rule": { "trigger": "alina:manual", "conditions": { "key": "rule" } } }
+        },
+        "alina:test/tally": {
+          "tab": "alina:test", "title": "Tally", "description": "Tally three.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "tally": { "trigger": "alina:manual", "conditions": { "key": "tally" }, "count": 3 } }
+        },
+        "alina:test/both": {
+          "tab": "alina:test", "title": "Both", "description": "Both halves.", "icon": { "id": "minecraft:paper" },
+          "criteria": {
+            "a": { "trigger": "alina:manual", "conditions": { "key": "both_a" } },
+            "b": { "trigger": "alina:manual", "conditions": { "key": "both_b" } }
+          },
+          "requirements": [ [ "a" ], [ "b" ] ]
+        },
+        "alina:test/either": {
+          "tab": "alina:test", "title": "Either", "description": "Either half.", "icon": { "id": "minecraft:paper" },
+          "criteria": {
+            "c": { "trigger": "alina:manual", "conditions": { "key": "either_c" } },
+            "d": { "trigger": "alina:manual", "conditions": { "key": "either_d" } }
+          },
+          "requirements": [ [ "c", "d" ] ]
+        },
+        "alina:test/climber": {
+          "tab": "alina:test", "title": "Climber", "description": "Climb.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "climb": { "trigger": "alina:manual", "conditions": { "key": "climb" } } },
+          "tiers": [
+            { "count": 1, "title": "Climber I" },
+            { "count": 2, "title": "Climber II", "reward": { "loot_table": "alina:test/two_items" } },
+            { "count": 3, "title": "Climber III" }
+          ],
+          "repeat": { "cooldown": "PT1H" }
+        },
+        "alina:test/daily": {
+          "tab": "alina:test", "title": "Daily", "description": "Once a cooldown.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "daily": { "trigger": "alina:manual", "conditions": { "key": "daily" } } },
+          "repeat": { "cooldown": "PT1H" }
+        },
+        "alina:test/late_seen": {
+          "tab": "alina:test", "title": "Late Seen", "description": "Seen twice.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "seen": { "trigger": "alina:manual", "conditions": { "key": "seen" }, "count": 2 } }
+        },
+        "alina:test/meta": {
+          "tab": "alina:test", "title": "Meta", "description": "Sign on, then earn this.", "icon": { "id": "minecraft:paper" },
+          "criteria": {
+            "earned": { "trigger": "alina:achievement_earned", "conditions": { "achievement": "alina:test/signed_on" } }
+          }
+        },
+        "alina:test/retried": {
+          "tab": "alina:test", "title": "Retried", "description": "Its reward is delayed.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "retry": { "trigger": "alina:manual", "conditions": { "key": "retry" } } },
+          "reward": { "loot_table": "alina:test/five_emeralds" }
+        },
+        "alina:test/flush": {
+          "tab": "alina:test", "title": "Flush", "description": "Five steps.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "step": { "trigger": "alina:manual", "conditions": { "key": "step" }, "count": 5 } }
+        },
+        "alina:test/ladder": {
+          "tab": "alina:test", "title": "Ladder", "description": "Two rungs, then a cooldown.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "ladder": { "trigger": "alina:manual", "conditions": { "key": "ladder" } } },
+          "tiers": [
+            { "count": 1, "title": "Ladder I", "reward": { "loot_table": "alina:test/two_items" } },
+            { "count": 2, "title": "Ladder II" }
+          ],
+          "repeat": { "cooldown": "PT1H" }
+        },
+        "alina:test/chain": {
+          "tab": "alina:test", "title": "Chain", "description": "Counts every earn.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "earned": { "trigger": "alina:achievement_earned", "conditions": {} } },
+          "tiers": [
+            { "count": 1, "title": "Chain I" },
+            { "count": 2, "title": "Chain II" },
+            { "count": 3, "title": "Chain III" }
+          ]
+        },
+        "alina:test/plain": {
+          "tab": "alina:test", "title": "Plain", "description": "Two tiers, no rewards.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "plain": { "trigger": "alina:manual", "conditions": { "key": "plain" } } },
+          "tiers": [ { "count": 1, "title": "Plain I" }, { "count": 2, "title": "Plain II" } ]
+        },
+        "alina:test/pair": {
+          "tab": "alina:test", "title": "Pair", "description": "Two rewarded tiers.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "pair": { "trigger": "alina:manual", "conditions": { "key": "pair" } } },
+          "tiers": [
+            { "count": 1, "title": "Pair I", "reward": { "loot_table": "alina:test/five_emeralds" } },
+            { "count": 2, "title": "Pair II", "reward": { "loot_table": "alina:test/two_items" } }
+          ]
+        }
+      }
+    }
+  }
+}

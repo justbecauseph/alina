@@ -1,10 +1,13 @@
 package town.lampas.alina.achievement;
 
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
 import org.jspecify.annotations.Nullable;
 import town.lampas.alina.Alina;
 import town.lampas.alina.api.AlinaServices;
@@ -109,6 +112,26 @@ public final class AchievementModule {
             running = null;
             syncRunning = null;
         });
+    }
+
+    /**
+     * Where the {@code alina:achievement} dialogue condition reads a player's achievements. Null means the running service;
+     * GameTests point it at a service of their own, and back at null afterwards.
+     */
+    private static volatile Function<ServerPlayer, Optional<AchievementView>> conditionViews;
+
+    /** The view the dialogue condition reads for a player. */
+    static Optional<AchievementView> conditionView(ServerPlayer player) {
+        Function<ServerPlayer, Optional<AchievementView>> source = conditionViews;
+        return source != null ? source.apply(player) : service().view(player);
+    }
+
+    /**
+     * Points the {@code alina:achievement} condition at {@code views}, or at the running service when {@code views} is null. For
+     * GameTests, which evaluate a condition against their own service.
+     */
+    public static void conditionViews(@Nullable Function<ServerPlayer, Optional<AchievementView>> views) {
+        conditionViews = views;
     }
 
     /** The running server's achievement service. Throws before the server has started. */
