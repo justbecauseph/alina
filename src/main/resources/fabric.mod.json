@@ -28,7 +28,7 @@
     "minecraft": "~26.2",
     "java": ">=25",
     "fabric-api": "*",
-    "haruhi": ">=0.1.0"
+    "haruhi": ">=0.2.0"
   },
   "suggests": {
     "farmersdelight": "*",
