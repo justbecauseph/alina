@@ -111,6 +111,11 @@ public final class GuildText {
         return text("too_far", "Step closer to the notice board to read it.");
     }
 
+    /** A Notice Board with no board assigned, while the content has several boards. */
+    public static Component boardUnassigned() {
+        return text("board_unassigned", "This notice board has nothing pinned to it yet.");
+    }
+
     /** The Notice Board's graph is not in the active content. */
     public static Component boardMissing() {
         return text("board_missing", "Nothing is posted on the notice board.");

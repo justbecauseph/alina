@@ -22,6 +22,7 @@
   "alina.guild.commission_complete": "Commission complete: %s",
   "alina.guild.withdrawn": "The Guild withdrew %s, so it is no longer active.",
   "alina.guild.too_far": "Step closer to the notice board to read it.",
+  "alina.guild.board_unassigned": "This notice board has nothing pinned to it yet.",
   "alina.guild.board_missing": "Nothing is posted on the notice board.",
   "alina.guild.status.reputation": "Reputation: %s",
   "alina.guild.status.active": "%s: active",
