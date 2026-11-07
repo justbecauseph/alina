@@ -27,6 +27,9 @@ public final class InMemoryStorage implements AlinaStorage {
             .comparing((StoredOperation stored) -> stored.operation().createdAt())
             .thenComparing(stored -> stored.operation().operationId().toString());
 
+    /** A board's key: one board per date and board id. */
+    private record BoardKey(LocalDate date, Identifier boardId) {}
+
     private final Object lock = new Object();
     private final StorageExecutor executor =
             new StorageExecutor(THREADS, "alina-memory-storage-", StorageSupport.SHUTDOWN_GRACE);
@@ -35,7 +38,7 @@ public final class InMemoryStorage implements AlinaStorage {
     private final Map<UUID, Map<Identifier, AchievementState>> achievements = new HashMap<>();
     private final Map<UUID, Map<CriterionKey, Integer>> criteria = new HashMap<>();
     private final Map<UUID, StoredOperation> operations = new HashMap<>();
-    private final Map<LocalDate, StoredBoard> boards = new HashMap<>();
+    private final Map<BoardKey, StoredBoard> boards = new HashMap<>();
 
     @Override
     public CompletableFuture<CharacterState> loadCharacter(UUID characterId) {
@@ -224,13 +227,13 @@ public final class InMemoryStorage implements AlinaStorage {
     }
 
     @Override
-    public CompletableFuture<Optional<StoredBoard>> loadBoard(LocalDate boardDate) {
-        return locked(() -> Optional.ofNullable(boards.get(boardDate)));
+    public CompletableFuture<Optional<StoredBoard>> loadBoard(LocalDate boardDate, Identifier boardId) {
+        return locked(() -> Optional.ofNullable(boards.get(new BoardKey(boardDate, boardId))));
     }
 
     @Override
     public CompletableFuture<StoredBoard> storeBoard(StoredBoard board) {
-        return locked(() -> boards.computeIfAbsent(board.boardDate(), date -> board));
+        return locked(() -> boards.computeIfAbsent(new BoardKey(board.boardDate(), board.boardId()), key -> board));
     }
 
     @Override

@@ -22,7 +22,7 @@ import javax.sql.DataSource;
  */
 final class PostgresMigrations {
     /** The migration files in the order they apply. Each is named {@code V<n>__<name>.sql}, with n counting from 1. */
-    static final List<String> FILES = List.of("V1__init.sql");
+    static final List<String> FILES = List.of("V1__init.sql", "V2__boards.sql");
 
     /**
      * The table that records the applied versions. Named for Alina, so Alina and haruhi can share one schema: a generic

@@ -2,6 +2,7 @@ package town.lampas.alina.content;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import com.mojang.serialization.DataResult;
 import java.time.LocalTime;
 import java.time.ZoneId;
@@ -14,6 +15,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
+import java.util.stream.Collectors;
 import net.minecraft.advancements.predicates.ItemPredicate;
 import net.minecraft.advancements.predicates.MinMaxBounds;
 import net.minecraft.core.BlockPos;
@@ -31,10 +35,11 @@ import town.lampas.haruhi.content.api.ExtensionContext;
 
 /** Reads and validates the {@code alina:guild} extension (ALINA-PLAN §6.1). */
 final class GuildReader {
-    static final Set<String> GUILD_KEYS = Set.of("settings", "commissions", "volumes");
+    static final Set<String> GUILD_KEYS = Set.of("settings", "commissions", "volumes", "boards");
     static final Set<String> SETTINGS_KEYS =
             Set.of("board_size", "active_cap", "reset", "default_cooldown", "salt", "board_graph", "board_reach");
     static final Set<String> RESET_KEYS = Set.of("time", "zone");
+    static final Set<String> BOARD_KEYS = Set.of("name", "graph", "size", "reach", "categories", "commissions");
     static final Set<String> COMMISSION_KEYS = Set.of(
             "category", "kind", "name", "hint", "proof", "cooldown", "weight", "in_rotation", "reward");
     static final Set<String> REWARD_KEYS = Set.of("loot_table", "reputation");
@@ -60,12 +65,14 @@ final class GuildReader {
         }
         Section guild = root.get();
         guild.allowOnly(GUILD_KEYS);
+        boolean boarded = guild.has("boards");
 
-        Optional<GuildSettings> settings = guild.has("settings")
-                ? readSettings(guild.raw("settings"), where + ", settings", context)
+        Optional<Settings> settings = guild.has("settings")
+                ? readSettings(guild.raw("settings"), where + ", settings", context, boarded)
                 : missing(guild, "settings is required");
         Map<Identifier, Volume> volumes = readVolumes(guild, where, context);
-        Cooldown defaultCooldown = settings.map(GuildSettings::defaultCooldown).orElse(GuildSettings.DEFAULT_COOLDOWN);
+        Cooldown defaultCooldown = settings.map(parsed -> parsed.values().defaultCooldown())
+                .orElse(GuildSettings.DEFAULT_COOLDOWN);
 
         Map<Identifier, Commission> commissions = new LinkedHashMap<>();
         Map<Identifier, String> claimed = new HashMap<>();
@@ -82,8 +89,19 @@ final class GuildReader {
                     .ifPresent(commission -> commissions.put(id, commission));
         }
         checkTriggerReferences(commissions, declared(guild.entries("volumes")), claimed.keySet(), where, context);
-        return settings.map(parsed -> new GuildContent(parsed, commissions, volumes));
+        if (settings.isEmpty()) {
+            return Optional.empty();
+        }
+        GuildSettings values = settings.get().values();
+        Optional<Map<Identifier, Board>> boards = boarded
+                ? readBoards(guild, where, context, values, commissions, claimed.keySet())
+                : settings.get().implicitGraph().map(graph -> Map.of(GuildContent.DEFAULT_BOARD,
+                        GuildContent.implicitBoard(graph, values, commissions.keySet())));
+        return boards.map(parsed -> new GuildContent(values, commissions, volumes, parsed));
     }
+
+    /** The settings, and the graph of the implicit board, which the section names only when it has no boards. */
+    private record Settings(GuildSettings values, Optional<Identifier> implicitGraph) {}
 
     /** The ids of a section's keys that parse, including entries whose value failed to parse. */
     private static Set<Identifier> declared(Map<String, JsonElement> entries) {
@@ -131,7 +149,9 @@ final class GuildReader {
         return false;
     }
 
-    private static Optional<GuildSettings> readSettings(JsonElement value, String where, ExtensionContext context) {
+    /** {@code boarded} is whether the section has a {@code boards} key, which takes the graph of each board instead. */
+    private static Optional<Settings> readSettings(
+            JsonElement value, String where, ExtensionContext context, boolean boarded) {
         Optional<Section> parsed = Section.of(value, where, context);
         if (parsed.isEmpty()) {
             return Optional.empty();
@@ -160,18 +180,219 @@ final class GuildReader {
                 ? settings.optional("default_cooldown", GuildReader::cooldown)
                 : Optional.of(GuildSettings.DEFAULT_COOLDOWN);
         String salt = settings.optional("salt", Json::string).orElse("");
-        Optional<Identifier> boardGraph = settings.required("board_graph", Json::identifier);
-        boardGraph.filter(graph -> !context.graphIds().contains(graph))
-                .ifPresent(graph -> settings.add("board_graph '" + graph + "' is not a dialogue in this bundle"));
-        Optional<Double> reach = settings.optional("board_reach", Json::number);
-        reach.filter(blocks -> blocks <= 0 || blocks > 64)
-                .ifPresent(blocks -> settings.add("board_reach must be above 0 and at most 64"));
+        Optional<Identifier> implicitGraph = Optional.empty();
+        if (boarded) {
+            if (settings.has("board_graph")) {
+                settings.add("board_graph is not allowed with boards: each board names its own graph");
+            }
+        } else {
+            implicitGraph = settings.required("board_graph", Json::identifier);
+            implicitGraph.filter(graph -> !context.graphIds().contains(graph))
+                    .ifPresent(graph -> settings.add("board_graph '" + graph + "' is not a dialogue in this bundle"));
+        }
+        double boardReach = GuildSettings.DEFAULT_BOARD_REACH;
+        boolean reachOk = true;
+        if (settings.has("board_reach")) {
+            Optional<Double> reach = settings.optional("board_reach", Json::number);
+            if (reach.isEmpty()) {
+                reachOk = false;
+            } else if (!inReach(reach.get())) {
+                settings.add("board_reach must be above 0 and at most 64");
+                reachOk = false;
+            } else {
+                boardReach = reach.get();
+            }
+        }
 
-        if (!resetOk || defaultCooldown.isEmpty() || boardGraph.isEmpty()) {
+        if (!resetOk || !reachOk || defaultCooldown.isEmpty() || (!boarded && implicitGraph.isEmpty())) {
             return Optional.empty();
         }
-        return Optional.of(new GuildSettings(boardSize, activeCap, resetTime, zone, defaultCooldown.get(), salt,
-                boardGraph.get(), reach.orElse(GuildSettings.DEFAULT_BOARD_REACH)));
+        return Optional.of(new Settings(new GuildSettings(boardSize, activeCap, resetTime, zone, defaultCooldown.get(),
+                salt, boardReach), implicitGraph));
+    }
+
+    /**
+     * The boards of a section with a {@code boards} key. Each board parses on its own. A commission must be in exactly
+     * one board's pool, which the board's {@code commissions} or {@code categories} put it in. The pools are checked
+     * only when every board parsed, so one bad board does not also report its commissions as unassigned.
+     */
+    private static Optional<Map<Identifier, Board>> readBoards(
+            Section guild,
+            String where,
+            ExtensionContext context,
+            GuildSettings settings,
+            Map<Identifier, Commission> commissions,
+            Set<Identifier> declaredCommissions) {
+        Optional<JsonObject> entries = guild.optional("boards", Json::object);
+        if (entries.isEmpty()) {
+            return Optional.empty();
+        }
+        if (entries.get().size() == 0) {
+            guild.add("boards must list at least one board");
+            return Optional.empty();
+        }
+        Map<Identifier, String> claimed = new HashMap<>();
+        Map<Identifier, Board> boards = new TreeMap<>();
+        boolean complete = true;
+        for (Map.Entry<String, JsonElement> entry : entries.get().entrySet()) {
+            Identifier id = Json.keyId(entry.getKey());
+            if (id == null) {
+                guild.add("boards key '" + entry.getKey() + "' is not a valid id");
+                complete = false;
+                continue;
+            }
+            if (!claim(claimed, id, entry.getKey(), "boards", guild)) {
+                complete = false;
+                continue;
+            }
+            Optional<Board> board = readBoard(id, entry.getValue(), where + ", board " + id, context, settings,
+                    declaredCommissions);
+            if (board.isPresent()) {
+                boards.put(id, board.get());
+            } else {
+                complete = false;
+            }
+        }
+        if (boards.isEmpty()) {
+            return Optional.empty();
+        }
+        checkGraphsDistinct(boards, guild);
+        checkPools(commissions, boards, complete, guild);
+        return Optional.of(boards);
+    }
+
+    /** One board: its name, graph, size, reach, categories and commissions. The defaults come from the settings. */
+    private static Optional<Board> readBoard(
+            Identifier id,
+            JsonElement value,
+            String where,
+            ExtensionContext context,
+            GuildSettings settings,
+            Set<Identifier> declaredCommissions) {
+        Optional<Section> parsed = Section.of(value, where, context);
+        if (parsed.isEmpty()) {
+            return Optional.empty();
+        }
+        Section board = parsed.get();
+        board.allowOnly(BOARD_KEYS);
+        Optional<Component> name = board.has("name")
+                ? board.optional("name", Json.text(context.ops()))
+                : Optional.of(Component.literal(id.toString()));
+        Optional<Identifier> graph = board.required("graph", Json::identifier);
+        graph.filter(dialogue -> !context.graphIds().contains(dialogue))
+                .ifPresent(dialogue -> board.add("graph '" + dialogue + "' is not a dialogue in this bundle"));
+        Optional<Integer> size = board.has("size")
+                ? board.optional("size", Json.integerAtLeast(1))
+                : Optional.of(settings.boardSize());
+        Optional<Double> reach = board.has("reach")
+                ? board.optional("reach", Json::number)
+                : Optional.of(settings.boardReach());
+        if (reach.isPresent() && !inReach(reach.get())) {
+            board.add("reach must be above 0 and at most 64");
+            reach = Optional.empty();
+        }
+        Optional<Set<Character>> categories = readBoardCategories(board);
+        Optional<Set<Identifier>> named = readBoardCommissions(board, context, declaredCommissions);
+
+        if (name.isEmpty() || graph.isEmpty() || size.isEmpty() || reach.isEmpty() || categories.isEmpty()
+                || named.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(new Board(id, name.get(), graph.get(), size.get(), reach.get(), categories.get(),
+                named.get()));
+    }
+
+    /** {@code categories}: a list of letters A to F. Absent is no category; a bad entry is reported by its position. */
+    private static Optional<Set<Character>> readBoardCategories(Section board) {
+        Set<Character> categories = new TreeSet<>();
+        if (!board.has("categories")) {
+            return Optional.of(categories);
+        }
+        Optional<JsonArray> list = board.optional("categories", Json::array);
+        if (list.isEmpty()) {
+            return Optional.empty();
+        }
+        boolean valid = true;
+        for (int i = 0; i < list.get().size(); i++) {
+            Optional<String> letter = Json.string(list.get().get(i)).result().filter(CATEGORIES::contains);
+            if (letter.isEmpty()) {
+                board.add("categories entry " + (i + 1) + " must be one of A, B, C, D, E or F");
+                valid = false;
+            } else {
+                categories.add(letter.get().charAt(0));
+            }
+        }
+        return valid ? Optional.of(categories) : Optional.empty();
+    }
+
+    /**
+     * {@code commissions}: a list of commission ids of this section. An id that names no commission of the section is
+     * reported by its position. An id that names a commission whose own entry failed still counts as one of the section.
+     */
+    private static Optional<Set<Identifier>> readBoardCommissions(
+            Section board, ExtensionContext context, Set<Identifier> declaredCommissions) {
+        Set<Identifier> named = new TreeSet<>();
+        if (!board.has("commissions")) {
+            return Optional.of(named);
+        }
+        Optional<JsonArray> list = board.optional("commissions", Json::array);
+        if (list.isEmpty()) {
+            return Optional.empty();
+        }
+        boolean valid = true;
+        for (int i = 0; i < list.get().size(); i++) {
+            DataResult<Identifier> id = Json.identifier(list.get().get(i));
+            Optional<Identifier> found = id.result();
+            if (found.isEmpty()) {
+                String problem = id.error().map(error -> error.message()).orElse("is invalid");
+                board.add("commissions entry " + (i + 1) + " " + problem);
+                valid = false;
+            } else if (!declaredCommissions.contains(found.get())) {
+                board.add("commissions entry " + (i + 1) + " names commission '" + found.get()
+                        + "', which is not a commission in this extension");
+                valid = false;
+            } else {
+                named.add(found.get());
+            }
+        }
+        return valid ? Optional.of(named) : Optional.empty();
+    }
+
+    /** No two boards may share a graph: each Notice Board of a graph would be the board of two pools. */
+    private static void checkGraphsDistinct(Map<Identifier, Board> boards, Section guild) {
+        Map<Identifier, Identifier> boardOfGraph = new HashMap<>();
+        for (Board board : boards.values()) {
+            Identifier first = boardOfGraph.putIfAbsent(board.graph(), board.id());
+            if (first != null) {
+                guild.add("boards " + first + " and " + board.id() + " both use graph " + board.graph());
+            }
+        }
+    }
+
+    /**
+     * Every commission belongs to exactly one board. Those with none are reported only when every board parsed, because a
+     * board that failed may be the one that holds them.
+     */
+    private static void checkPools(
+            Map<Identifier, Commission> commissions, Map<Identifier, Board> boards, boolean complete, Section guild) {
+        for (Commission commission : commissions.values()) {
+            List<Identifier> holders = boards.values().stream()
+                    .filter(board -> board.holds(commission))
+                    .map(Board::id)
+                    .toList();
+            if (holders.size() > 1) {
+                guild.add("commission " + commission.id() + " belongs to several boards: "
+                        + holders.stream().map(Identifier::toString).collect(Collectors.joining(", ")));
+            } else if (holders.isEmpty() && complete) {
+                guild.add("commission " + commission.id() + " belongs to no board; list it in a board's commissions or "
+                        + "give its category to a board");
+            }
+        }
+    }
+
+    /** Whether a reach, in blocks, is above 0 and at most 64. */
+    static boolean inReach(double blocks) {
+        return blocks > 0 && blocks <= 64;
     }
 
     /** {@code "board_reset"} or a positive ISO-8601 duration. */

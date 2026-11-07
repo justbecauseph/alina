@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/justbecauseph/alina/main/docs/alina.schema.json",
   "title": "Haruhi content bundle with Alina's extensions",
-  "description": "A haruhi content bundle (haruhi's docs/bundle.schema.json) whose extensions object holds Alina's two sections, alina:guild and alina:achievements. It checks the shape of each value. Validation on the server also checks what this schema cannot: that board_graph names a graph in the bundle, that volumes, tabs and parents exist, that triggers are registered and their conditions parse, that loot tables, tags and effects exist, that a counted criterion uses an event trigger, that tier counts rise, and that requirements name the achievement's criteria.",
+  "description": "A haruhi content bundle (haruhi's docs/bundle.schema.json) whose extensions object holds Alina's two sections, alina:guild and alina:achievements. It checks the shape of each value. Validation on the server also checks what this schema cannot: that each board's graph (or settings.board_graph) names a graph in the bundle, that every commission belongs to exactly one board, that volumes, tabs and parents exist, that triggers are registered and their conditions parse, that loot tables, tags and effects exist, that a counted criterion uses an event trigger, that tier counts rise, and that requirements name the achievement's criteria.",
   "allOf": [
     { "$ref": "https://raw.githubusercontent.com/justbecauseph/haruhi/main/docs/bundle.schema.json" },
     {
@@ -49,7 +49,7 @@
       "additionalProperties": false
     },
     "guild": {
-      "description": "Guild settings, commissions and world volumes.",
+      "description": "Guild settings, commissions, world volumes and boards.",
       "type": "object",
       "properties": {
         "settings": { "$ref": "#/$defs/settings" },
@@ -62,10 +62,24 @@
           "type": "object",
           "propertyNames": { "$ref": "#/$defs/id" },
           "additionalProperties": { "$ref": "#/$defs/volume" }
+        },
+        "boards": {
+          "description": "Notice boards, each with its own pool and daily draw. Without boards, the section has one implicit board that takes settings.board_graph.",
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "$ref": "#/$defs/id" },
+          "additionalProperties": { "$ref": "#/$defs/board" }
         }
       },
       "required": ["settings"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "required": ["boards"] },
+          "then": { "properties": { "settings": { "not": { "required": ["board_graph"] } } } },
+          "else": { "properties": { "settings": { "required": ["board_graph"] } } }
+        }
+      ]
     },
     "settings": {
       "type": "object",
@@ -82,10 +96,39 @@
         },
         "default_cooldown": { "$ref": "#/$defs/cooldown" },
         "salt": { "type": "string", "default": "" },
-        "board_graph": { "$ref": "#/$defs/id", "description": "The graph the Notice Board opens; must be in the bundle." },
-        "board_reach": { "type": "number", "exclusiveMinimum": 0, "maximum": 64, "default": 6 }
+        "board_graph": {
+          "$ref": "#/$defs/id",
+          "description": "The graph the implicit board's Notice Boards open; must be in the bundle. Required without boards, not allowed with them."
+        },
+        "board_reach": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 64,
+          "default": 6,
+          "description": "How far a player may move from a Notice Board, in blocks. The default reach of every board."
+        }
       },
-      "required": ["board_graph"],
+      "additionalProperties": false
+    },
+    "board": {
+      "type": "object",
+      "properties": {
+        "name": { "$ref": "#/$defs/text", "description": "The name staff commands show. Default: the board's id." },
+        "graph": { "$ref": "#/$defs/id", "description": "The graph the board's Notice Boards open; must be in the bundle." },
+        "size": { "type": "integer", "minimum": 1, "description": "Commissions drawn each day. Default: settings.board_size." },
+        "reach": { "type": "number", "exclusiveMinimum": 0, "maximum": 64, "description": "Default: settings.board_reach." },
+        "categories": {
+          "description": "The categories whose commissions are in the pool.",
+          "type": "array",
+          "items": { "enum": ["A", "B", "C", "D", "E", "F"] }
+        },
+        "commissions": {
+          "description": "Commissions of this section in the pool, whatever their category.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" }
+        }
+      },
+      "required": ["graph"],
       "additionalProperties": false
     },
     "cooldown": {

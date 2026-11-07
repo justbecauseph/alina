@@ -21,6 +21,7 @@ class StorageRecordsTest {
     private static final Identifier FIRST_STEPS = Identifier.parse("alina:achievement/first_steps");
     private static final Instant T0 = Instant.parse("2026-11-05T10:00:00Z");
     private static final UUID ALICE = UUID.fromString("0f8fad5b-d9cb-469f-a165-70867728950e");
+    private static final Identifier BOARD = Identifier.parse("alina:board");
 
     @Test
     void aTurnInCannotSettleACommissionToActive() {
@@ -74,10 +75,16 @@ class StorageRecordsTest {
     @Test
     void aBoardKeepsItsOrderAndIsImmutable() {
         List<Identifier> ids = new ArrayList<>(List.of(COURIER, FIRST_STEPS));
-        StoredBoard board = new StoredBoard(LocalDate.parse("2026-11-05"), 1, 2, ids);
+        StoredBoard board = new StoredBoard(LocalDate.parse("2026-11-05"), BOARD, 1, 2, ids);
         ids.clear();
 
         assertEquals(List.of(COURIER, FIRST_STEPS), board.commissionIds());
         assertThrows(UnsupportedOperationException.class, () -> board.commissionIds().add(COURIER));
+    }
+
+    @Test
+    void aBoardNeedsItsBoardId() {
+        assertThrows(NullPointerException.class,
+                () -> new StoredBoard(LocalDate.parse("2026-11-05"), null, 1, 2, List.of(COURIER)));
     }
 }

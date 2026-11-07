@@ -824,7 +824,8 @@ public final class GuildGameTests {
     public void aStoredBoardIsServedAsStoredEvenWhenADrawWouldDiffer(GameTestHelper helper) {
         GuildRig rig = GuildRig.create(helper, BUNDLE);
         // A draw always holds both repeatables of this pool, so a board with one of them can only come from storage.
-        rig.storage().storeBoard(new StoredBoard(LocalDate.of(2026, 11, 5), GuildRig.REVISION, 0L, List.of(HORN))).join();
+        rig.storage().storeBoard(new StoredBoard(LocalDate.of(2026, 11, 5), GuildContent.DEFAULT_BOARD, GuildRig.REVISION,
+                0L, List.of(HORN))).join();
         helper.succeedWhen(() -> {
             rig.tick();
             Optional<BoardView> board = rig.service().board();
@@ -857,7 +858,7 @@ public final class GuildGameTests {
             List<Identifier> after = today.get().commissions();
             helper.assertValueEqual(after, expected, "the board after the change");
             helper.assertTrue(!after.contains(NEW_ARRIVAL), "the new commission was added to the board mid-day");
-            Optional<StoredBoard> stored = rig.storage().loadBoard(LocalDate.of(2026, 11, 5)).join();
+            Optional<StoredBoard> stored = rig.storage().loadBoard(LocalDate.of(2026, 11, 5), GuildContent.DEFAULT_BOARD).join();
             helper.assertTrue(stored.isPresent(), "the stored board is missing");
             helper.assertValueEqual(stored.get().commissionIds(), before.get(), "the stored board");
         });
@@ -924,7 +925,7 @@ public final class GuildGameTests {
                     helper.assertTrue(drawn.stored(), "the redrawn board was not stored");
                     helper.assertValueEqual(drawn.commissions().stream().sorted().toList(),
                             List.of(COURIER, HORN).stream().sorted().toList(), "the redrawn board");
-                    Optional<StoredBoard> stored = rig.storage().loadBoard(LocalDate.of(2026, 11, 5)).join();
+                    Optional<StoredBoard> stored = rig.storage().loadBoard(LocalDate.of(2026, 11, 5), GuildContent.DEFAULT_BOARD).join();
                     helper.assertTrue(stored.isPresent(), "the redrawn board is not in storage");
                     helper.assertValueEqual(stored.get().commissionIds().size(), 2, "the stored board");
                 }

@@ -76,11 +76,12 @@ public interface AlinaStorage extends AutoCloseable {
     /** Up to {@code limit} operations at one of the given steps, the oldest {@code createdAt} first. */
     CompletableFuture<List<StoredOperation>> listOperations(Set<OperationStep> steps, int limit);
 
-    CompletableFuture<Optional<StoredBoard>> loadBoard(LocalDate boardDate);
+    /** The board stored for the date and board id, or empty. Boards of other ids on the same date are not returned. */
+    CompletableFuture<Optional<StoredBoard>> loadBoard(LocalDate boardDate, Identifier boardId);
 
     /**
-     * Stores the board for its date unless one is stored already. Completes with the board stored for that date, so two
-     * callers that race end with the same board.
+     * Stores the board for its date and board id unless one is stored for them already. Completes with the board stored
+     * for that date and board, so two callers that race end with the same board. Boards of other ids are not affected.
      */
     CompletableFuture<StoredBoard> storeBoard(StoredBoard board);
 

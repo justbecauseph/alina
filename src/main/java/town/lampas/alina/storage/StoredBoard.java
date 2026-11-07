@@ -6,13 +6,15 @@ import java.util.Objects;
 import net.minecraft.resources.Identifier;
 
 /**
- * The commissions on one day's board, in board order, with the revision and seed they were drawn from. The list is an
+ * One board's commissions on one day, in board order, with the revision and seed they were drawn from. The list is an
  * immutable copy.
  */
-public record StoredBoard(LocalDate boardDate, long revisionId, long seed, List<Identifier> commissionIds) {
+public record StoredBoard(
+        LocalDate boardDate, Identifier boardId, long revisionId, long seed, List<Identifier> commissionIds) {
 
     public StoredBoard {
         Objects.requireNonNull(boardDate, "boardDate");
+        Objects.requireNonNull(boardId, "boardId");
         commissionIds = List.copyOf(commissionIds);
     }
 }

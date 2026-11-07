@@ -95,6 +95,7 @@ class AlinaSchemaTest {
                 () -> assertEquals(sorted(GuildReader.GUILD_KEYS), properties("guild"), "guild"),
                 () -> assertEquals(sorted(GuildReader.SETTINGS_KEYS), properties("settings"), "settings"),
                 () -> assertEquals(sorted(GuildReader.COMMISSION_KEYS), properties("commission"), "commission"),
+                () -> assertEquals(sorted(GuildReader.BOARD_KEYS), properties("board"), "board"),
                 () -> assertEquals(sorted(GuildReader.REWARD_KEYS), properties("reward"), "reward"),
                 () -> assertEquals(sorted(GuildReader.VOLUME_KEYS), properties("volume"), "volume"),
                 () -> assertEquals(sorted(GuildReader.ITEM_ENTRY_KEYS), properties("itemEntry"), "itemEntry"),
@@ -199,6 +200,8 @@ class AlinaSchemaTest {
                         commission(b, "alina:guild/b3_screaming_horn").getAsJsonObject("proof").getAsJsonArray("any_of")
                                 .get(0).getAsJsonObject().getAsJsonObject("item").addProperty("count", 2)),
                 Arguments.of("no settings", (Consumer<JsonObject>) b -> guild(b).remove("settings")),
+                Arguments.of("no board_graph without boards", (Consumer<JsonObject>) b ->
+                        guild(b).getAsJsonObject("settings").remove("board_graph")),
                 Arguments.of("a volume with two coordinates", (Consumer<JsonObject>) b ->
                         guild(b).getAsJsonObject("volumes").getAsJsonObject("alina:guild/high_dive")
                                 .add("from", JsonParser.parseString("[0, 1]"))),
@@ -280,6 +283,103 @@ class AlinaSchemaTest {
                 .toList();
         assertAll(
                 () -> assertFalse(readerProblems.isEmpty(), "the readers accept it"),
+                () -> assertFalse(errors(bundle).isEmpty(), "the schema accepts it"));
+    }
+
+    /** The whole bundle with the boards example as its alina:guild section. */
+    private static JsonObject boardsBundle() {
+        JsonObject bundle = bundle();
+        bundle.getAsJsonObject("extensions").add("alina:guild", JsonParser.parseString(GuildReaderTest.BOARDS));
+        return bundle;
+    }
+
+    private static JsonObject board(JsonObject bundle, String id) {
+        return guild(bundle).getAsJsonObject("boards").getAsJsonObject(id);
+    }
+
+    /** What the readers report for both sections of the bundle. */
+    private static List<String> readerProblems(JsonObject bundle) {
+        return Stream.concat(
+                        ContentFixtures.guild(bundle.getAsJsonObject("extensions").get("alina:guild").toString())
+                                .problems().stream(),
+                        ContentFixtures.achievements(
+                                        bundle.getAsJsonObject("extensions").get("alina:achievements").toString())
+                                .problems().stream())
+                .toList();
+    }
+
+    @Test
+    void schemaAndReadersBothAcceptTheBoardsExample() {
+        JsonObject bundle = boardsBundle();
+        assertAll(
+                () -> assertEquals(List.of(), readerProblems(bundle), "the readers refuse it"),
+                () -> assertEquals(List.of(), errors(bundle), "the schema refuses it"));
+    }
+
+    /** Changes to the boards example that the format allows. The pools stay whole: each commission is in one board. */
+    static Stream<Arguments> allowedBoardShapes() {
+        return Stream.of(
+                Arguments.of("a board without a name", (Consumer<JsonObject>) b ->
+                        board(b, "alina:guild/hunters").remove("name")),
+                Arguments.of("a name as a text component", (Consumer<JsonObject>) b ->
+                        board(b, "alina:guild/hunters").add("name", JsonParser.parseString("{ \"text\": \"Hunters\" }"))),
+                Arguments.of("a size of 1 and a reach of 64", (Consumer<JsonObject>) b -> {
+                    board(b, "alina:guild/hunters").addProperty("size", 1);
+                    board(b, "alina:guild/hunters").addProperty("reach", 64);
+                }),
+                Arguments.of("an empty categories list", (Consumer<JsonObject>) b ->
+                        board(b, "alina:guild/town").add("categories", JsonParser.parseString("[]"))),
+                Arguments.of("a commission named and in the category", (Consumer<JsonObject>) b ->
+                        board(b, "alina:guild/town").add("categories", JsonParser.parseString("[\"B\"]"))));
+    }
+
+    /** Changes to the boards example that the format refuses. */
+    static Stream<Arguments> refusedBoardShapes() {
+        return Stream.of(
+                Arguments.of("board_graph beside boards", (Consumer<JsonObject>) b ->
+                        guild(b).getAsJsonObject("settings").addProperty("board_graph", "alina:guild/board")),
+                Arguments.of("a board without a graph", (Consumer<JsonObject>) b ->
+                        board(b, "alina:guild/hunters").remove("graph")),
+                Arguments.of("a board size of 0", (Consumer<JsonObject>) b ->
+                        board(b, "alina:guild/hunters").addProperty("size", 0)),
+                Arguments.of("a board reach of 0", (Consumer<JsonObject>) b ->
+                        board(b, "alina:guild/hunters").addProperty("reach", 0)),
+                Arguments.of("a board reach of 65", (Consumer<JsonObject>) b ->
+                        board(b, "alina:guild/hunters").addProperty("reach", 65)),
+                Arguments.of("a board category G", (Consumer<JsonObject>) b ->
+                        board(b, "alina:guild/hunters").add("categories", JsonParser.parseString("[\"G\"]"))),
+                Arguments.of("categories that are not a list", (Consumer<JsonObject>) b ->
+                        board(b, "alina:guild/hunters").add("categories", JsonParser.parseString("\"E\""))),
+                Arguments.of("a board commission that is not an id", (Consumer<JsonObject>) b ->
+                        board(b, "alina:guild/town").add("commissions", JsonParser.parseString("[7]"))),
+                Arguments.of("an unknown board key", (Consumer<JsonObject>) b ->
+                        board(b, "alina:guild/hunters").addProperty("only_if", true)),
+                Arguments.of("no boards", (Consumer<JsonObject>) b -> guild(b).add("boards", new JsonObject())),
+                Arguments.of("a board that is not an object", (Consumer<JsonObject>) b ->
+                        guild(b).getAsJsonObject("boards").addProperty("alina:guild/town", "x")),
+                Arguments.of("a boards key that is not an id", (Consumer<JsonObject>) b ->
+                        guild(b).getAsJsonObject("boards").add("Bad Key", board(b, "alina:guild/town").deepCopy())),
+                Arguments.of("boards that are not an object", (Consumer<JsonObject>) b ->
+                        guild(b).add("boards", JsonParser.parseString("[]"))));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("allowedBoardShapes")
+    void boardsSchemaAndReadersBothAllow(String name, Consumer<JsonObject> change) {
+        JsonObject bundle = boardsBundle();
+        change.accept(bundle);
+        assertAll(
+                () -> assertEquals(List.of(), readerProblems(bundle), "the readers refuse it"),
+                () -> assertEquals(List.of(), errors(bundle), "the schema refuses it"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("refusedBoardShapes")
+    void boardsSchemaAndReadersBothRefuse(String name, Consumer<JsonObject> change) {
+        JsonObject bundle = boardsBundle();
+        change.accept(bundle);
+        assertAll(
+                () -> assertFalse(readerProblems(bundle).isEmpty(), "the readers accept it"),
                 () -> assertFalse(errors(bundle).isEmpty(), "the schema accepts it"));
     }
 

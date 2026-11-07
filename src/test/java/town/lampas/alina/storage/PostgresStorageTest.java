@@ -74,7 +74,7 @@ class PostgresStorageTest extends AlinaStorageContractTest {
                             "criterion_progress", "operation"),
                     column(connection, "SELECT table_name FROM information_schema.tables "
                             + "WHERE table_schema = ? ORDER BY table_name", schema));
-            assertEquals(List.of("1"),
+            assertEquals(List.of("1", "2"),
                     column(connection, "SELECT version FROM " + schema + ".alina_schema_version ORDER BY version"));
             assertEquals(List.of("jsonb", "jsonb"), column(connection, "SELECT data_type FROM information_schema.columns "
                     + "WHERE table_schema = ? AND table_name = 'operation' AND column_name IN ('reward', 'effect') "
@@ -100,7 +100,7 @@ class PostgresStorageTest extends AlinaStorageContractTest {
         }
 
         try (Connection connection = connect()) {
-            assertEquals(List.of("1"),
+            assertEquals(List.of("1", "2"),
                     column(connection, "SELECT version FROM " + schema + ".alina_schema_version ORDER BY version"));
         }
     }
@@ -123,7 +123,7 @@ class PostgresStorageTest extends AlinaStorageContractTest {
         }
 
         try (Connection connection = connect()) {
-            assertEquals(List.of("1"),
+            assertEquals(List.of("1", "2"),
                     column(connection, "SELECT version FROM " + schema + ".alina_schema_version ORDER BY version"));
             assertEquals(List.of("other mod"),
                     column(connection, "SELECT description FROM " + schema + ".schema_version ORDER BY version"));

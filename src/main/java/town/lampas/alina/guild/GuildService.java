@@ -1012,7 +1012,7 @@ public final class GuildService {
         boardLoading = true;
         boardDate = date;
         board = null;
-        storage.loadBoard(date)
+        storage.loadBoard(date, GuildContent.DEFAULT_BOARD)
                 .whenComplete((stored, failure) -> onServer("board load for " + date,
                         () -> boardLoaded(date, stored, failure), NOTHING));
     }
@@ -1029,14 +1029,14 @@ public final class GuildService {
         GuildContent content = contentSource.get();
         GuildSettings settings = content.settings();
         long revision = revisionId.getAsLong();
-        long seed = BoardDraw.seed(settings.salt(), date, revision);
+        long seed = BoardDraw.seed(settings.salt(), date, revision, GuildContent.DEFAULT_BOARD);
         List<Identifier> ids = BoardDraw.draw(rotationPool(content), settings.boardSize(), seed);
         if (ids.isEmpty()) {
             board = new Board(date, revision, List.of(), false);
             boardLoading = false;
             return;
         }
-        storage.storeBoard(new StoredBoard(date, revision, seed, ids))
+        storage.storeBoard(new StoredBoard(date, GuildContent.DEFAULT_BOARD, revision, seed, ids))
                 .whenComplete((result, storeFailure) -> onServer("board store for " + date,
                         () -> boardStored(date, result, storeFailure), NOTHING));
     }
