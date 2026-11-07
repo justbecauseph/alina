@@ -181,9 +181,14 @@ The Guild service (ALINA-PLAN §8) is `GuildModule.service()` on a running serve
   commission's category and kind. The commission is `SETTLING` while its operation is in the escrow, including
   operations from an earlier session found at load. The settlement listeners update the record when storage records the
   result and when the reward is delivered.
-- **Board.** Once haruhi's startup activation is complete, the service holds the board of the current board day: the
-  stored one, or one drawn from the repeatables in rotation and stored. A board with an empty pool is not stored and is
-  drawn again after each activation. `board()` leaves out ids the active content no longer has as repeatables.
+- **Boards.** The `alina:guild` section's optional `boards` map gives several notice boards, each with its own graph,
+  size, reach and pool (`categories` and `commissions`); every commission belongs to exactly one board. Without
+  `boards` there is one implicit board, `alina:board`, with `settings.board_graph`. Once haruhi's startup activation is
+  complete, the service holds each board's draw of the current board day: the stored one (keyed by date and board), or
+  one drawn from that board's repeatables in rotation, seeded with the board id, and stored. A board with an empty pool
+  is not stored and is drawn again after each activation. `board(id)` leaves out ids that are no longer repeatables of
+  that board, so a commission moved to another board waits for its new board's next day. A repeatable is accepted
+  only from its own board's draw; the active cap is shared by all boards.
 - **Content activation** withdraws, for loaded records, each active commission the new content lacks (abandoned in
   storage, with a chat message), and restarts proof tracking from the new content. It withdraws only when the active
   bundle has an `alina:guild` section. A record that loads withdraws the same way, and only once haruhi's startup is
@@ -197,8 +202,10 @@ The Guild service (ALINA-PLAN §8) is `GuildModule.service()` on a running serve
   `alina:volume_entered` when a player enters a content volume; the volumes a player stands in at join are the
   baseline and do not fire.
 - **Notice Board** (`alina:notice_board`): survival cannot break it, and the wither and the ender dragon cannot either.
-  Using it opens `settings.board_graph` with haruhi's `openAt`, anchored at the block within `board_reach`.
-- **Commands**, for gamemasters: `/alina guild board`, `show <player>`, `accept|turn_in|abandon <player>
+  Each placed board holds the board it shows, in a block entity set with `/alina guild noticeboard`; with none set, it
+  shows the content's only board. Using it opens that board's graph with haruhi's `openAt`, anchored at the block
+  within the board's reach.
+- **Commands**, for gamemasters: `/alina guild board [board]`, `noticeboard <pos> [<board>|clear]`, `show <player>`, `accept|turn_in|abandon <player>
   <commission>`, `reset <player> <commission>`, `reputation <player> <value>`; `/alina settlement pending <player>` and
   `/alina settlement reconciliation`.
 
@@ -210,7 +217,7 @@ commission's name only, so haruhi can match a pick by position and text.
 
 | Kind | Id | Arguments | Does |
 |---|---|---|---|
-| provider | `alina:guild/board` | `next` (optional) | Today's board commissions, then the feats the player has not completed, by id. Enabled when the player can accept, grayed with the reason otherwise; picking accepts. |
+| provider | `alina:guild/board` | `next` (optional), `board` (optional) | One board's draw of the day, then the feats of that board's pool the player has not completed, by id. Without `board`: the section's only board, else the board whose graph the provider is in (a parse error otherwise). Enabled when the player can accept, grayed with the reason otherwise; picking accepts. |
 | provider | `alina:guild/turn_in` | `next` (optional) | Each active or settling commission, by id. Enabled when the proof is met now, grayed with the hint otherwise; picking turns in. |
 | provider | `alina:guild/abandon` | `next` (optional) | Each active commission, by id; picking abandons. |
 | provider | `alina:guild/status` | none | Disabled rows: reputation, then each commission's standing (progress for a counted criterion, time left on a cooldown). |
