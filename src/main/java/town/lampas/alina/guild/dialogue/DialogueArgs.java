@@ -7,6 +7,7 @@ import java.util.Optional;
 import java.util.Set;
 import net.minecraft.resources.Identifier;
 import town.lampas.alina.content.AlinaContent;
+import town.lampas.alina.content.Board;
 import town.lampas.alina.content.GuildContent;
 import town.lampas.haruhi.dialogue.api.ParseContext;
 import town.lampas.haruhi.content.model.DialogueGraph;
@@ -127,6 +128,35 @@ final class DialogueArgs {
             throw invalid("'" + key + "' names '" + id + "', which is not a commission of alina:guild in this bundle");
         }
         return id;
+    }
+
+    /**
+     * The board a board provider serves. The {@code board} argument, when present, names a board of the bundle's
+     * {@code alina:guild} section. Without it, a section with one board gives that board; otherwise the board is the one
+     * whose graph is {@code graph}, the graph the provider is in. Otherwise the provider is refused.
+     */
+    Identifier boardOf(String key, Identifier graph) {
+        GuildContent guild = context.extension(AlinaContent.GUILD).orElseThrow(() -> invalid(
+                "the bundle has no alina:guild section, so there is no board to show"));
+        if (has(key)) {
+            String text = string(key);
+            Identifier id = Identifier.tryParse(text);
+            if (id == null) {
+                throw invalid("'" + key + "' is not an id: " + text);
+            }
+            if (!guild.boards().containsKey(id)) {
+                throw invalid("'" + key + "' names '" + id + "', which is not a board of alina:guild in this bundle");
+            }
+            return id;
+        }
+        if (guild.boards().size() == 1) {
+            return guild.boards().keySet().iterator().next();
+        }
+        return guild.boards().values().stream()
+                .filter(board -> board.graph().equals(graph))
+                .findFirst()
+                .map(Board::id)
+                .orElseThrow(() -> invalid("name the board with board, or use this provider in a board's graph"));
     }
 
     private static boolean isString(JsonElement element) {

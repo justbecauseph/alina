@@ -20,11 +20,15 @@ import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.commands.arguments.IdentifierArgument;
+import net.minecraft.commands.arguments.coordinates.BlockPosArgument;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import town.lampas.alina.content.AlinaContent;
+import town.lampas.alina.content.Board;
 import town.lampas.alina.guild.BoardView;
 import town.lampas.alina.guild.CommissionView;
 import town.lampas.alina.guild.GuildModule;
@@ -32,6 +36,7 @@ import town.lampas.alina.guild.GuildService;
 import town.lampas.alina.guild.GuildText;
 import town.lampas.alina.guild.GuildView;
 import town.lampas.alina.guild.Refusal;
+import town.lampas.alina.guild.block.NoticeBoardBlockEntity;
 
 /**
  * {@code /alina guild}, for gamemasters (ALINA-PLAN §8.4). Feedback is {@link Component#literal} text. The commands that act
@@ -57,7 +62,18 @@ public final class GuildCommands {
                 .requires(GAMEMASTERS)
                 .then(Commands.literal("guild")
                         .requires(GAMEMASTERS)
-                        .then(Commands.literal("board").executes(GuildCommands::board))
+                        .then(Commands.literal("board")
+                                .executes(GuildCommands::boards)
+                                .then(Commands.argument("board", IdentifierArgument.id())
+                                        .suggests(GuildCommands::suggestBoards)
+                                        .executes(GuildCommands::board)))
+                        .then(Commands.literal("noticeboard")
+                                .then(Commands.argument("pos", BlockPosArgument.blockPos())
+                                        .executes(GuildCommands::noticeBoard)
+                                        .then(Commands.literal("clear").executes(GuildCommands::noticeBoardClear))
+                                        .then(Commands.argument("board", IdentifierArgument.id())
+                                                .suggests(GuildCommands::suggestBoards)
+                                                .executes(GuildCommands::noticeBoardSet))))
                         .then(Commands.literal("show")
                                 .then(Commands.argument("player", EntityArgument.player())
                                         .executes(GuildCommands::show)))
@@ -76,21 +92,110 @@ public final class GuildCommands {
                                                 .executes(GuildCommands::reputation))))));
     }
 
-    private static int board(CommandContext<CommandSourceStack> context) {
+    /** {@code /alina guild board}: every board of the active content, with today's draw. */
+    private static int boards(CommandContext<CommandSourceStack> context) {
         CommandSourceStack source = context.getSource();
-        Optional<BoardView> board = GuildModule.service().board();
+        GuildService service = GuildModule.service();
+        for (Board board : service.content().boards().values()) {
+            source.sendSuccess(() -> Component.literal(boardLine(board, service.board(board.id()))), false);
+        }
+        return service.content().boards().size();
+    }
+
+    /** {@code /alina guild board <board>}: one board of the active content, with today's draw. */
+    private static int board(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+        CommandSourceStack source = context.getSource();
+        GuildService service = GuildModule.service();
+        Identifier id = IdentifierArgument.getId(context, "board");
+        Optional<Board> board = Optional.ofNullable(service.content().boards().get(id));
         if (board.isEmpty()) {
-            source.sendFailure(Component.literal("Today's board is still loading."));
+            source.sendFailure(Component.literal("The active content has no board " + id + "."));
             return 0;
         }
-        BoardView view = board.get();
+        source.sendSuccess(() -> Component.literal(boardLine(board.get(), service.board(id))), false);
+        return 1;
+    }
+
+    /**
+     * One board's line: its name, with its id when the name is not the id, then today's date and revision and its
+     * commissions, or that it is still loading.
+     */
+    private static String boardLine(Board board, Optional<BoardView> today) {
+        String name = board.name().getString();
+        String label = name.equals(board.id().toString()) ? name : name + " (" + board.id() + ")";
+        if (today.isEmpty()) {
+            return label + ": still loading";
+        }
+        BoardView view = today.get();
         String ids = view.commissions().isEmpty()
                 ? "none"
                 : String.join(", ", view.commissions().stream().map(Identifier::toString).toList());
         String stored = view.stored() ? "" : " (not stored)";
-        source.sendSuccess(() -> Component.literal("Board " + view.date() + ", revision " + view.revisionId()
-                + stored + ": " + ids), false);
+        return label + ", " + view.date() + ", revision " + view.revisionId() + stored + ": " + ids;
+    }
+
+    /** {@code /alina guild noticeboard <pos>}: the board the Notice Board at the position shows. */
+    private static int noticeBoard(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+        CommandSourceStack source = context.getSource();
+        Optional<NoticeBoardBlockEntity> entity = noticeBoardAt(context);
+        if (entity.isEmpty()) {
+            return 0;
+        }
+        String at = coordinates(context);
+        String assigned = entity.get().board().map(id -> "board " + id).orElse("no board");
+        source.sendSuccess(() -> Component.literal("The Notice Board at " + at + " shows " + assigned + "."), false);
         return 1;
+    }
+
+    /** {@code /alina guild noticeboard <pos> <board>}: makes the Notice Board at the position open the board. */
+    private static int noticeBoardSet(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+        CommandSourceStack source = context.getSource();
+        Optional<NoticeBoardBlockEntity> entity = noticeBoardAt(context);
+        if (entity.isEmpty()) {
+            return 0;
+        }
+        Identifier id = IdentifierArgument.getId(context, "board");
+        if (!GuildModule.service().content().boards().containsKey(id)) {
+            source.sendFailure(Component.literal("The active content has no board " + id + "."));
+            return 0;
+        }
+        entity.get().setBoard(Optional.of(id));
+        String at = coordinates(context);
+        source.sendSuccess(() -> Component.literal("The Notice Board at " + at + " now opens board " + id + "."), true);
+        return 1;
+    }
+
+    /** {@code /alina guild noticeboard <pos> clear}: removes the board the Notice Board at the position opens. */
+    private static int noticeBoardClear(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+        CommandSourceStack source = context.getSource();
+        Optional<NoticeBoardBlockEntity> entity = noticeBoardAt(context);
+        if (entity.isEmpty()) {
+            return 0;
+        }
+        entity.get().setBoard(Optional.empty());
+        String at = coordinates(context);
+        source.sendSuccess(() -> Component.literal("The Notice Board at " + at + " has no board now."), true);
+        return 1;
+    }
+
+    /** The Notice Board at the {@code pos} argument, or empty after a failure message to the source. */
+    private static Optional<NoticeBoardBlockEntity> noticeBoardAt(CommandContext<CommandSourceStack> context)
+            throws CommandSyntaxException {
+        BlockPos pos = BlockPosArgument.getLoadedBlockPos(context, "pos");
+        ServerLevel level = context.getSource().getLevel();
+        if (level.getBlockEntity(pos) instanceof NoticeBoardBlockEntity entity) {
+            return Optional.of(entity);
+        }
+        context.getSource().sendFailure(Component.literal("There is no Notice Board at " + coordinates(context) + "."));
+        return Optional.empty();
+    }
+
+    private static String coordinates(CommandContext<CommandSourceStack> context) {
+        return coordinates(BlockPosArgument.getBlockPos(context, "pos"));
+    }
+
+    private static String coordinates(BlockPos pos) {
+        return pos.getX() + " " + pos.getY() + " " + pos.getZ();
     }
 
     private static int show(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
@@ -195,5 +300,11 @@ public final class GuildCommands {
     private static CompletableFuture<Suggestions> suggestCommissions(
             CommandContext<CommandSourceStack> context, SuggestionsBuilder builder) {
         return SharedSuggestionProvider.suggestResource(AlinaContent.guild().commissions().keySet(), builder);
+    }
+
+    /** The board argument, which suggests the ids of the active content's boards. */
+    private static CompletableFuture<Suggestions> suggestBoards(
+            CommandContext<CommandSourceStack> context, SuggestionsBuilder builder) {
+        return SharedSuggestionProvider.suggestResource(AlinaContent.guild().boards().keySet(), builder);
     }
 }

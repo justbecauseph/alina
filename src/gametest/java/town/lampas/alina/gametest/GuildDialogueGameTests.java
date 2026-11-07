@@ -25,6 +25,7 @@ import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.CommonListenerCookie;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
@@ -43,6 +44,7 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 import town.lampas.alina.Alina;
 import town.lampas.alina.content.AlinaContent;
+import town.lampas.alina.content.GuildContent;
 import town.lampas.alina.guild.BoardView;
 import town.lampas.alina.guild.GuildModule;
 import town.lampas.alina.guild.GuildService;
@@ -51,6 +53,7 @@ import town.lampas.alina.guild.GuildView;
 import town.lampas.alina.guild.Refusal;
 import town.lampas.alina.guild.Standing;
 import town.lampas.alina.guild.block.GuildBlocks;
+import town.lampas.alina.guild.block.NoticeBoardBlockEntity;
 import town.lampas.haruhi.api.HaruhiServices;
 import town.lampas.haruhi.content.model.ContentBundle;
 import town.lampas.haruhi.dialogue.DialogueModule;
@@ -75,7 +78,7 @@ import town.lampas.haruhi.dialogue.runtime.VisibleChoice;
  * active content (it is put back if a sibling test such as {@code ContentGameTests} replaced it) and the player's
  * flags, record and today's board have loaded, stored or not. The step that acts runs in the tick that wait passes,
  * so no other test's activation can fall between the check and the action. The expected board entries come from
- * {@code guild().board()} and the fixture's feats, so they do not depend on which content drew today's board.
+ * {@code guild().board(GuildContent.DEFAULT_BOARD)} and the fixture's feats, so they do not depend on which content drew today's board.
  */
 @SuppressWarnings("removal")
 public final class GuildDialogueGameTests {
@@ -84,6 +87,12 @@ public final class GuildDialogueGameTests {
     private static final Identifier COURIER = Alina.id("dialogue_test/courier");
     private static final Identifier LANTERN = Alina.id("dialogue_test/lantern");
     private static final Identifier LEDGER = Alina.id("dialogue_test/ledger");
+    /** The boards fixture: two boards with a graph each, the hunters' board with reach 4 and the town's with 3. */
+    private static final String BOARDS = "boards.json";
+    private static final Identifier HUNTERS = Alina.id("dialogue_test/hunters");
+    private static final Identifier TOWN = Alina.id("dialogue_test/town");
+    private static final Identifier HUNTERS_BOARD = Alina.id("dialogue_test/hunters_board");
+    private static final Identifier TOWN_BOARD = Alina.id("dialogue_test/town_board");
     /** The fixture's feats in id order, which is how the board lists them after today's board commissions. */
     private static final List<Identifier> FEATS = List.of(COURIER, LANTERN, LEDGER);
     private static final Map<Identifier, String> NAMES =
@@ -545,6 +554,137 @@ public final class GuildDialogueGameTests {
         });
     }
 
+    // ---------------------------------------------------------------- boards
+
+    /** A bundle with the two boards of the boards fixture as its section, their graphs, and {@code extraGraph} (empty or a graph after a comma). */
+    private static String twoBoards(String extraGraph) {
+        return """
+                { "schema": 1,
+                  "dialogues": {
+                    "alina:dialogue_test/hunters_board": { "start": "board", "nodes": { "board": { "text": "Hunters.",
+                      "choices": [ { "provider": { "type": "alina:guild/board" } } ] } } },
+                    "alina:dialogue_test/town_board": { "start": "board", "nodes": { "board": { "text": "Town.",
+                      "choices": [ { "provider": { "type": "alina:guild/board" } } ] } } }%s },
+                  "extensions": { "alina:guild": {
+                    "settings": {},
+                    "boards": {
+                      "alina:dialogue_test/hunters": { "graph": "alina:dialogue_test/hunters_board", "categories": [ "A" ] },
+                      "alina:dialogue_test/town": { "graph": "alina:dialogue_test/town_board", "categories": [ "C" ] } },
+                    "commissions": { "alina:dialogue_test/courier": { "category": "C", "kind": "feat", "name": "The Courier",
+                      "hint": "Bring a piece of paper.",
+                      "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] } } } } } }
+                """.formatted(extraGraph);
+    }
+
+    /** The board provider reads the board of the graph it is in: each graph's rows are that board's draw, then its feats. */
+    @GameTest(maxTicks = 600, environment = "alina:guild_boards")
+    public void theBoardProviderShowsTheBoardOfTheGraphItIsIn(GameTestHelper helper) {
+        Subject subject = new Subject();
+        joinedWithBoards(helper, subject)
+                .thenExecute(() -> {
+                    ContentBundle bundle = parse(helper, fixture(helper, BOARDS));
+                    Ctx ctx = new Ctx(subject.player, bundle);
+                    ChoiceProvider hunters = provider(helper, "alina:guild/board",
+                            new ParseContext(bundle, HUNTERS_BOARD, "board"));
+                    ChoiceProvider town = provider(helper, "alina:guild/board",
+                            new ParseContext(bundle, TOWN_BOARD, "board"));
+                    // The hunters' pool has one repeatable, which its board always draws; the town's has none.
+                    helper.assertValueEqual(rowTexts(hunters.provide(ctx)), List.of("The Trapper", "The Lantern"),
+                            "the hunters' board rows");
+                    helper.assertValueEqual(rowTexts(town.provide(ctx)), List.of("The Courier", "The Ledger"),
+                            "the town's board rows");
+                })
+                .thenSucceed();
+    }
+
+    /** With several boards, a board provider in a graph that no board uses is refused, unless it names its board. */
+    @GameTest(maxTicks = 40)
+    public void aBoardProviderOutsideABoardsGraphIsRefusedWhenThereAreSeveralBoards(GameTestHelper helper) {
+        helper.succeedWhen(() -> {
+            requireStartupComplete(helper);
+            String stray = """
+                    , "alina:dialogue_test/stray": { "start": "board", "nodes": { "board": { "text": "Stray.",
+                      "choices": [ { "provider": { "type": "alina:guild/board" } } ] } } }
+                    """;
+            String message = problems(HaruhiServices.content().parseAndValidate(twoBoards(stray)));
+            helper.assertTrue(message.contains("alina:dialogue_test/stray#board: alina:guild/board: name the board with "
+                    + "board, or use this provider in a board's graph"), "no board problem in:\n" + message);
+            String named = """
+                    , "alina:dialogue_test/stray": { "start": "board", "nodes": { "board": { "text": "Stray.",
+                      "choices": [ { "provider": { "type": "alina:guild/board", "board": "alina:dialogue_test/town" } } ] } } }
+                    """;
+            DataResult<ContentBundle> result = HaruhiServices.content().parseAndValidate(twoBoards(named));
+            helper.assertTrue(result.result().isPresent(), "a provider that names its board was refused:\n" + problems(result));
+        });
+    }
+
+    /**
+     * The Notice Board whose block entity names the town board, assigned through {@code /alina guild noticeboard}, opens the
+     * town's graph, anchored with the town's reach.
+     */
+    @GameTest(maxTicks = 400, environment = "alina:guild_boards")
+    public void aNoticeBoardAssignedThroughTheCommandOpensItsBoardWithItsReach(GameTestHelper helper) {
+        Subject subject = new Subject();
+        joinedWithBoards(helper, subject)
+                .thenExecute(() -> {
+                    ServerLevel level = helper.getLevel();
+                    helper.setBlock(NOTICE_BOARD, GuildBlocks.NOTICE_BOARD);
+                    BlockPos board = helper.absolutePos(NOTICE_BOARD);
+                    subject.noticeBoard = board;
+                    runCommand(helper, "alina guild noticeboard " + coordinates(board) + " " + TOWN);
+                    helper.assertValueEqual(assignedBoard(level, board), Optional.of(TOWN), "the board the command assigned");
+                    subject.player.setPos(board.getX() + 1.5, board.getY(), board.getZ() + 0.5);
+                    useNoticeBoard(level, subject.player, board);
+                    DialogueSession session = presentedAt(helper, subject.player, "board");
+                    helper.assertValueEqual(session.graphId(), TOWN_BOARD, "the graph the Notice Board opened");
+                    DialogueAnchor anchor = session.anchor();
+                    helper.assertTrue(anchor != null, "the conversation is not anchored");
+                    // The town's board_reach is 3: the default is 6, and the hunters' board has 4.
+                    helper.assertValueEqual(anchor.maxDistance(), 3.0, "the anchor's reach is the town board's reach");
+                })
+                .thenExecute(() -> subject.player.setPos(subject.noticeBoard.getX() + 20.5, subject.noticeBoard.getY(),
+                        subject.noticeBoard.getZ() + 0.5))
+                .thenWaitUntil(() -> helper.assertFalse(sessions().isInDialogue(subject.player),
+                        "the conversation is still open after the player walked away"))
+                .thenSucceed();
+    }
+
+    /**
+     * A Notice Board with no board, while the content has several, tells the player the board is unassigned. Clearing an
+     * assignment through {@code /alina guild noticeboard <pos> clear} leaves the block with no board again.
+     */
+    @GameTest(maxTicks = 300, environment = "alina:guild_boards")
+    public void aNoticeBoardWithNoBoardWhileTheContentHasSeveralSaysSo(GameTestHelper helper) {
+        Subject subject = new Subject();
+        helper.startSequence()
+                .thenWaitUntil(() -> requireStartupComplete(helper))
+                .thenExecute(() -> subject.chatter = new ChatPlayer(helper))
+                .thenExecute(() -> activateBoards(helper))
+                .thenWaitUntil(() -> {
+                    ensureBoardsActive(helper);
+                    helper.assertValueEqual(AlinaContent.guild().boards().size(), 2, "the boards of the active content");
+                })
+                .thenExecute(() -> {
+                    ServerLevel level = helper.getLevel();
+                    helper.setBlock(NOTICE_BOARD, GuildBlocks.NOTICE_BOARD);
+                    BlockPos board = helper.absolutePos(NOTICE_BOARD);
+                    ServerPlayer player = subject.chatter.player;
+                    player.setPos(board.getX() + 1.5, board.getY(), board.getZ() + 0.5);
+                    useNoticeBoard(level, player, board);
+                    helper.assertTrue(subject.chatter.messages().contains(GuildText.boardUnassigned().getString()),
+                            "no unassigned message; chat: " + subject.chatter.messages());
+                    helper.assertFalse(sessions().isInDialogue(player), "a conversation opened on a block with no board");
+                    runCommand(helper, "alina guild noticeboard " + coordinates(board) + " " + TOWN);
+                    runCommand(helper, "alina guild noticeboard " + coordinates(board) + " clear");
+                    helper.assertTrue(assignedBoard(level, board).isEmpty(), "clear left a board on the block");
+                    useNoticeBoard(level, player, board);
+                    helper.assertValueEqual(subject.chatter.messages().stream()
+                            .filter(text -> text.equals(GuildText.boardUnassigned().getString())).count(), 2L,
+                            "the unassigned message after the clear");
+                })
+                .thenSucceed();
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private static GuildService guild() {
@@ -579,7 +719,7 @@ public final class GuildDialogueGameTests {
     private static void assertReady(GameTestHelper helper, ServerPlayer player) {
         helper.assertTrue(sessions().loadedFlags(player).isPresent(), "the flags have not loaded");
         helper.assertTrue(guild().view(player).isPresent(), "the Guild record has not loaded");
-        helper.assertTrue(guild().boardEntries(player).isPresent(), "today's board has not loaded");
+        helper.assertTrue(guild().boardEntries(player, GuildContent.DEFAULT_BOARD).isPresent(), "today's board has not loaded");
     }
 
     /**
@@ -599,7 +739,7 @@ public final class GuildDialogueGameTests {
 
     /** The board's entries as the spec gives them: today's board commissions, then the feats by id. */
     private static List<Identifier> expectedBoard(GameTestHelper helper) {
-        Optional<BoardView> today = guild().board();
+        Optional<BoardView> today = guild().board(GuildContent.DEFAULT_BOARD);
         helper.assertTrue(today.isPresent(), "today's board has not loaded");
         List<Identifier> entries = new ArrayList<>(today.get().commissions());
         entries.addAll(FEATS);
@@ -607,7 +747,7 @@ public final class GuildDialogueGameTests {
     }
 
     private static List<Identifier> boardEntriesOf(GameTestHelper helper, ServerPlayer player) {
-        Optional<List<Identifier>> entries = guild().boardEntries(player);
+        Optional<List<Identifier>> entries = guild().boardEntries(player, GuildContent.DEFAULT_BOARD);
         helper.assertTrue(entries.isPresent(), "the board entries have not loaded");
         return entries.get();
     }
@@ -685,6 +825,63 @@ public final class GuildDialogueGameTests {
 
     private static int count(ServerPlayer player, net.minecraft.world.item.Item item) {
         return player.getInventory().countItem(item);
+    }
+
+    /** Makes the subject's player, activates the boards fixture, and waits until it is active and the player's board is loaded. */
+    private static GameTestSequence joinedWithBoards(GameTestHelper helper, Subject subject) {
+        return helper.startSequence()
+                .thenWaitUntil(() -> requireStartupComplete(helper))
+                .thenExecute(() -> subject.player = helper.makeMockServerPlayerInLevel())
+                .thenExecute(() -> activateBoards(helper))
+                .thenWaitUntil(() -> {
+                    ensureBoardsActive(helper);
+                    assertBoardsReady(helper, subject.player);
+                });
+    }
+
+    /** The flags, the record, and both boards of the boards fixture have loaded. */
+    private static void assertBoardsReady(GameTestHelper helper, ServerPlayer player) {
+        helper.assertTrue(sessions().loadedFlags(player).isPresent(), "the flags have not loaded");
+        helper.assertTrue(guild().view(player).isPresent(), "the Guild record has not loaded");
+        helper.assertTrue(guild().board(HUNTERS).isPresent() && guild().board(TOWN).isPresent(),
+                "the boards have not loaded");
+    }
+
+    /** Activates the boards fixture again when a sibling test has replaced the active content. */
+    private static void ensureBoardsActive(GameTestHelper helper) {
+        if (!AlinaContent.guild().boards().containsKey(HUNTERS)) {
+            activateBoards(helper);
+        }
+    }
+
+    private static void activateBoards(GameTestHelper helper) {
+        HaruhiServices.content().activateUnstored(parse(helper, fixture(helper, BOARDS)));
+    }
+
+    private static List<String> rowTexts(List<ProvidedChoice> rows) {
+        return rows.stream().map(row -> row.text().getString()).toList();
+    }
+
+    /** The block's coordinates as the command takes them. */
+    private static String coordinates(BlockPos pos) {
+        return pos.getX() + " " + pos.getY() + " " + pos.getZ();
+    }
+
+    /** Runs a command as the server, which holds every permission level. */
+    private static void runCommand(GameTestHelper helper, String command) {
+        MinecraftServer server = helper.getLevel().getServer();
+        server.getCommands().performPrefixedCommand(server.createCommandSourceStack(), command);
+    }
+
+    /** The board the block entity at {@code pos} names, or empty when it has none or is not a Notice Board. */
+    private static Optional<Identifier> assignedBoard(ServerLevel level, BlockPos pos) {
+        return level.getBlockEntity(pos) instanceof NoticeBoardBlockEntity entity ? entity.board() : Optional.empty();
+    }
+
+    /** Uses the block at {@code pos} as a player does, from where the player stands. */
+    private static void useNoticeBoard(ServerLevel level, ServerPlayer player, BlockPos pos) {
+        level.getBlockState(pos).useWithoutItem(level, player, new BlockHitResult(
+                Vec3.atCenterOf(pos), Direction.UP, pos, false));
     }
 
     /** Parses the fixture with the content service and makes it the active content, unstored. */

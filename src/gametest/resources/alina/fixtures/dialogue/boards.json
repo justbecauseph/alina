@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:dialogue_test/hunters_board": {
+      "start": "board",
+      "nodes": {
+        "board": {
+          "text": "The hunters' board.",
+          "choices": [
+            { "provider": { "type": "alina:guild/board" } },
+            { "text": "Leave.", "next": "bye" }
+          ]
+        },
+        "bye": { "text": "Safe travels." }
+      }
+    },
+    "alina:dialogue_test/town_board": {
+      "start": "board",
+      "nodes": {
+        "board": {
+          "text": "The town's board.",
+          "choices": [
+            { "provider": { "type": "alina:guild/board" } },
+            { "text": "Leave.", "next": "bye" }
+          ]
+        },
+        "bye": { "text": "Safe travels." }
+      }
+    }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "active_cap": 3,
+        "salt": "dialogue_boards"
+      },
+      "boards": {
+        "alina:dialogue_test/hunters": {
+          "name": "Hunters' Lodge",
+          "graph": "alina:dialogue_test/hunters_board",
+          "size": 1,
+          "reach": 4,
+          "categories": [ "A" ]
+        },
+        "alina:dialogue_test/town": {
+          "name": "Town Hall",
+          "graph": "alina:dialogue_test/town_board",
+          "size": 1,
+          "reach": 3,
+          "categories": [ "C" ]
+        }
+      },
+      "commissions": {
+        "alina:dialogue_test/trapper": {
+          "category": "A", "kind": "repeatable", "name": "The Trapper", "hint": "Bring a piece of paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] }
+        },
+        "alina:dialogue_test/lantern": {
+          "category": "A", "kind": "feat", "name": "The Lantern", "hint": "Bring a lantern.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:lantern" } } ] }
+        },
+        "alina:dialogue_test/courier": {
+          "category": "C", "kind": "feat", "name": "The Courier", "hint": "Bring a piece of paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] }
+        },
+        "alina:dialogue_test/ledger": {
+          "category": "C", "kind": "feat", "name": "The Ledger", "hint": "Bring a book.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:book" } } ] }
+        }
+      }
+    }
+  }
+}
