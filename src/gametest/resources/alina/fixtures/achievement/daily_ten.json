@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "extensions": {
+    "alina:achievements": {
+      "tabs": {
+        "alina:test": { "title": "Test", "icon": { "id": "minecraft:paper" } }
+      },
+      "achievements": {
+        "alina:test/daily": {
+          "tab": "alina:test", "title": "Daily", "description": "Once a cooldown.", "icon": { "id": "minecraft:paper" },
+          "criteria": { "daily": { "trigger": "alina:manual", "conditions": { "key": "daily" }, "count": 10 } },
+          "repeat": { "cooldown": "PT1H" }
+        }
+      }
+    }
+  }
+}

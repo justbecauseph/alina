@@ -53,7 +53,7 @@
           "icon": { "id": "minecraft:ender_eye" },
           "hidden": true,
           "criteria": { "seek": { "trigger": "alina:manual", "conditions": { "key": "seek" } } },
-          "tiers": [ { "count": 1, "title": "Recluse I" }, { "count": 2, "title": "Recluse II" } ]
+          "tiers": [ { "count": 1, "title": "Recluse I" }, { "count": 2, "title": "Recluse II" }, { "count": 3, "title": "Recluse III" } ]
         },
         "alina:sync_test/pair": {
           "tab": "alina:sync_test/hall",

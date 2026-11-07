@@ -23,7 +23,7 @@ final class AchievementEarn {
     final Identifier achievement;
     /** The tier earned, 1-based: 1 for an achievement without tiers, 0 for a reset. */
     final int tier;
-    /** The stored tier: 0 for an achievement without tiers, the tier for a tiered one, 0 for a reset. */
+    /** The stored tier: 1 for an achievement without tiers, the tier for a tiered one, 0 for a reset. */
     final int storageTier;
     /** The time of the earn, or of the reset. */
     final Instant at;

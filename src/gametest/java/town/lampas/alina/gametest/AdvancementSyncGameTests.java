@@ -61,6 +61,7 @@ public final class AdvancementSyncGameTests {
     private static final Identifier NEWCOMER_HOLDER = AdvancementSync.holderId(NEWCOMER, 1);
     private static final Identifier RECLUSE_1_HOLDER = AdvancementSync.holderId(RECLUSE, 1);
     private static final Identifier RECLUSE_2_HOLDER = AdvancementSync.holderId(RECLUSE, 2);
+    private static final Identifier RECLUSE_3_HOLDER = AdvancementSync.holderId(RECLUSE, 3);
 
     /** The holders of {@code bundle.json} that are visible with no achievement earned: the tab and six Alina holders. */
     private static final Set<Identifier> VISIBLE_WITH_GREETER_AND_VISITOR = Set.of(TAB_HOLDER, GREETER_HOLDER,
@@ -157,11 +158,11 @@ public final class AdvancementSyncGameTests {
     }
 
     /**
-     * A hidden tiered achievement's first earn adds all its tiers, as the client has none of them, and sends progress for
-     * the earned tier only.
+     * A hidden tiered achievement's first earn adds all its tiers, as the client has none of them. The earned tier's progress is
+     * done; each later tier's is its count, not done, so the client does not show it complete before its own earn.
      */
     @GameTest
-    public void aHiddenTieredAchievementsFirstEarnAddsAllItsTiersAndSendsProgressForTheEarnedTierOnly(GameTestHelper helper) {
+    public void aHiddenTieredAchievementsFirstEarnAddsAllItsTiersAndSendsProgressForEveryTier(GameTestHelper helper) {
         SyncRig rig = SyncRig.create(helper, BUNDLE);
         ServerPlayer player = rig.newPlayer();
         rig.setView(player, Map.of());
@@ -172,10 +173,13 @@ public final class AdvancementSyncGameTests {
         List<ClientboundUpdateAdvancementsPacket> sent = rig.sentSince(player);
         helper.assertValueEqual(sent.size(), 1, "packets for the first earn");
         ClientboundUpdateAdvancementsPacket update = sent.get(0);
-        helper.assertValueEqual(Set.copyOf(idsOf(update.getAdded())), Set.of(RECLUSE_1_HOLDER, RECLUSE_2_HOLDER),
+        helper.assertValueEqual(Set.copyOf(idsOf(update.getAdded())), Set.of(RECLUSE_1_HOLDER, RECLUSE_2_HOLDER, RECLUSE_3_HOLDER),
                 "the holders added: every tier of the achievement");
-        helper.assertValueEqual(update.getProgress().keySet(), Set.of(RECLUSE_1_HOLDER), "the progress entries");
+        helper.assertValueEqual(update.getProgress().keySet(), Set.of(RECLUSE_1_HOLDER, RECLUSE_2_HOLDER, RECLUSE_3_HOLDER),
+                "the progress entries");
         helper.assertTrue(update.getProgress().get(RECLUSE_1_HOLDER).isDone(), "the earned tier's progress is not done");
+        helper.assertFalse(update.getProgress().get(RECLUSE_2_HOLDER).isDone(), "a later tier was sent done");
+        helper.assertFalse(update.getProgress().get(RECLUSE_3_HOLDER).isDone(), "a later tier was sent done");
         helper.succeed();
     }
 
@@ -217,15 +221,15 @@ public final class AdvancementSyncGameTests {
         helper.succeed();
     }
 
+    /** Only an earn sends a holder done: a count change and the ticks after it send none, so the earn's toast is sent once. */
     @GameTest
-    public void aDoneHolderIsNeverSentDoneTwice(GameTestHelper helper) {
+    public void aDoneHolderIsSentDoneOnlyByItsEarnAndNotRepeatedByTheTicks(GameTestHelper helper) {
         SyncRig rig = SyncRig.create(helper, BUNDLE);
         ServerPlayer player = rig.newPlayer();
         rig.setView(player, Map.of());
         rig.sync().appendToReset(player, new ArrayList<>(), new HashMap<>());
 
         rig.setView(player, Map.of(GREETER, standing(GREETER, 1, 1, Map.of("greet", 1))));
-        rig.sync().earned(player, GREETER, 1);
         rig.sync().earned(player, GREETER, 1);
         rig.sync().progressed(player, GREETER);
         for (int tick = 0; tick < 200; tick++) {
@@ -400,8 +404,9 @@ public final class AdvancementSyncGameTests {
     }
 
     /**
-     * A revoke that withholds a hidden tiered achievement removes only its first tier: the client drops the descendants of
-     * a removed holder with it, so listing the later tiers as well would log a warning for each one.
+     * A revoke that withholds a hidden tiered achievement of three tiers removes only its first tier: the client drops the
+     * descendants of a removed holder with it, so listing the later tiers as well, the second's child the third included, would
+     * log a warning for each one that the client no longer has.
      */
     @GameTest
     public void aRevokedHiddenTieredAchievementListsOnlyItsFirstTierForRemoval(GameTestHelper helper) {
@@ -422,13 +427,88 @@ public final class AdvancementSyncGameTests {
         helper.assertValueEqual(update.getRemoved(), Set.of(RECLUSE_1_HOLDER), "the ids removed");
         helper.assertTrue(update.getAdded().isEmpty() && update.getProgress().isEmpty(), "the revoke sent more than removals");
 
-        // The achievement is earned again: both tiers are added, so the revoke left nothing sent behind.
+        // The achievement is earned again: all three tiers are added, so the revoke left nothing sent behind.
         rig.setView(player, Map.of(RECLUSE, standing(RECLUSE, 1, 1, Map.of("seek", 1))));
         rig.sync().earned(player, RECLUSE, 1);
         List<ClientboundUpdateAdvancementsPacket> again = rig.sentSince(player);
         helper.assertValueEqual(again.size(), 1, "packets for the second first earn");
-        helper.assertValueEqual(Set.copyOf(idsOf(again.get(0).getAdded())), Set.of(RECLUSE_1_HOLDER, RECLUSE_2_HOLDER),
+        helper.assertValueEqual(Set.copyOf(idsOf(again.get(0).getAdded())), Set.of(RECLUSE_1_HOLDER, RECLUSE_2_HOLDER, RECLUSE_3_HOLDER),
                 "the holders added after the revoke");
+        helper.succeed();
+    }
+
+    /**
+     * A count packet can carry a hidden achievement's earned holder as done before the earn is reported, with no toast. The earn's
+     * own packet still toasts it, because each earn sends its tier's done progress with toasts on.
+     */
+    @GameTest
+    public void anEarnStillToastsAHiddenHolderThatATickSentDoneBeforeIt(GameTestHelper helper) {
+        SyncRig rig = SyncRig.create(helper, BUNDLE);
+        ServerPlayer player = rig.newPlayer();
+        rig.setView(player, Map.of());
+        rig.sync().appendToReset(player, new ArrayList<>(), new HashMap<>());
+
+        // The hermit is earned in the view, and its count change is sent by a tick before the earn is reported.
+        rig.setView(player, Map.of(HERMIT, standing(HERMIT, 1, 1, Map.of("hide", 1))));
+        rig.sync().progressed(player, HERMIT);
+        rig.tick();
+        List<ClientboundUpdateAdvancementsPacket> tick = rig.sentSince(player);
+        helper.assertValueEqual(tick.size(), 1, "packets for the count change");
+        helper.assertFalse(tick.get(0).shouldShowAdvancements(), "the count change's packet shows toasts");
+
+        rig.sync().earned(player, HERMIT, 1);
+        List<ClientboundUpdateAdvancementsPacket> sent = rig.sentSince(player);
+        helper.assertValueEqual(sent.size(), 1, "packets for the earn");
+        helper.assertTrue(sent.get(0).shouldShowAdvancements(), "the earn's packet has no toast flag");
+        helper.assertValueEqual(sent.get(0).getProgress().keySet(), Set.of(HERMIT_HOLDER), "the progress entries");
+        helper.assertTrue(sent.get(0).getProgress().get(HERMIT_HOLDER).isDone(), "the earned holder's progress is not done");
+        helper.succeed();
+    }
+
+    /**
+     * An earn sends the done progress of its own tier only. A later tier the view already shows as done is not toasted by an earn
+     * of the first tier: its own earn sends it, with its toast.
+     */
+    @GameTest
+    public void anEarnOfOneTierDoesNotToastItsLaterTier(GameTestHelper helper) {
+        SyncRig rig = SyncRig.create(helper, BUNDLE);
+        ServerPlayer player = rig.newPlayer();
+        rig.setView(player, Map.of());
+        rig.sync().appendToReset(player, new ArrayList<>(), new HashMap<>());
+
+        // Both tiers of bell are earned in the view, and only the first tier's earn is reported.
+        rig.setView(player, Map.of(BELL, standing(BELL, 2, 2, Map.of("ring", 5))));
+        rig.sync().earned(player, BELL, 1);
+        List<ClientboundUpdateAdvancementsPacket> sent = rig.sentSince(player);
+        helper.assertValueEqual(sent.size(), 1, "packets for the first tier's earn");
+        ClientboundUpdateAdvancementsPacket update = sent.get(0);
+        helper.assertTrue(update.shouldShowAdvancements(), "the earn's packet has no toast flag");
+        helper.assertValueEqual(update.getProgress().keySet(), Set.of(BELL_HOLDER), "the progress entries");
+        helper.assertTrue(update.getProgress().get(BELL_HOLDER).isDone(), "the earned tier's progress is not done");
+        helper.succeed();
+    }
+
+    /**
+     * An earn reported before the client has any holders is sent on the first tick after the reset is built, with its toast: the
+     * reset carries the holder done, and the earn's own packet toasts it.
+     */
+    @GameTest
+    public void anEarnReportedBeforeTheResetIsSentWithAToastOnTheNextTick(GameTestHelper helper) {
+        SyncRig rig = SyncRig.create(helper, BUNDLE);
+        ServerPlayer player = rig.newPlayer();
+        rig.setView(player, Map.of(GREETER, standing(GREETER, 1, 1, Map.of("greet", 1))));
+        rig.sync().earned(player, GREETER, 1);
+        helper.assertTrue(rig.sentSince(player).isEmpty(), "an earn was sent before the client had a reset");
+
+        Map<Identifier, AdvancementProgress> progress = new HashMap<>();
+        rig.sync().appendToReset(player, new ArrayList<>(), progress);
+        helper.assertTrue(progress.get(GREETER_HOLDER).isDone(), "the reset did not carry the greeter done");
+        rig.tick();
+        List<ClientboundUpdateAdvancementsPacket> sent = rig.sentSince(player);
+        helper.assertValueEqual(sent.size(), 1, "packets after the reset");
+        ClientboundUpdateAdvancementsPacket update = sent.get(0);
+        helper.assertTrue(update.shouldShowAdvancements(), "the owed earn's packet has no toast flag");
+        helper.assertTrue(update.getProgress().get(GREETER_HOLDER).isDone(), "the owed earn's progress is not done");
         helper.succeed();
     }
 

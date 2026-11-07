@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -25,6 +26,7 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 import net.fabricmc.fabric.api.gametest.v1.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
@@ -39,7 +41,9 @@ import town.lampas.alina.achievement.AchievementService;
 import town.lampas.alina.achievement.AchievementStanding;
 import town.lampas.alina.achievement.AchievementView;
 import town.lampas.alina.criteria.AlinaTriggers;
+import town.lampas.alina.settlement.PlayerDataSaves;
 import town.lampas.alina.settlement.SettlementRequest;
+import town.lampas.alina.settlement.SettlementService;
 import town.lampas.alina.storage.AchievementState;
 import town.lampas.alina.storage.AlinaStorage;
 import town.lampas.alina.storage.ApplyResult;
@@ -92,6 +96,10 @@ public final class AchievementGameTests {
     private static final String BUNDLE = "bundle.json";
     private static final String BUNDLE_NEXT = "bundle_next.json";
     private static final String BUNDLE_REPEAT = "bundle_repeat.json";
+    /** The daily achievement with count 10, then the same with count 5, and quiet_note with a repeat and count 2. */
+    private static final String DAILY_TEN = "daily_ten.json";
+    private static final String DAILY_FIVE = "daily_five.json";
+    private static final String QUIET_TWICE = "quiet_twice.json";
     /** The daily achievement's cooldown: PT1H in the fixture. */
     private static final Duration DAILY_COOLDOWN = Duration.ofHours(1);
     /** Ticks the held reward waits before its operation is released: more than one retry interval. */
@@ -1557,7 +1565,414 @@ public final class AchievementGameTests {
         });
     }
 
+    /**
+     * An untiered earn stores tier 1, and the cycle start that follows stores tier 0 with the earn count kept. The stored tier is
+     * what says an achievement without tiers is earned in its current cycle.
+     */
+    @GameTest(maxTicks = 600)
+    public void anUntieredEarnStoresTierOneAndACycleStartStoresTierZero(GameTestHelper helper) {
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE);
+        ServerPlayer player = rig.joined();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    AlinaTriggers.MANUAL.trigger(player, "daily");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, DAILY), 1, "the daily before its cooldown ends");
+                    helper.assertValueEqual(storedTier(rig, player, DAILY), 1, "the stored tier of an untiered earn");
+                    rig.clock().advance(DAILY_COOLDOWN.plusSeconds(1));
+                    advance(helper, step, 2);
+                }
+                default -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, DAILY), 0, "the daily's new cycle has not started");
+                    helper.assertValueEqual(storedTier(rig, player, DAILY), 0, "the stored tier of a new cycle");
+                    helper.assertValueEqual(storedState(rig, player, DAILY).map(AchievementState::earnCount).orElse(0), 1,
+                            "the earn count kept by the new cycle");
+                }
+            }
+        });
+    }
+
+    /**
+     * Storage applies a reward and its answer is lost: the player leaves before the answer reaches the escrow, so the escrow
+     * keeps the reward unapplied. On the next join settlement applies it again, and storage answers that it was applied before.
+     * The earn is counted once, in the record and in storage, and the reward is delivered once.
+     */
+    @GameTest(maxTicks = 900)
+    public void aRewardAppliedAgainAfterItsAnswerWasLostIsNotCountedTwice(GameTestHelper helper) {
+        AtomicReference<CompletableFuture<Void>> answer = new AtomicReference<>();
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE, delegate -> answerHeldOnce(delegate, answer));
+        ServerPlayer player = rig.joined();
+        AtomicLong leftAt = new AtomicLong();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            switch (step.get()) {
+                case 0 -> {
+                    helper.assertTrue(loaded(rig, player), "the record has not loaded");
+                    AlinaTriggers.MANUAL.trigger(player, "signed");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertTrue(answer.get() != null, "storage was not asked to apply the reward");
+                    rig.goOffline(player);
+                    rig.service().leave(player);
+                    answer.get().complete(null);
+                    leftAt.set(rig.ticks() + SETTLE_TICKS);
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertTrue(rig.ticks() >= leftAt.get(), "waiting for the lost answer to be dropped");
+                    helper.assertValueEqual(rig.settlement().pendingFor(player).size(), 1, "the reward is not in the escrow");
+                    helper.assertValueEqual(count(player, Items.EMERALD), 0, "the reward was delivered before the join");
+                    rig.comeOnline(player);
+                    rig.service().join(player);
+                    advance(helper, step, 3);
+                }
+                default -> {
+                    helper.assertTrue(loaded(rig, player), "the record has not loaded");
+                    helper.assertTrue(rig.settlement().pendingFor(player).isEmpty(), "the reward is still in the escrow");
+                    helper.assertValueEqual(count(player, Items.EMERALD), 5, "the reward, once");
+                    helper.assertValueEqual(earnCountOf(rig, player, SIGNED_ON), 1, "the earn count in the record");
+                    helper.assertValueEqual(storedState(rig, player, SIGNED_ON).map(AchievementState::earnCount).orElse(0), 1,
+                            "the earn count in storage");
+                }
+            }
+        });
+    }
+
+    /**
+     * A repeatable's new cycle, with seven of its ten counts, meets the count an activation lowers it to: the cycle is earned and
+     * its counts are kept, instead of being reset as if the earn were a pre-repeat one.
+     */
+    @GameTest(maxTicks = 900)
+    public void aNewCycleThatAnActivationLowersTheCountOfIsEarnedAndKeepsItsCounts(GameTestHelper helper) {
+        AchievementRig rig = AchievementRig.create(helper, DAILY_TEN);
+        ServerPlayer player = rig.joined();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    triggerDaily(player, 10);
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, DAILY), 1, "the daily, earned at its count");
+                    rig.clock().advance(DAILY_COOLDOWN.plusSeconds(1));
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, DAILY), 0, "the new cycle has not started");
+                    triggerDaily(player, 7);
+                    advance(helper, step, 3);
+                }
+                case 3 -> {
+                    helper.assertValueEqual(viewCount(rig, player, DAILY, "daily"), 7, "the count of the new cycle");
+                    rig.useContent(DAILY_FIVE);
+                    rig.service().contentActivated();
+                    advance(helper, step, 4);
+                }
+                default -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, DAILY), 1, "the daily after the activation");
+                    helper.assertValueEqual(earnCountOf(rig, player, DAILY), 2, "the earn count after the new earn");
+                    helper.assertValueEqual(viewCount(rig, player, DAILY, "daily"), 7, "the counts of the new cycle were reset");
+                    helper.assertValueEqual(storedState(rig, player, DAILY).map(AchievementState::earnCount).orElse(0), 2,
+                            "the earn count in storage");
+                }
+            }
+        });
+    }
+
+    /**
+     * The same as above, with the player offline during the activation: the earn is made when the player joins again, from the
+     * counts the record wrote when the player left.
+     */
+    @GameTest(maxTicks = 900)
+    public void aNewCycleThatAnActivationLowersTheCountOfIsEarnedWhenThePlayerJoinsAgain(GameTestHelper helper) {
+        AchievementRig rig = AchievementRig.create(helper, DAILY_TEN);
+        ServerPlayer player = rig.joined();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            switch (step.get()) {
+                case 0 -> {
+                    helper.assertTrue(loaded(rig, player), "the record has not loaded");
+                    triggerDaily(player, 10);
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, DAILY), 1, "the daily, earned at its count");
+                    rig.clock().advance(DAILY_COOLDOWN.plusSeconds(1));
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, DAILY), 0, "the new cycle has not started");
+                    triggerDaily(player, 7);
+                    advance(helper, step, 3);
+                }
+                case 3 -> {
+                    helper.assertValueEqual(viewCount(rig, player, DAILY, "daily"), 7, "the count of the new cycle");
+                    rig.goOffline(player);
+                    rig.service().leave(player);
+                    rig.useContent(DAILY_FIVE);
+                    rig.service().contentActivated();
+                    advance(helper, step, 4);
+                }
+                case 4 -> {
+                    rig.comeOnline(player);
+                    rig.service().join(player);
+                    advance(helper, step, 5);
+                }
+                default -> {
+                    helper.assertTrue(loaded(rig, player), "the record has not loaded");
+                    helper.assertValueEqual(earnedTiers(rig, player, DAILY), 1, "the daily after the join");
+                    helper.assertValueEqual(earnCountOf(rig, player, DAILY), 2, "the earn count after the join");
+                    helper.assertValueEqual(viewCount(rig, player, DAILY, "daily"), 7, "the counts of the new cycle were reset");
+                    helper.assertValueEqual(storedCount(rig, player, DAILY, "daily"), 7, "the counts in storage");
+                }
+            }
+        });
+    }
+
+    /**
+     * An earn made before its achievement gained a repeat and a higher count stays earned until its cooldown ends from that earn:
+     * an event in the cooldown counts for nothing, and the next cycle then starts with no counts.
+     */
+    @GameTest(maxTicks = 900)
+    public void aPastEarnOfAnAchievementThatGainsARepeatStaysEarnedUntilItsCooldownEnds(GameTestHelper helper) {
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE);
+        ServerPlayer player = rig.joined();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    AlinaTriggers.MANUAL.trigger(player, "note");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, QUIET_NOTE), 1, "quiet_note before the activation");
+                    rig.useContent(QUIET_TWICE);
+                    rig.service().contentActivated();
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, QUIET_NOTE), 1, "quiet_note after the activation");
+                    helper.assertValueEqual(earnCountOf(rig, player, QUIET_NOTE), 1, "the earn count after the activation");
+                    helper.assertTrue(availableAtOf(rig, player, QUIET_NOTE).isPresent(), "quiet_note has no availableAt");
+                    AlinaTriggers.MANUAL.trigger(player, "note");
+                    rig.clock().advance(DAILY_COOLDOWN.minusMinutes(1));
+                    advance(helper, step, 3);
+                }
+                case 3 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, QUIET_NOTE), 1, "quiet_note before its cooldown ends");
+                    helper.assertValueEqual(earnCountOf(rig, player, QUIET_NOTE), 1, "quiet_note earned again before its cooldown");
+                    rig.clock().advance(Duration.ofMinutes(1));
+                    advance(helper, step, 4);
+                }
+                default -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, QUIET_NOTE), 0, "quiet_note after its cooldown");
+                    helper.assertValueEqual(viewCount(rig, player, QUIET_NOTE, "note"), 0, "the count of the new cycle");
+                    helper.assertValueEqual(earnCountOf(rig, player, QUIET_NOTE), 1, "the earn count kept by the new cycle");
+                }
+            }
+        });
+    }
+
+    /**
+     * A later tier's reward waits until the earlier tier's direct write is durable. The earlier write fails once; the player reaches
+     * the second tier and leaves before the retry, then joins again. Each tier is earned once and the count is two.
+     */
+    @GameTest(maxTicks = 1200)
+    public void aLaterTierRewardWaitsForAnEarlierDirectWriteThatFailed(GameTestHelper helper) {
+        AtomicBoolean armed = new AtomicBoolean(true);
+        AtomicBoolean fired = new AtomicBoolean();
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE,
+                delegate -> failingWhileArmed(delegate, "writeAchievement", armed, fired));
+        ServerPlayer player = rig.joined();
+        List<Integer> told = new ArrayList<>();
+        rig.service().addListener(new AchievementListener() {
+            @Override
+            public void earned(ServerPlayer earner, Identifier achievement, int tier) {
+                if (achievement.equals(CLIMBER)) {
+                    told.add(tier);
+                }
+            }
+        });
+        AtomicLong waitUntil = new AtomicLong();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            switch (step.get()) {
+                case 0 -> {
+                    helper.assertTrue(loaded(rig, player), "the record has not loaded");
+                    AlinaTriggers.MANUAL.trigger(player, "climb");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertTrue(fired.get(), "the first tier's write has not failed yet");
+                    helper.assertValueEqual(earnedTiers(rig, player, CLIMBER), 1, "the first tier");
+                    AlinaTriggers.MANUAL.trigger(player, "climb");
+                    waitUntil.set(rig.ticks() + SETTLE_TICKS);
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertTrue(rig.ticks() >= waitUntil.get(), "waiting for the second tier to be held");
+                    helper.assertValueEqual(earnedTiers(rig, player, CLIMBER), 1, "the second tier while the first waits");
+                    helper.assertTrue(rig.settlement().pendingFor(player).isEmpty(), "the second tier's reward was begun");
+                    rig.goOffline(player);
+                    rig.service().leave(player);
+                    rig.comeOnline(player);
+                    rig.service().join(player);
+                    advance(helper, step, 3);
+                }
+                default -> {
+                    helper.assertTrue(loaded(rig, player), "the record has not loaded");
+                    helper.assertValueEqual(earnedTiers(rig, player, CLIMBER), 2, "the second tier after the rejoin");
+                    helper.assertValueEqual(told, List.of(1, 2), "the earns told");
+                    helper.assertValueEqual(earnCountOf(rig, player, CLIMBER), 2, "the earn count");
+                    helper.assertValueEqual(storedState(rig, player, CLIMBER).map(AchievementState::earnCount).orElse(0), 2,
+                            "the earn count in storage");
+                }
+            }
+        });
+    }
+
+    /**
+     * An operation of another world in the escrow, for the same achievement and tier, does not stop the achievement's own reward.
+     * The reward is begun and delivered, and the other world's operation stays in the escrow for reconciliation.
+     */
+    @GameTest(maxTicks = 900)
+    public void aForeignWorldRewardDoesNotBlockTheSameEarn(GameTestHelper helper) {
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE);
+        ServerPlayer player = rig.newPlayer();
+        MinecraftServer server = helper.getLevel().getServer();
+        SettlementService elsewhere = new SettlementService(server, rig.storage(), UUID.randomUUID(), () -> List.of(player),
+                (who, expected) -> PlayerDataSaves.saveAndVerify(server, who, expected));
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            switch (step.get()) {
+                case 0 -> {
+                    helper.assertTrue(elsewhere.begin(player, foreignRetried()).isPresent(), "the other world's operation was refused");
+                    rig.service().join(player);
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertTrue(loaded(rig, player), "the record has not loaded");
+                    AlinaTriggers.MANUAL.trigger(player, "retry");
+                    advance(helper, step, 2);
+                }
+                default -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, RETRIED), 1, "retried, earned");
+                    helper.assertValueEqual(count(player, Items.EMERALD), 5, "the reward, once");
+                    helper.assertValueEqual(rig.settlement().pendingFor(player).size(), 1, "the escrow's operations");
+                    helper.assertTrue(!rig.settlement().pendingFor(player).get(0).worldId().equals(rig.settlement().worldId()),
+                            "the operation left in the escrow is not the other world's");
+                }
+            }
+        });
+    }
+
+    /**
+     * A tiered revoke whose count write succeeds and whose state write fails leaves storage's counts lowered. The record takes the
+     * lowered counts too, keeps its tiers, and the completion says the counts were lowered and the tiers were not.
+     */
+    @GameTest(maxTicks = 900)
+    public void aRevokeThatLowersCountsAndThenFailsSaysTheCountsWereLowered(GameTestHelper helper) {
+        AtomicBoolean armed = new AtomicBoolean();
+        AtomicBoolean fired = new AtomicBoolean();
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE, delegate -> failingTierOneWrite(delegate, armed, fired));
+        ServerPlayer player = rig.joined();
+        AtomicReference<CompletableFuture<Optional<String>>> revoke = new AtomicReference<>();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(loaded(rig, player), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    AlinaTriggers.MANUAL.trigger(player, "climb");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, CLIMBER), 1, "the first tier");
+                    AlinaTriggers.MANUAL.trigger(player, "climb");
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, CLIMBER), 2, "the second tier");
+                    AlinaTriggers.MANUAL.trigger(player, "climb");
+                    advance(helper, step, 3);
+                }
+                case 3 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, CLIMBER), 3, "the last tier");
+                    helper.assertTrue(rig.settlement().pendingFor(player).isEmpty(), "a reward is still in the escrow");
+                    // The last tier's own write must land before the failure is armed, so the failure is the revoke's.
+                    helper.assertValueEqual(storedTier(rig, player, CLIMBER), 3, "the last tier in storage");
+                    armed.set(true);
+                    CompletableFuture<Optional<String>> started = rig.service().revoke(player, CLIMBER, OptionalInt.of(2));
+                    helper.assertTrue(!started.isDone(), "the revoke was refused, tried again: "
+                            + (started.isDone() ? started.join() : ""));
+                    revoke.set(started);
+                    advance(helper, step, 4);
+                }
+                case 4 -> {
+                    String text = refusalOf(helper, revoke.get()).get();
+                    helper.assertTrue(fired.get() && text.contains("counts were lowered"),
+                            "the revoke did not say the counts were lowered: " + text);
+                    helper.assertValueEqual(viewCount(rig, player, CLIMBER, "climb"), 1, "the record's count");
+                    helper.assertValueEqual(earnedTiers(rig, player, CLIMBER), 3, "the tiers after the failed revoke");
+                    rig.goOffline(player);
+                    rig.service().leave(player);
+                    rig.comeOnline(player);
+                    rig.service().join(player);
+                    advance(helper, step, 5);
+                }
+                default -> {
+                    helper.assertValueEqual(viewCount(rig, player, CLIMBER, "climb"), 1, "the count after a rejoin");
+                    helper.assertValueEqual(earnedTiers(rig, player, CLIMBER), 3, "the tiers after a rejoin");
+                    helper.assertValueEqual(storedCount(rig, player, CLIMBER, "climb"), 1, "the count in storage");
+                }
+            }
+        });
+    }
+
     // Helpers.
+
+    /** Triggers the daily achievement's criterion {@code times} times, one event each. */
+    private static void triggerDaily(ServerPlayer player, int times) {
+        for (int event = 0; event < times; event++) {
+            AlinaTriggers.MANUAL.trigger(player, "daily");
+        }
+    }
+
+    /** The stored tier of an achievement, or -1 when storage has no state for it. */
+    private static int storedTier(AchievementRig rig, ServerPlayer player, Identifier id) {
+        return storedState(rig, player, id).map(AchievementState::tier).orElse(-1);
+    }
+
+    /** An operation of another world for the achievement {@link #RETRIED}, tier 1: the same kind, subject and tier as its earn. */
+    private static SettlementRequest foreignRetried() {
+        return new SettlementRequest(
+                OperationKind.ACHIEVEMENT_REWARD,
+                RETRIED,
+                1,
+                AchievementRig.REVISION,
+                Optional.empty(),
+                0,
+                new OperationEffect.AchievementEarned(RETRIED, 1, Optional.empty()),
+                player -> List.of(),
+                Optional.empty(),
+                Optional.empty());
+    }
 
     /**
      * Moves a multi-step test to step {@code next} and fails this attempt, so the next tick runs that step. A step that
@@ -1656,11 +2071,11 @@ public final class AchievementGameTests {
         return new SettlementRequest(
                 OperationKind.ACHIEVEMENT_REWARD,
                 RETRIED,
-                0,
+                1,
                 AchievementRig.REVISION,
                 Optional.empty(),
                 0,
-                new OperationEffect.AchievementEarned(BLOCKER, 0, Optional.empty()),
+                new OperationEffect.AchievementEarned(BLOCKER, 1, Optional.empty()),
                 player -> List.of(),
                 Optional.empty(),
                 Optional.empty());
@@ -1762,6 +2177,48 @@ public final class AchievementGameTests {
             held.set(gate);
             return gate;
         });
+    }
+
+    /**
+     * Storage whose first {@code applyOperation} call reaches {@code delegate} at once, so storage applies the operation, but whose
+     * answer is held: the answer completes when the test completes the gate in {@code held}. Later calls reach {@code delegate}.
+     */
+    @SuppressWarnings("unchecked")
+    private static AlinaStorage answerHeldOnce(AlinaStorage delegate, AtomicReference<CompletableFuture<Void>> held) {
+        AtomicBoolean first = new AtomicBoolean(true);
+        return (AlinaStorage) Proxy.newProxyInstance(AlinaStorage.class.getClassLoader(),
+                new Class<?>[] {AlinaStorage.class},
+                (proxy, called, args) -> {
+                    Object result = invoke(delegate, called, args);
+                    if (!called.getName().equals("applyOperation") || !first.compareAndSet(true, false)) {
+                        return result;
+                    }
+                    CompletableFuture<Void> gate = new CompletableFuture<>();
+                    held.set(gate);
+                    return ((CompletableFuture<ApplyResult>) result)
+                            .thenCompose(answer -> gate.thenApply(ignored -> answer));
+                });
+    }
+
+    /**
+     * Storage that fails the first {@code method} call made after {@code armed} is set, with {@code fired} set when it does, and
+     * passes every other call on.
+     */
+    private static AlinaStorage failingWhileArmed(AlinaStorage delegate, String method, AtomicBoolean armed, AtomicBoolean fired) {
+        return intercepting(delegate, (called, args) -> called.equals(method) && armed.get() && fired.compareAndSet(false, true)
+                ? CompletableFuture.failedFuture(new IllegalStateException("injected failure of " + method))
+                : null);
+    }
+
+    /**
+     * Storage that fails the first {@code writeAchievement} made after {@code armed} is set whose state has tier 1, with
+     * {@code fired} set when it does. A tiered revoke of tier 2 of a three-tier achievement writes that state; no earn writes it.
+     */
+    private static AlinaStorage failingTierOneWrite(AlinaStorage delegate, AtomicBoolean armed, AtomicBoolean fired) {
+        return intercepting(delegate, (called, args) -> called.equals("writeAchievement") && armed.get()
+                && ((AchievementState) args[1]).tier() == 1 && fired.compareAndSet(false, true)
+                ? CompletableFuture.failedFuture(new IllegalStateException("injected failure of writeAchievement"))
+                : null);
     }
 
     /** Storage that fails the first call of {@code method} with an injected failure, and passes every other call on. */
@@ -1912,11 +2369,11 @@ public final class AchievementGameTests {
         return new SettlementRequest(
                 OperationKind.ACHIEVEMENT_REWARD,
                 SIGNED_ON,
-                0,
+                1,
                 AchievementRig.REVISION,
                 Optional.of(Alina.id("test/five_emeralds")),
                 2,
-                new OperationEffect.AchievementEarned(SIGNED_ON, 0, Optional.empty()),
+                new OperationEffect.AchievementEarned(SIGNED_ON, 1, Optional.empty()),
                 player -> List.of(),
                 Optional.empty(),
                 Optional.empty());

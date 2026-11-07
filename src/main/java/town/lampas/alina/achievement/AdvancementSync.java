@@ -71,9 +71,11 @@ import town.lampas.alina.content.AchievementsContent.Achievement;
  *       before (removing a root removes its holders), adds every visible holder, and carries every visible holder's
  *       progress, done or not. No toast fires. It is sent to each online player on a content activation, and to a
  *       player whose record loaded after the first-packet hold ended.</li>
- *   <li>An earn is sent at once in a packet without the reset flag and with {@code showAdvancements} true, carrying
- *       only the earned holder's progress, done, so the client shows its toast; a hidden achievement's first earn also
- *       adds its holders.</li>
+ *   <li>An earn is sent at once in a packet without the reset flag and with {@code showAdvancements} true. It carries the
+ *       earned holder's progress, done, whatever a reset, full or count packet sent before, so the client shows its toast.
+ *       Holders the client lacks are added with it: a hidden achievement's first earn adds all its tiers, the later ones
+ *       with their progress, not done. An earn reported before the client has its holders is sent on the first tick the
+ *       client has them.</li>
  *   <li>Count changes are sent at most once every 100 ticks per player, as progress of not-done holders, with
  *       {@code showAdvancements} false.</li>
  *   <li>A cycle start or a revoke sends the achievement's holders' progress, not done, with {@code showAdvancements}
@@ -174,7 +176,11 @@ public final class AdvancementSync implements AchievementListener {
         ticks++;
         for (ServerPlayer player : List.copyOf(online.get())) {
             SyncState state = states.get(player.getUUID());
-            if (state == null || !ready(state) || state.dirty.isEmpty()) {
+            if (state == null || !ready(state)) {
+                continue;
+            }
+            sendOwed(player, state);
+            if (state.dirty.isEmpty()) {
                 continue;
             }
             if (state.progressSent && ticks - state.lastProgressTick < PROGRESS_TICKS) {
@@ -196,6 +202,19 @@ public final class AdvancementSync implements AchievementListener {
         }
     }
 
+    /** Sends the earns reported before the client had its holders, in the order they were reported. */
+    private void sendOwed(ServerPlayer player, SyncState state) {
+        List<SyncState.Owed> owed = List.copyOf(state.owed);
+        state.owed.clear();
+        for (int index = 0; index < owed.size(); index++) {
+            SyncState.Owed earn = owed.get(index);
+            if (!earnedNow(player, state, earn.achievement(), earn.tier())) {
+                state.owed.addAll(owed.subList(index, owed.size()));
+                return;
+            }
+        }
+    }
+
     /** Drops what was sent to the player. */
     public void leave(ServerPlayer player) {
         states.remove(player.getUUID());
@@ -211,19 +230,27 @@ public final class AdvancementSync implements AchievementListener {
     }
 
     /**
-     * The tier was just earned. Holders the client lacks are added; a holder that is done now and was not sent done
-     * gets its progress, done. The packet has {@code showAdvancements} true, so the earned holder's toast fires. The
-     * achievement's holders are marked, so their counts go out with the next throttled packet.
+     * The tier was durably earned. The earned tier's holder is sent done with {@code showAdvancements} true, so its toast fires,
+     * whatever was sent before: a tick or a reset may already have sent it done. Holders the client lacks are added with their
+     * progress: the earned tier's done, and each other tier's not done, even when the view shows that tier done, because its own
+     * earn sends it done with its toast. An earn reported before the client has its holders is kept, and sent on the first tick
+     * the client has them. The achievement's holders are marked, so their counts go out with the next throttled packet.
      */
     @Override
     public void earned(ServerPlayer player, Identifier achievement, int tier) {
-        SyncState state = states.get(player.getUUID());
-        if (state == null || !ready(state)) {
-            return;
+        SyncState state = state(player);
+        if (!ready(state) || !earnedNow(player, state, achievement, tier)) {
+            state.owed.add(new SyncState.Owed(achievement, tier));
         }
+    }
+
+    /**
+     * Sends one earn's packet, or returns false when the view is empty so the earn must wait. See {@link #earned}.
+     */
+    private boolean earnedNow(ServerPlayer player, SyncState state, Identifier achievement, int tier) {
         Optional<AchievementView> view = views.apply(player);
         if (view.isEmpty()) {
-            return;
+            return false;
         }
         Map<Identifier, Shown> now = byId(shown(view.get()));
         Batch batch = new Batch();
@@ -232,19 +259,21 @@ public final class AdvancementSync implements AchievementListener {
             if (shown == null) {
                 continue;
             }
+            boolean earnedHere = slot.tier() == tier;
             HolderProgress.State previous = state.sent.get(slot.id());
             if (previous == null) {
                 batch.added.add(holderOf(shown));
-            }
-            if (shown.state().done() && (previous == null || !previous.done())) {
-                batch.progress.put(slot.id(), progressOf(shown));
+                HolderProgress.State sent = earnedHere || !shown.state().done() ? shown.state() : notStarted(shown);
+                batch.progress.put(slot.id(), progressOf(sent));
+                state.sent.put(slot.id(), sent);
+            } else if (earnedHere && shown.state().done()) {
+                batch.progress.put(slot.id(), progressOf(shown.state()));
                 state.sent.put(slot.id(), shown.state());
-            } else if (previous == null) {
-                state.sent.put(slot.id(), notStarted(shown));
             }
         }
         state.dirty.add(achievement);
         send(player, batch, true);
+        return true;
     }
 
     /** A repeatable's cooldown ended: the achievement's holders go back to not done, and their progress is sent. */
@@ -338,12 +367,15 @@ public final class AdvancementSync implements AchievementListener {
 
     /**
      * The packet that brings the client up to date for the holders {@code inScope} picks, in tree order. A holder no longer
-     * shown is removed, unless one of its ancestors is removed in the same packet, which takes it along. A holder the client
+     * shown is removed, unless one of its ancestors is withheld in the same packet, which takes it along: the ancestor is then
+     * listed or was itself taken along, and the client removes this holder with it. A holder the client
      * lacks is added, with its progress. A holder the client has as not done gets its progress when it changed, or always
      * when {@code changedOnly} is false. A holder the client has as done gets nothing, so no done progress is repeated.
      */
     private Batch scopeDiff(SyncState state, Map<Identifier, Shown> now, Predicate<Slot> inScope, boolean changedOnly) {
         Batch batch = new Batch();
+        // Every holder of this packet's scope that is withheld, listed or not: the client takes its descendants with it.
+        Set<Identifier> withheld = new HashSet<>();
         for (Slot slot : layout().slots()) {
             if (!inScope.test(slot)) {
                 continue;
@@ -353,11 +385,12 @@ public final class AdvancementSync implements AchievementListener {
             HolderProgress.State previous = state.sent.get(id);
             if (shown == null) {
                 if (previous != null) {
-                    if (!slot.parent().map(batch.removed::contains).orElse(false)) {
+                    if (!slot.parent().map(withheld::contains).orElse(false)) {
                         batch.removed.add(id);
                     }
                     state.sent.remove(id);
                 }
+                withheld.add(id);
                 continue;
             }
             if (previous == null) {
@@ -413,7 +446,11 @@ public final class AdvancementSync implements AchievementListener {
     }
 
     private static AdvancementProgress progressOf(Shown shown) {
-        return HolderBuilder.progress(shown.state().segments(), shown.state().doneSegments());
+        return progressOf(shown.state());
+    }
+
+    private static AdvancementProgress progressOf(HolderProgress.State state) {
+        return HolderBuilder.progress(state.segments(), state.doneSegments());
     }
 
     /** The state the client has for a holder added without progress: not done, nothing done. */

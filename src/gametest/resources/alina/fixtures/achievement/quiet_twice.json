@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "extensions": {
+    "alina:achievements": {
+      "tabs": {
+        "alina:test": { "title": "Test", "icon": { "id": "minecraft:paper" } }
+      },
+      "achievements": {
+        "alina:test/quiet_note": {
+          "tab": "alina:test", "title": "Quiet Note", "description": "Write two notes.", "icon": { "id": "minecraft:paper" },
+          "announce": false,
+          "criteria": { "note": { "trigger": "alina:manual", "conditions": { "key": "note" }, "count": 2 } },
+          "repeat": { "cooldown": "PT1H" }
+        }
+      }
+    }
+  }
+}

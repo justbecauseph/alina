@@ -26,8 +26,8 @@ public interface AchievementListener {
     default void revoked(ServerPlayer player, Identifier achievement) {}
 
     /**
-     * A content bundle was activated. Called after the service has rebuilt its watches from it and before it starts
-     * cycles or earns what the new content finds met, so a listener sees the new content before any earn under it.
+     * A content bundle was activated. Called after the service has closed its watches, and before it starts cycles, reopens
+     * its watches or earns what the new content finds met, so a listener sees the new content before any earn under it.
      */
     default void contentActivated() {}
 }

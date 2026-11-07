@@ -238,8 +238,9 @@ The achievement service (ALINA-PLAN §9) is `AchievementModule.service()` on a r
 `AchievementService` and `AdvancementSync` is the contract.
 
 - **Records** load on join like the Guild's, through ordered per-character storage calls, and are never loaded again
-  while the player stays online: a settlement result is applied to the record the way storage applies it. Staff
-  operations are refused while a record loads.
+  while the player stays online, except when a settlement result for an earn the record did not begin is one storage had
+  applied before its call: then the record is loaded again, and counts nothing from that result. Staff operations are
+  refused while a record loads or is loaded again.
 - **Counting.** Each criterion of an achievement that is not complete in the current cycle counts its events through
   `CriterionWatchers`, up to its count (a tiered achievement: up to the last tier's count). Counts are written behind
   every 100 ticks, on leave and on stop, and written through before an earn. An achievement's own earns never count
@@ -257,7 +258,7 @@ The achievement service (ALINA-PLAN §9) is `AchievementModule.service()` on a r
   holders per player (a tab root `alina:tab/<namespace>/<path>`, an achievement `alina:achievement/<namespace>/<path>`,
   later tiers `.../tier_<k>`) and sends them inside vanilla's reset packet, so nothing earned before toasts again. A
   join's first packet waits up to 100 ticks for the record. Later packets carry progress only; just an earn's packet
-  sets `showAdvancements`, which is what makes the 26.2 client toast. Content activations and late loads send a full
+  sets `showAdvancements`, which is what makes the 26.2 client toast. Vanilla advancements earned while a join's first packet is held show no toast. Content activations and late loads send a full
   packet without toasts. Counts show as vanilla's `x/y`: one segment per event up to 1000, or one per requirements
   group. Positions are Alina's own and do not change between runs. Hidden achievements are withheld until earned once
   and cannot be parents.

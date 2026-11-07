@@ -108,6 +108,18 @@ final class AchievementRig {
         settlement.tick();
     }
 
+    /** Reads every packet sent to the player: chat lines are kept for {@link #messages}, advancement updates are dropped. */
+    private void drain(ServerPlayer player) {
+        EmbeddedChannel channel = channels.get(player.getUUID());
+        List<String> texts = said.computeIfAbsent(player.getUUID(), id -> new ArrayList<>());
+        Object packet;
+        while ((packet = channel.readOutbound()) != null) {
+            if (packet instanceof ClientboundSystemChatPacket chat) {
+                texts.add(chat.content().getString());
+            }
+        }
+    }
+
     /** The number of ticks this rig has run. */
     long ticks() {
         return ticks;
@@ -158,15 +170,13 @@ final class AchievementRig {
 
     /** The text of every chat message the player has been sent so far, oldest first. */
     List<String> messages(ServerPlayer player) {
-        EmbeddedChannel channel = channels.get(player.getUUID());
-        List<String> texts = said.computeIfAbsent(player.getUUID(), id -> new ArrayList<>());
-        Object packet;
-        while ((packet = channel.readOutbound()) != null) {
-            if (packet instanceof ClientboundSystemChatPacket chat) {
-                texts.add(chat.content().getString());
-            }
-        }
-        return List.copyOf(texts);
+        drain(player);
+        return List.copyOf(said.computeIfAbsent(player.getUUID(), id -> new ArrayList<>()));
+    }
+
+    /** Takes the player out of the online list, as a player who has left is: the services stop serving them. */
+    void goOffline(ServerPlayer player) {
+        online.remove(player);
     }
 
     /** The text of a fixture, with the test dimension filled in. */

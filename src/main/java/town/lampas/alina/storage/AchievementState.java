@@ -6,8 +6,9 @@ import java.util.Optional;
 import net.minecraft.resources.Identifier;
 
 /**
- * One achievement a character has earned at least once. {@code tier} is the highest tier earned, and 0 for an achievement
- * with no tiers.
+ * One achievement a character has earned at least once. {@code tier} is the highest tier earned in the current cycle. An
+ * achievement with no tiers stores 1 while it is earned in its current cycle, and 0 once its cycle has started, so a stored
+ * tier of 1 or more is what makes it earned in the cycle. A tier left from when the achievement had tiers is kept.
  */
 public record AchievementState(
         Identifier achievementId,
