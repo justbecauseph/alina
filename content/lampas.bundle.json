@@ -1,0 +1,561 @@
+{
+  "schema": 1,
+  "npcs": {
+    "lampas:guild/receptionist": {
+      "name": "Guild Receptionist",
+      "texture": "minecraft:textures/entity/player/wide/steve.png",
+      "dialogue": "lampas:guild/receptionist"
+    }
+  },
+  "dialogues": {
+    "lampas:guild/receptionist": {
+      "start": "hello",
+      "nodes": {
+        "hello": {
+          "text": "Welcome to the Guild. What do you need?",
+          "choices": [
+            { "text": "Show me today's board.", "next": "daily" },
+            { "text": "Show me the feats.", "next": "feats" },
+            { "text": "I have a commission to turn in.", "next": "turn_in" },
+            { "text": "I want to drop a commission.", "next": "abandon" },
+            { "text": "What is my record?", "next": "status" },
+            { "text": "Goodbye.", "next": "bye" }
+          ]
+        },
+        "daily": {
+          "text": "Today's board. Pick a commission to accept.",
+          "choices": [
+            { "provider": { "type": "alina:guild/board", "board": "lampas:guild/daily", "next": "daily" } },
+            { "text": "Back.", "next": "hello" }
+          ]
+        },
+        "feats": {
+          "text": "The feats. Each one is done once.",
+          "choices": [
+            { "provider": { "type": "alina:guild/board", "board": "lampas:guild/feats", "next": "feats" } },
+            { "text": "Back.", "next": "hello" }
+          ]
+        },
+        "turn_in": {
+          "text": "Which commission is done?",
+          "choices": [
+            { "provider": { "type": "alina:guild/turn_in", "next": "turn_in" } },
+            { "text": "Back.", "next": "hello" }
+          ]
+        },
+        "abandon": {
+          "text": "Which commission do you drop? It frees its place with no reward.",
+          "choices": [
+            { "provider": { "type": "alina:guild/abandon", "next": "abandon" } },
+            { "text": "Back.", "next": "hello" }
+          ]
+        },
+        "status": {
+          "text": "Your standing with the Guild.",
+          "choices": [
+            { "provider": { "type": "alina:guild/status" } },
+            { "text": "Back.", "next": "hello" }
+          ]
+        },
+        "bye": { "text": "Safe travels." }
+      }
+    },
+    "lampas:guild/board_daily": {
+      "start": "board",
+      "nodes": {
+        "board": {
+          "text": "Today's board. Pick a commission to accept.",
+          "choices": [
+            { "provider": { "type": "alina:guild/board", "next": "board" } },
+            { "text": "Turn in a commission.", "next": "turn_in" },
+            { "text": "My record.", "next": "status" },
+            { "text": "Leave.", "next": "bye" }
+          ]
+        },
+        "turn_in": {
+          "text": "Which commission is done?",
+          "choices": [
+            { "provider": { "type": "alina:guild/turn_in", "next": "turn_in" } },
+            { "text": "Back.", "next": "board" }
+          ]
+        },
+        "status": {
+          "text": "Your standing with the Guild.",
+          "choices": [
+            { "provider": { "type": "alina:guild/status" } },
+            { "text": "Back.", "next": "board" }
+          ]
+        },
+        "bye": { "text": "Safe travels." }
+      }
+    },
+    "lampas:guild/board_feats": {
+      "start": "board",
+      "nodes": {
+        "board": {
+          "text": "The feats. Each one is done once.",
+          "choices": [
+            { "provider": { "type": "alina:guild/board", "next": "board" } },
+            { "text": "Turn in a commission.", "next": "turn_in" },
+            { "text": "My record.", "next": "status" },
+            { "text": "Leave.", "next": "bye" }
+          ]
+        },
+        "turn_in": {
+          "text": "Which commission is done?",
+          "choices": [
+            { "provider": { "type": "alina:guild/turn_in", "next": "turn_in" } },
+            { "text": "Back.", "next": "board" }
+          ]
+        },
+        "status": {
+          "text": "Your standing with the Guild.",
+          "choices": [
+            { "provider": { "type": "alina:guild/status" } },
+            { "text": "Back.", "next": "board" }
+          ]
+        },
+        "bye": { "text": "Safe travels." }
+      }
+    }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "board_size": 5,
+        "active_cap": 3,
+        "reset": { "time": "04:00", "zone": "Asia/Manila" },
+        "default_cooldown": "PT20H",
+        "salt": "maraha",
+        "board_reach": 6
+      },
+      "boards": {
+        "lampas:guild/daily": {
+          "name": "Daily Board",
+          "graph": "lampas:guild/board_daily",
+          "commissions": [
+            "lampas:guild/a1_untouchable_grain",
+            "lampas:guild/a2_bottled_shrieker",
+            "lampas:guild/a3_subterranean_blossom",
+            "lampas:guild/a4_preserved_colony",
+            "lampas:guild/b1_glassblowers_lightning",
+            "lampas:guild/b2_froglight_triad",
+            "lampas:guild/b3_screaming_horn",
+            "lampas:guild/b4_withers_garden",
+            "lampas:guild/b6_lightning_fungus",
+            "lampas:guild/c1_extinct_flora",
+            "lampas:guild/c2_oxidized_metallurgy",
+            "lampas:guild/d1_master_of_the_shell",
+            "lampas:guild/d2_infiltration_brew",
+            "lampas:guild/d3_grand_feast",
+            "lampas:guild/f2_disc_jockeys_gamble",
+            "lampas:guild/f4_heavy_core"
+          ]
+        },
+        "lampas:guild/feats": {
+          "name": "Feats Board",
+          "graph": "lampas:guild/board_feats",
+          "commissions": [
+            "lampas:guild/a5_open_water_salvage",
+            "lampas:guild/b5_zombie_doctor",
+            "lampas:guild/e1_longshot_marksman",
+            "lampas:guild/e2_wind_reversal",
+            "lampas:guild/f3_gateway_incursion"
+          ]
+        }
+      },
+      "commissions": {
+        "lampas:guild/a1_untouchable_grain": {
+          "category": "A",
+          "kind": "repeatable",
+          "name": "The Untouchable Grain",
+          "hint": "Bring a block of suspicious sand or suspicious gravel.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              { "item": { "items": "minecraft:suspicious_sand" } },
+              { "item": { "items": "minecraft:suspicious_gravel" } }
+            ]
+          },
+          "reward": { "loot_table": "alina:rewards/guild/a1", "reputation": 1 }
+        },
+        "lampas:guild/a2_bottled_shrieker": {
+          "category": "A",
+          "kind": "repeatable",
+          "name": "The Bottled Shrieker",
+          "hint": "Bring a sculk shrieker from the Deep Dark.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              { "item": { "items": "minecraft:sculk_shrieker" } }
+            ]
+          },
+          "reward": { "loot_table": "alina:rewards/guild/a2", "reputation": 1 }
+        },
+        "lampas:guild/a3_subterranean_blossom": {
+          "category": "A",
+          "kind": "repeatable",
+          "name": "Subterranean Blossom",
+          "hint": "Bring a spore blossom from a lush cave.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              { "item": { "items": "minecraft:spore_blossom" } }
+            ]
+          },
+          "reward": { "loot_table": "alina:rewards/guild/a3", "reputation": 1 }
+        },
+        "lampas:guild/a4_preserved_colony": {
+          "category": "A",
+          "kind": "repeatable",
+          "name": "The Preserved Colony",
+          "hint": "Bring a bee nest at honey level 5 with three bees inside.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              {
+                "item": {
+                  "items": "minecraft:bee_nest",
+                  "components": { "minecraft:block_state": { "honey_level": "5" } }
+                },
+                "checks": [ { "type": "alina:bees", "count": 3 } ]
+              }
+            ]
+          },
+          "reward": { "loot_table": "alina:rewards/guild/a4", "reputation": 1 }
+        },
+        "lampas:guild/a5_open_water_salvage": {
+          "category": "A",
+          "kind": "feat",
+          "name": "Open-Water Salvage",
+          "hint": "After accepting, reel in an enchanted book or a name tag.",
+          "proof": {
+            "type": "criterion",
+            "trigger": "minecraft:fishing_rod_hooked",
+            "conditions": {
+              "item": { "items": [ "minecraft:enchanted_book", "minecraft:name_tag" ] }
+            }
+          },
+          "reward": { "loot_table": "alina:rewards/guild/a5", "reputation": 3 }
+        },
+        "lampas:guild/b1_glassblowers_lightning": {
+          "category": "B",
+          "kind": "repeatable",
+          "name": "The Glassblower’s Lightning",
+          "hint": "Bring a skeleton skull or a creeper head.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              { "item": { "items": "minecraft:skeleton_skull" } },
+              { "item": { "items": "minecraft:creeper_head" } }
+            ]
+          },
+          "reward": { "loot_table": "alina:rewards/guild/b1", "reputation": 1 }
+        },
+        "lampas:guild/b2_froglight_triad": {
+          "category": "B",
+          "kind": "repeatable",
+          "name": "The Froglight Triad",
+          "hint": "Bring one ochre, one verdant and one pearlescent froglight.",
+          "proof": {
+            "type": "item",
+            "all_of": [
+              { "item": { "items": "minecraft:ochre_froglight" } },
+              { "item": { "items": "minecraft:verdant_froglight" } },
+              { "item": { "items": "minecraft:pearlescent_froglight" } }
+            ]
+          },
+          "reward": { "loot_table": "alina:rewards/guild/b2", "reputation": 1 }
+        },
+        "lampas:guild/b3_screaming_horn": {
+          "category": "B",
+          "kind": "repeatable",
+          "name": "Horn of the Screaming Goat",
+          "hint": "Bring a goat horn that plays Admire, Call, Yearn or Dream.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              {
+                "item": { "items": "minecraft:goat_horn" },
+                "checks": [ { "type": "alina:instrument_tag", "tag": "minecraft:screaming_goat_horns" } ]
+              }
+            ]
+          },
+          "reward": { "loot_table": "alina:rewards/guild/b3", "reputation": 1 }
+        },
+        "lampas:guild/b4_withers_garden": {
+          "category": "B",
+          "kind": "repeatable",
+          "name": "The Wither’s Garden",
+          "hint": "Bring a wither rose.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              { "item": { "items": "minecraft:wither_rose" } }
+            ]
+          },
+          "reward": { "loot_table": "alina:rewards/guild/b4", "reputation": 1 }
+        },
+        "lampas:guild/b5_zombie_doctor": {
+          "category": "B",
+          "kind": "feat",
+          "name": "The Zombie Doctor",
+          "hint": "After accepting, cure a zombie villager.",
+          "proof": {
+            "type": "criterion",
+            "trigger": "minecraft:cured_zombie_villager"
+          },
+          "reward": { "loot_table": "alina:rewards/guild/b5", "reputation": 3 }
+        },
+        "lampas:guild/b6_lightning_fungus": {
+          "category": "B",
+          "kind": "repeatable",
+          "name": "The Lightning Fungus",
+          "hint": "Bring a suspicious stew with the wither effect.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              {
+                "item": { "items": "minecraft:suspicious_stew" },
+                "checks": [ { "type": "alina:stew_effect", "effect": "minecraft:wither" } ]
+              }
+            ]
+          },
+          "reward": { "loot_table": "alina:rewards/guild/b6", "reputation": 1 }
+        },
+        "lampas:guild/c1_extinct_flora": {
+          "category": "C",
+          "kind": "repeatable",
+          "name": "Extinct Flora",
+          "hint": "Bring a torchflower and a pitcher plant.",
+          "proof": {
+            "type": "item",
+            "all_of": [
+              { "item": { "items": "minecraft:torchflower" } },
+              { "item": { "items": "minecraft:pitcher_plant" } }
+            ]
+          },
+          "reward": { "loot_table": "alina:rewards/guild/c1", "reputation": 1 }
+        },
+        "lampas:guild/c2_oxidized_metallurgy": {
+          "category": "C",
+          "kind": "repeatable",
+          "name": "Oxidized Metallurgy",
+          "hint": "Bring a waxed oxidized chiseled copper block.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              { "item": { "items": "minecraft:waxed_oxidized_chiseled_copper" } }
+            ]
+          },
+          "reward": { "loot_table": "alina:rewards/guild/c2", "reputation": 1 }
+        },
+        "lampas:guild/d1_master_of_the_shell": {
+          "category": "D",
+          "kind": "repeatable",
+          "name": "Master of the Shell",
+          "hint": "Bring a Potion of the Turtle Master at level II.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              {
+                "item": {
+                  "items": "minecraft:potion",
+                  "components": { "minecraft:potion_contents": { "potion": "minecraft:strong_turtle_master" } }
+                }
+              }
+            ]
+          },
+          "reward": { "loot_table": "alina:rewards/guild/d1", "reputation": 1 }
+        },
+        "lampas:guild/d2_infiltration_brew": {
+          "category": "D",
+          "kind": "repeatable",
+          "name": "Infiltration Brew",
+          "hint": "Bring an unconsumed ominous bottle of tier V.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              {
+                "item": {
+                  "items": "minecraft:ominous_bottle",
+                  "components": { "minecraft:ominous_bottle_amplifier": 4 }
+                }
+              }
+            ]
+          },
+          "reward": { "loot_table": "alina:rewards/guild/d2", "reputation": 1 }
+        },
+        "lampas:guild/d3_grand_feast": {
+          "category": "D",
+          "kind": "repeatable",
+          "name": "Grand Feast of Maraha",
+          "hint": "Bring a hot bowl of shepherd's pie or stuffed pumpkin.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              { "item": { "items": "farmersdelight:shepherds_pie" } },
+              { "item": { "items": "farmersdelight:stuffed_pumpkin" } }
+            ]
+          },
+          "reward": { "loot_table": "alina:rewards/guild/d3", "reputation": 1 }
+        },
+        "lampas:guild/e1_longshot_marksman": {
+          "category": "E",
+          "kind": "feat",
+          "name": "The Longshot Marksman",
+          "hint": "After accepting, kill a skeleton with a projectile from more than 50 blocks away.",
+          "proof": {
+            "type": "criterion",
+            "trigger": "minecraft:player_killed_entity",
+            "conditions": {
+              "entity": [
+                {
+                  "condition": "minecraft:entity_properties",
+                  "entity": "this",
+                  "predicate": {
+                    "minecraft:entity_type": "minecraft:skeleton",
+                    "minecraft:distance": { "horizontal": { "min": 50 } }
+                  }
+                }
+              ],
+              "killing_blow": { "tags": [ { "id": "minecraft:is_projectile", "expected": true } ] }
+            }
+          },
+          "reward": { "loot_table": "alina:rewards/guild/e1", "reputation": 3 }
+        },
+        "lampas:guild/e2_wind_reversal": {
+          "category": "E",
+          "kind": "feat",
+          "name": "Wind Reversal",
+          "hint": "After accepting, kill a breeze with its own deflected wind charge.",
+          "proof": {
+            "type": "criterion",
+            "trigger": "minecraft:player_killed_entity",
+            "conditions": {
+              "entity": [
+                {
+                  "condition": "minecraft:entity_properties",
+                  "entity": "this",
+                  "predicate": { "minecraft:entity_type": "minecraft:breeze" }
+                }
+              ],
+              "killing_blow": {
+                "direct_entity": { "minecraft:entity_type": "minecraft:breeze_wind_charge" },
+                "tags": [ { "id": "minecraft:is_projectile", "expected": true } ]
+              }
+            }
+          },
+          "reward": { "loot_table": "alina:rewards/guild/e2", "reputation": 3 }
+        },
+        "lampas:guild/f2_disc_jockeys_gamble": {
+          "category": "F",
+          "kind": "repeatable",
+          "name": "The Disc Jockey’s Gamble",
+          "hint": "Bring an esoteric music disc, one that no chest holds.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              {
+                "item": {
+                  "items": [
+                    "minecraft:music_disc_11",
+                    "minecraft:music_disc_blocks",
+                    "minecraft:music_disc_chirp",
+                    "minecraft:music_disc_far",
+                    "minecraft:music_disc_mall",
+                    "minecraft:music_disc_mellohi",
+                    "minecraft:music_disc_stal",
+                    "minecraft:music_disc_strad",
+                    "minecraft:music_disc_wait",
+                    "minecraft:music_disc_ward"
+                  ]
+                }
+              }
+            ]
+          },
+          "reward": { "loot_table": "alina:rewards/guild/f2", "reputation": 1 }
+        },
+        "lampas:guild/f3_gateway_incursion": {
+          "category": "F",
+          "kind": "feat",
+          "name": "Gateway Incursion Clearance",
+          "hint": "After accepting, finish the Overworldian Nights gateway.",
+          "proof": {
+            "type": "criterion",
+            "trigger": "gateways:finish_gateway",
+            "conditions": { "gateway": "gateways:overworldian_nights" }
+          },
+          "reward": { "loot_table": "alina:rewards/guild/f3", "reputation": 3 }
+        },
+        "lampas:guild/f4_heavy_core": {
+          "category": "F",
+          "kind": "repeatable",
+          "name": "Trial Vault Extraction",
+          "hint": "Bring a heavy core from an ominous trial vault.",
+          "proof": {
+            "type": "item",
+            "any_of": [
+              { "item": { "items": "minecraft:heavy_core" } }
+            ]
+          },
+          "reward": { "loot_table": "alina:rewards/guild/f4", "reputation": 1 }
+        }
+      }
+    },
+    "alina:achievements": {
+      "tabs": {
+        "lampas:guild": {
+          "title": "The Guild",
+          "icon": { "id": "minecraft:writable_book" },
+          "background": "minecraft:block/spruce_planks"
+        }
+      },
+      "achievements": {
+        "lampas:guild/first_commission": {
+          "tab": "lampas:guild",
+          "title": "Signed On",
+          "description": "Complete a Guild commission.",
+          "icon": { "id": "minecraft:paper" },
+          "frame": "task",
+          "criteria": {
+            "deliver": { "trigger": "alina:commission_completed", "conditions": {} }
+          }
+        },
+        "lampas:guild/ten_commissions": {
+          "tab": "lampas:guild",
+          "parent": "lampas:guild/first_commission",
+          "title": "Ten Commissions",
+          "description": "Complete ten Guild commissions.",
+          "icon": { "id": "minecraft:book" },
+          "frame": "goal",
+          "criteria": {
+            "deliver": { "trigger": "alina:commission_completed", "conditions": {}, "count": 10 }
+          }
+        },
+        "lampas:guild/first_feat": {
+          "tab": "lampas:guild",
+          "parent": "lampas:guild/first_commission",
+          "title": "A Lasting Feat",
+          "description": "Complete a Guild feat.",
+          "icon": { "id": "minecraft:nether_star" },
+          "frame": "goal",
+          "criteria": {
+            "deliver": { "trigger": "alina:commission_completed", "conditions": { "kind": "feat" } }
+          }
+        },
+        "lampas:guild/reputation_10": {
+          "tab": "lampas:guild",
+          "parent": "lampas:guild/first_commission",
+          "title": "Known in Maraha",
+          "description": "Reach 10 reputation with the Guild.",
+          "icon": { "id": "minecraft:emerald" },
+          "frame": "goal",
+          "criteria": {
+            "reputation": { "trigger": "alina:reputation_changed", "conditions": { "reputation": { "min": 10 } } }
+          }
+        }
+      }
+    }
+  }
+}

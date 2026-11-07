@@ -81,9 +81,12 @@ fabricApi {
 }
 
 def gameTestReportFile = layout.buildDirectory.file('test-results/gameTest/TEST-alina-gametest.xml')
+// LampasContentGameTests reads content/lampas.bundle.json from the project directory; the game runs in run/.
+def projectDirPath = layout.projectDirectory.asFile.absolutePath
 
 tasks.named('runGameTest') {
 	systemProperty 'fabric-api.gametest.report-file', gameTestReportFile.get().asFile.absolutePath
+	systemProperty 'alina.projectDir', projectDirPath
 	doFirst {
 		gameTestReportFile.get().asFile.parentFile.mkdirs()
 	}
