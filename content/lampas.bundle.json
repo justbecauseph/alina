@@ -228,7 +228,7 @@
           "category": "A",
           "kind": "feat",
           "name": "Open-Water Salvage",
-          "hint": "After accepting, reel in an enchanted book or a name tag.",
+          "hint": "After accepting, fish in open water and reel in an enchanted book or a name tag.",
           "proof": {
             "type": "criterion",
             "trigger": "minecraft:fishing_rod_hooked",
@@ -404,7 +404,7 @@
           "category": "E",
           "kind": "feat",
           "name": "The Longshot Marksman",
-          "hint": "After accepting, kill a skeleton with a projectile from more than 50 blocks away.",
+          "hint": "After accepting, kill a skeleton with a projectile from at least 50 blocks away, measured horizontally.",
           "proof": {
             "type": "criterion",
             "trigger": "minecraft:player_killed_entity",
