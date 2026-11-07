@@ -10,11 +10,13 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -25,7 +27,9 @@ import java.util.function.BiFunction;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import net.fabricmc.fabric.api.gametest.v1.GameTest;
+import net.minecraft.advancements.AdvancementProgress;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.network.protocol.game.ClientboundUpdateAdvancementsPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerPlayer;
@@ -40,6 +44,7 @@ import town.lampas.alina.achievement.AchievementModule;
 import town.lampas.alina.achievement.AchievementService;
 import town.lampas.alina.achievement.AchievementStanding;
 import town.lampas.alina.achievement.AchievementView;
+import town.lampas.alina.achievement.AdvancementSync;
 import town.lampas.alina.criteria.AlinaTriggers;
 import town.lampas.alina.settlement.PlayerDataSaves;
 import town.lampas.alina.settlement.SettlementRequest;
@@ -985,6 +990,87 @@ public final class AchievementGameTests {
                     advance(helper, step, 2);
                 }
                 default -> {
+                    helper.assertValueEqual(count(player, Items.EMERALD), 5, "the reward, five emeralds");
+                    helper.assertTrue(rig.settlement().pendingFor(player).isEmpty(), "the escrow still holds an operation");
+                    helper.assertValueEqual(storedState(rig, player, RETRIED).map(AchievementState::earnCount).orElse(0),
+                            1, "the earn count in storage");
+                }
+            }
+        });
+    }
+
+    /**
+     * A refused reward begin with the advancement sync attached. The blocking operation goes into the escrow after the record
+     * has loaded, so the record does not take it for the earn's own operation. A reset packet built while the begin is refused
+     * shows the earn done, without a toast. Once the blocking operation has gone, the begin is tried again and succeeds: the earn
+     * is durable, the listeners are told once, and the sync sends the earned holder's done progress with toasts on.
+     */
+    @GameTest(maxTicks = 900)
+    public void aRefusedBeginRetriedAfterAResetToastsItsHolder(GameTestHelper helper) {
+        CompletableFuture<Void> release = new CompletableFuture<>();
+        AchievementRig rig = AchievementRig.create(helper, BUNDLE, delegate -> holdingApplies(delegate, release, op -> true));
+        AdvancementSync sync = rig.attachSync();
+        ServerPlayer player = rig.joined();
+        List<Integer> told = new ArrayList<>();
+        rig.service().addListener(new AchievementListener() {
+            @Override
+            public void earned(ServerPlayer earner, Identifier achievement, int tier) {
+                if (earner == player && achievement.equals(RETRIED)) {
+                    told.add(tier);
+                }
+            }
+        });
+        Identifier holder = AdvancementSync.holderId(RETRIED, 1);
+        List<ClientboundUpdateAdvancementsPacket> sent = new ArrayList<>();
+        AtomicLong releaseAt = new AtomicLong();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            sent.addAll(rig.updates(player));
+            helper.assertTrue(loaded(rig, player), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    helper.assertTrue(rig.settlement().begin(player, blocker()).isPresent(),
+                            "the blocking operation was refused");
+                    AlinaTriggers.MANUAL.trigger(player, "retry");
+                    releaseAt.set(rig.ticks() + HELD_TICKS);
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    helper.assertValueEqual(earnedTiers(rig, player, RETRIED), 1, "the earn is recorded while refused");
+                    // Settling is true only when the record holds an operation of the achievement in the escrow: here the
+                    // escrow holds only the blocker, which the record does not know, so the earn's own begin is still to come.
+                    helper.assertFalse(standing(rig, player, RETRIED).map(AchievementStanding::settling).orElse(true),
+                            "the record took the blocking operation for the earn's own");
+                    helper.assertValueEqual(rig.settlement().pendingFor(player).size(), 1,
+                            "the escrow holds more than the blocking operation");
+                    Map<Identifier, AdvancementProgress> progress = new HashMap<>();
+                    sync.appendToReset(player, new ArrayList<>(), progress);
+                    helper.assertTrue(progress.containsKey(holder) && progress.get(holder).isDone(),
+                            "the reset does not show the earn done");
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
+                    helper.assertTrue(told.isEmpty(), "the earn was told before its reward was begun");
+                    helper.assertTrue(sent.stream().noneMatch(ClientboundUpdateAdvancementsPacket::shouldShowAdvancements),
+                            "a toast was sent before the earn was durable");
+                    helper.assertValueEqual(count(player, Items.EMERALD), 0, "the reward came while the begin was refused");
+                    helper.assertTrue(rig.ticks() >= releaseAt.get(), "waiting for a retry while the begin is refused");
+                    release.complete(null);
+                    advance(helper, step, 3);
+                }
+                default -> {
+                    helper.assertValueEqual(told, List.of(1), "the earns told");
+                    // Chain counts every earn, so the durable earn of retried earns chain's first tier, with a toast of its
+                    // own. Only the packets that carry retried's holder are this earn's.
+                    List<ClientboundUpdateAdvancementsPacket> toasts = sent.stream()
+                            .filter(update -> update.shouldShowAdvancements() && update.getProgress().containsKey(holder))
+                            .toList();
+                    helper.assertValueEqual(toasts.size(), 1, "the packets with toasts for retried");
+                    ClientboundUpdateAdvancementsPacket toast = toasts.get(0);
+                    helper.assertFalse(toast.shouldReset(), "the earn's packet has the reset flag");
+                    helper.assertValueEqual(toast.getProgress().keySet(), Set.of(holder), "the earn's progress entries");
+                    helper.assertTrue(toast.getProgress().get(holder).isDone(), "the earn's progress is not done");
                     helper.assertValueEqual(count(player, Items.EMERALD), 5, "the reward, five emeralds");
                     helper.assertTrue(rig.settlement().pendingFor(player).isEmpty(), "the escrow still holds an operation");
                     helper.assertValueEqual(storedState(rig, player, RETRIED).map(AchievementState::earnCount).orElse(0),
@@ -2066,6 +2152,11 @@ public final class AchievementGameTests {
     /**
      * An operation of the achievement's kind, subject and tier. While it is in the escrow, the achievement's own begin is
      * refused. Its effect names another achievement, so the test's achievement keeps its own stored state.
+     *
+     * <p>Begin it only once the record has loaded. A record that loads with it in the escrow takes it for the achievement's own
+     * earn being settled, as the service's contract says of every escrowed operation at load: the achievement shows as earned,
+     * its criteria are not watched, and no earn or begin of it is made. When the blocker settles, its effect is counted for the
+     * other achievement and the test's achievement is left unearned.
      */
     private static SettlementRequest blocker() {
         return new SettlementRequest(

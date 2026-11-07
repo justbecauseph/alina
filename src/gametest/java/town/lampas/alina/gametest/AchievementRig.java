@@ -20,12 +20,14 @@ import net.minecraft.network.Connection;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.PacketFlow;
 import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
+import net.minecraft.network.protocol.game.ClientboundUpdateAdvancementsPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.CommonListenerCookie;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.world.level.GameType;
 import town.lampas.alina.achievement.AchievementService;
+import town.lampas.alina.achievement.AdvancementSync;
 import town.lampas.alina.content.AchievementsContent;
 import town.lampas.alina.content.AlinaContent;
 import town.lampas.alina.settlement.PlayerDataSaves;
@@ -39,7 +41,8 @@ import town.lampas.haruhi.content.model.ContentBundle;
  * One achievement GameTest's world: an {@link AchievementService} and its {@link SettlementService} over one in-memory
  * storage, a clock the test moves, the content the test parsed from a fixture, and mock players that are not in the
  * server's player list (so the server's own services never serve them). The test calls {@link #tick} each game tick, which
- * ticks both services. Nothing here activates content on the server.
+ * ticks both services, and the advancement sync once {@link #attachSync} has added one. Nothing here activates content on the
+ * server.
  */
 final class AchievementRig {
     /** 2026-11-06 10:00 in Asia/Manila. */
@@ -58,8 +61,10 @@ final class AchievementRig {
     private final List<ServerPlayer> online = new ArrayList<>();
     private final Map<UUID, EmbeddedChannel> channels = new HashMap<>();
     private final Map<UUID, List<String>> said = new HashMap<>();
+    private final Map<UUID, List<ClientboundUpdateAdvancementsPacket>> advancementPackets = new HashMap<>();
     private final SettlementService settlement;
     private final AchievementService service;
+    private AdvancementSync sync;
     private long ticks;
 
     private AchievementRig(GameTestHelper helper, String fixture, Function<AlinaStorage, AlinaStorage> wrap) {
@@ -101,23 +106,59 @@ final class AchievementRig {
         return clock;
     }
 
-    /** Ticks the achievement service and the settlement service, as the server does once per game tick. */
+    /**
+     * Ticks the achievement service, the advancement sync when one is attached, and the settlement service, as the server
+     * does once per game tick.
+     */
     void tick() {
         ticks++;
         service.tick();
+        if (sync != null) {
+            sync.tick();
+        }
         settlement.tick();
     }
 
-    /** Reads every packet sent to the player: chat lines are kept for {@link #messages}, advancement updates are dropped. */
+    /**
+     * Attaches an advancement sync to this rig's service, as {@code AchievementModule} does on the server: it reads the
+     * service's views and this rig's content, sends to this rig's online players, listens to the service, and is ticked by
+     * {@link #tick}. Its packets are read with {@link #updates}.
+     */
+    AdvancementSync attachSync() {
+        if (sync == null) {
+            sync = new AdvancementSync(service::view, content::get, () -> online);
+            service.addListener(sync);
+        }
+        return sync;
+    }
+
+    /**
+     * Reads every packet sent to the player: chat lines are kept for {@link #messages}, advancement updates for
+     * {@link #updates}.
+     */
     private void drain(ServerPlayer player) {
         EmbeddedChannel channel = channels.get(player.getUUID());
         List<String> texts = said.computeIfAbsent(player.getUUID(), id -> new ArrayList<>());
+        List<ClientboundUpdateAdvancementsPacket> sent = advancementPackets.computeIfAbsent(player.getUUID(),
+                id -> new ArrayList<>());
         Object packet;
         while ((packet = channel.readOutbound()) != null) {
             if (packet instanceof ClientboundSystemChatPacket chat) {
                 texts.add(chat.content().getString());
+            } else if (packet instanceof ClientboundUpdateAdvancementsPacket update) {
+                sent.add(update);
             }
         }
+    }
+
+    /** The advancement update packets sent to the player since the previous call, oldest first. */
+    List<ClientboundUpdateAdvancementsPacket> updates(ServerPlayer player) {
+        drain(player);
+        List<ClientboundUpdateAdvancementsPacket> sent = advancementPackets.computeIfAbsent(player.getUUID(),
+                id -> new ArrayList<>());
+        List<ClientboundUpdateAdvancementsPacket> since = List.copyOf(sent);
+        sent.clear();
+        return since;
     }
 
     /** The number of ticks this rig has run. */
