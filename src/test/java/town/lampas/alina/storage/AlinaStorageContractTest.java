@@ -50,6 +50,8 @@ abstract class AlinaStorageContractTest {
     private static final Identifier COURIER = Identifier.parse("alina:guild/courier");
     private static final Identifier SCRIBE = Identifier.parse("alina:guild/scribe");
     private static final Identifier PORTER = Identifier.parse("alina:guild/porter");
+    private static final Identifier BOARD = Identifier.parse("alina:board");
+    private static final Identifier HUNTERS = Identifier.parse("alina:guild/hunters");
     private static final Identifier UNLISTED = Identifier.parse("alina:guild/unlisted");
     private static final Identifier FIRST_STEPS = Identifier.parse("alina:achievement/first_steps");
     private static final Identifier MINER = Identifier.parse("alina:achievement/miner");
@@ -433,41 +435,67 @@ abstract class AlinaStorageContractTest {
 
     @Test
     void aBoardIsStoredOnceAndTheFirstStoredBoardWins() {
-        StoredBoard first = new StoredBoard(DAY, 1, 10, List.of(COURIER, SCRIBE));
-        StoredBoard second = new StoredBoard(DAY, 2, 20, List.of(PORTER));
+        StoredBoard first = new StoredBoard(DAY, BOARD, 1, 10, List.of(COURIER, SCRIBE));
+        StoredBoard second = new StoredBoard(DAY, BOARD, 2, 20, List.of(PORTER));
 
         assertEquals(first, await(storage.storeBoard(first)));
         assertEquals(first, await(storage.storeBoard(second)));
 
-        assertEquals(Optional.of(first), await(storage.loadBoard(DAY)));
+        assertEquals(Optional.of(first), await(storage.loadBoard(DAY, BOARD)));
     }
 
     @Test
     void loadingAnUnknownBoardIsEmpty() {
-        assertEquals(Optional.empty(), await(storage.loadBoard(DAY)));
+        assertEquals(Optional.empty(), await(storage.loadBoard(DAY, BOARD)));
     }
 
     @Test
     void boardsAreKeptPerDate() {
-        StoredBoard today = new StoredBoard(DAY, 1, 10, List.of(COURIER));
-        StoredBoard tomorrow = new StoredBoard(NEXT_DAY, 1, 11, List.of(PORTER, SCRIBE));
+        StoredBoard today = new StoredBoard(DAY, BOARD, 1, 10, List.of(COURIER));
+        StoredBoard tomorrow = new StoredBoard(NEXT_DAY, BOARD, 1, 11, List.of(PORTER, SCRIBE));
         await(storage.storeBoard(today));
         await(storage.storeBoard(tomorrow));
 
-        assertEquals(Optional.of(today), await(storage.loadBoard(DAY)));
-        assertEquals(Optional.of(tomorrow), await(storage.loadBoard(NEXT_DAY)));
+        assertEquals(Optional.of(today), await(storage.loadBoard(DAY, BOARD)));
+        assertEquals(Optional.of(tomorrow), await(storage.loadBoard(NEXT_DAY, BOARD)));
     }
 
     @Test
-    void concurrentStoresOfOneDateAllReturnTheSameBoard() {
-        List<CompletableFuture<StoredBoard>> pending = IntStream.range(0, 10)
-                .mapToObj(seed -> storage.storeBoard(new StoredBoard(DAY, seed, seed, List.of(COURIER))))
-                .toList();
+    void twoBoardsOnOneDateAreIndependent() {
+        StoredBoard implicit = new StoredBoard(DAY, BOARD, 1, 10, List.of(COURIER));
+        StoredBoard hunters = new StoredBoard(DAY, HUNTERS, 1, 11, List.of(PORTER, SCRIBE));
 
-        List<StoredBoard> returned = pending.stream().map(AlinaStorageContractTest::await).toList();
-        StoredBoard winner = await(storage.loadBoard(DAY)).orElseThrow();
+        assertEquals(implicit, await(storage.storeBoard(implicit)));
+        assertEquals(hunters, await(storage.storeBoard(hunters)));
 
-        assertTrue(returned.stream().allMatch(board -> board.equals(winner)), "returned " + returned);
+        assertEquals(Optional.of(implicit), await(storage.loadBoard(DAY, BOARD)));
+        assertEquals(Optional.of(hunters), await(storage.loadBoard(DAY, HUNTERS)));
+    }
+
+    @Test
+    void aStoredBoardIsNotReturnedForAnotherDateOrBoard() {
+        await(storage.storeBoard(new StoredBoard(DAY, HUNTERS, 1, 10, List.of(COURIER))));
+
+        assertEquals(Optional.empty(), await(storage.loadBoard(DAY, BOARD)));
+        assertEquals(Optional.empty(), await(storage.loadBoard(NEXT_DAY, HUNTERS)));
+    }
+
+    @Test
+    void concurrentStoresOfOneBoardAllReturnThatBoardsWinner() {
+        List<CompletableFuture<StoredBoard>> racingForBoard = new ArrayList<>();
+        List<CompletableFuture<StoredBoard>> racingForHunters = new ArrayList<>();
+        for (int seed = 0; seed < 10; seed++) {
+            racingForBoard.add(storage.storeBoard(new StoredBoard(DAY, BOARD, seed, seed, List.of(COURIER))));
+            racingForHunters.add(storage.storeBoard(new StoredBoard(DAY, HUNTERS, seed, seed, List.of(PORTER))));
+        }
+
+        List<StoredBoard> returnedForBoard = racingForBoard.stream().map(AlinaStorageContractTest::await).toList();
+        List<StoredBoard> returnedForHunters = racingForHunters.stream().map(AlinaStorageContractTest::await).toList();
+        StoredBoard winner = await(storage.loadBoard(DAY, BOARD)).orElseThrow();
+        StoredBoard huntersWinner = await(storage.loadBoard(DAY, HUNTERS)).orElseThrow();
+
+        assertTrue(returnedForBoard.stream().allMatch(winner::equals), "returned " + returnedForBoard);
+        assertTrue(returnedForHunters.stream().allMatch(huntersWinner::equals), "returned " + returnedForHunters);
     }
 
     @Test

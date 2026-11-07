@@ -24,6 +24,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import town.lampas.alina.Alina;
 import town.lampas.alina.content.AlinaContent;
+import town.lampas.alina.content.Board;
 import town.lampas.alina.content.Commission;
 import town.lampas.alina.content.Cooldown;
 import town.lampas.alina.content.GuildContent;
@@ -91,10 +92,17 @@ import town.lampas.haruhi.api.HaruhiServices;
  * descent tracker (§8.3). Progress is cached and written behind every {@link #FLUSH_TICKS}, on leave and on stop. When
  * a proof is met the player gets {@link GuildText#ready}.
  *
- * <p><b>Board.</b> Each tick, once the content's startup activation is complete, the service makes sure it holds the
- * board of the current board day: it loads the stored board, or draws one from the rotation pool (repeatables in
- * rotation) with {@code BoardDraw} and stores it. A board with an empty pool is not stored. {@link #board} filters the
- * stored ids to the repeatables of the active content.
+ * <p><b>Boards.</b> Each board of the content has its own state: the board day it holds, whether its load is in flight,
+ * the tick of its next retry, and the draw it holds, stored or not. Each tick, once the content's startup activation is
+ * complete, the service makes sure every board holds the board of the current board day: it loads the board's stored
+ * draw, or draws one from the board's pool (its repeatables in rotation, that {@link GuildContent#boardOf} puts in the
+ * board) with {@code BoardDraw}, seeded by the board's id, and stores it. A board with an empty pool is not stored. A
+ * board the content no longer has is dropped. {@link #board(Identifier)} filters the stored ids to the repeatables that
+ * the active content's {@link GuildContent#boardOf} puts in this board, so a stored draw keeps no commission its pool no
+ * longer holds. A commission that an activation moves to another board leaves its old board's view and entries at once,
+ * and joins the new board at that board's next draw: the next board day, or the activation itself when the new board's
+ * pool was empty and is drawn again then. A repeatable is accepted only when it is on today's draw of its own board; a
+ * feat need not be drawn.
  *
  * <p><b>Content activation.</b> {@link #contentActivated} withdraws, for every loaded record, each active commission the
  * new content lacks (it is abandoned in storage and the player gets {@link GuildText#withdrawn}), stops all tracking and
@@ -104,8 +112,9 @@ import town.lampas.haruhi.api.HaruhiServices;
  * which is what the content is before any bundle is active, after a refused startup load, and when the active bundle
  * has no {@code alina:guild} section. Then a row the content lacks stays in the record and in storage, untracked,
  * until an activation with a section withdraws it. A withdrawal whose storage write fails is written once more; if that
- * fails too, the next load withdraws the row. A board drawn from an empty pool is drawn again at once when the content
- * changes.
+ * fails too, the next load withdraws the row. Each board whose draw came from an empty pool is drawn again at once when
+ * the content changes, and each stored draw is kept, so a board the new content still has keeps its draw less the
+ * commissions its pool no longer holds.
  */
 public final class GuildService {
     /** Server ticks between progress write-behind flushes: 5 seconds. */
@@ -131,11 +140,8 @@ public final class GuildService {
     private long ticks;
     /** The content as the last tick saw it, so names of commissions a new content removes can still be shown. */
     private GuildContent known = GuildContent.EMPTY;
-    /** The board day held: loading or loaded. Null before the first request and after a failed one. */
-    private LocalDate boardDate;
-    private boolean boardLoading;
-    private long boardRetryAt;
-    private Board board;
+    /** The state of each board of the content, by board id. */
+    private final Map<Identifier, BoardState> boards = new HashMap<>();
 
     /**
      * The service of the running server: the server's player list, the system clock, the active {@code alina:guild}
@@ -201,7 +207,7 @@ public final class GuildService {
         GuildContent content = contentSource.get();
         known = content;
         if (contentReady.getAsBoolean()) {
-            advanceBoard(content.settings());
+            advanceBoards(content);
         }
         boolean descentDue = ticks % DESCENT_CHECK_TICKS == 0;
         for (ServerPlayer player : List.copyOf(online.get())) {
@@ -264,8 +270,12 @@ public final class GuildService {
             }
         }
         known = content;
-        if (board != null && !board.stored()) {
-            redrawUnstored(content);
+        boards.keySet().removeIf(id -> !content.boards().containsKey(id));
+        for (Identifier id : List.copyOf(boards.keySet())) {
+            BoardState state = boards.get(id);
+            if (state.held != null && !state.held.stored()) {
+                redrawUnstored(id, state, content);
+            }
         }
     }
 
@@ -317,36 +327,51 @@ public final class GuildService {
         return record != null && record.loaded && activeCount(record) < contentSource.get().settings().activeCap();
     }
 
-    /** Today's board, or empty while it loads. */
-    public Optional<BoardView> board() {
-        Board current = board;
-        if (current == null) {
+    /**
+     * Today's draw of the board, or empty while it loads, when the content has no such board, or while the draw is held
+     * for a day the service has not reached. Its commissions are the stored ids that are still repeatables of this board's
+     * pool in the active content.
+     */
+    public Optional<BoardView> board(Identifier board) {
+        BoardState state = boards.get(board);
+        GuildContent content = contentSource.get();
+        if (state == null || state.held == null || !content.boards().containsKey(board)) {
             return Optional.empty();
         }
-        GuildContent content = contentSource.get();
-        List<Identifier> ids = current.ids().stream()
-                .filter(id -> isRepeatable(content, id))
+        HeldBoard held = state.held;
+        List<Identifier> ids = held.ids().stream()
+                .filter(id -> isRepeatableOf(content, board, id))
                 .toList();
-        return Optional.of(new BoardView(current.date(), current.revisionId(), ids, current.stored()));
+        return Optional.of(new BoardView(board, held.date(), held.revisionId(), ids, held.stored()));
+    }
+
+    /** Today's draw of every board of the content that has loaded, in board id order. */
+    public List<BoardView> boards() {
+        return contentSource.get().boards().keySet().stream()
+                .map(this::board)
+                .flatMap(Optional::stream)
+                .toList();
     }
 
     /**
-     * What the board shows this player, in order: today's board commissions, then the feats of the active content the
-     * player has not completed, by id text. Empty while the record or the board loads.
+     * What the board shows this player, in order: the board's draw, then the feats of the board's pool that the player has
+     * not completed, by id text. Empty while the record or the board's draw loads, or when the content has no such board.
      */
-    public Optional<List<Identifier>> boardEntries(ServerPlayer player) {
+    public Optional<List<Identifier>> boardEntries(ServerPlayer player, Identifier board) {
         requireServerThread();
         PlayerRecord record = records.get(player.getUUID());
         if (record == null || !record.loaded) {
             return Optional.empty();
         }
-        Optional<BoardView> today = board();
+        Optional<BoardView> today = board(board);
         if (today.isEmpty()) {
             return Optional.empty();
         }
+        GuildContent content = contentSource.get();
+        Board pool = content.boards().get(board);
         List<Identifier> entries = new ArrayList<>(today.get().commissions());
-        contentSource.get().commissions().values().stream()
-                .filter(commission -> commission.kind() == Commission.Kind.FEAT)
+        content.commissions().values().stream()
+                .filter(commission -> commission.kind() == Commission.Kind.FEAT && pool.holds(commission))
                 .map(Commission::id)
                 .sorted(Comparator.comparing(Identifier::toString))
                 .filter(id -> !completed(record, id))
@@ -370,7 +395,12 @@ public final class GuildService {
             return refuse(Refusal.Reason.UNKNOWN, GuildText.unknown(commission));
         }
         if (found.kind() == Commission.Kind.REPEATABLE) {
-            Optional<BoardView> today = board();
+            // A repeatable is on the draw of the one board whose pool holds it.
+            Optional<Board> own = content.boardOf(commission);
+            if (own.isEmpty()) {
+                return refuse(Refusal.Reason.NOT_ON_BOARD, GuildText.notOnBoard(found.name()));
+            }
+            Optional<BoardView> today = board(own.get().id());
             if (today.isEmpty()) {
                 return refuse(Refusal.Reason.BOARD_LOADING, GuildText.boardLoading());
             }
@@ -998,95 +1028,126 @@ public final class GuildService {
 
     // Board.
 
-    private void advanceBoard(GuildSettings settings) {
-        if (boardLoading || ticks < boardRetryAt) {
+    /** Brings every board of the content to the current board day. Boards the content no longer has are dropped first. */
+    private void advanceBoards(GuildContent content) {
+        boards.keySet().removeIf(id -> !content.boards().containsKey(id));
+        LocalDate today = BoardDay.dateOf(clock.instant(), content.settings().resetTime(), content.settings().zone());
+        for (Board board : content.boards().values()) {
+            BoardState state = boards.computeIfAbsent(board.id(), id -> new BoardState());
+            if (state.loading || ticks < state.retryAt || today.equals(state.date)) {
+                continue;
+            }
+            requestBoard(state, board.id(), today);
+        }
+    }
+
+    /** Starts loading the board's draw for {@code date}, and holds nothing of it until the load answers. */
+    private void requestBoard(BoardState state, Identifier board, LocalDate date) {
+        state.loading = true;
+        state.date = date;
+        state.held = null;
+        storage.loadBoard(date, board)
+                .whenComplete((stored, failure) -> onServer("board load of " + board + " for " + date,
+                        () -> boardLoaded(state, board, date, stored, failure), NOTHING));
+    }
+
+    /** Whether the state is still the one the content's board holds, so a completion for a dropped board is ignored. */
+    private boolean isHeld(BoardState state, Identifier board) {
+        return boards.get(board) == state;
+    }
+
+    private void boardLoaded(BoardState state, Identifier board, LocalDate date, Optional<StoredBoard> stored,
+            Throwable failure) {
+        if (!isHeld(state, board)) {
             return;
         }
-        LocalDate today = BoardDay.dateOf(clock.instant(), settings.resetTime(), settings.zone());
-        if (!today.equals(boardDate)) {
-            requestBoard(today);
-        }
-    }
-
-    private void requestBoard(LocalDate date) {
-        boardLoading = true;
-        boardDate = date;
-        board = null;
-        storage.loadBoard(date)
-                .whenComplete((stored, failure) -> onServer("board load for " + date,
-                        () -> boardLoaded(date, stored, failure), NOTHING));
-    }
-
-    private void boardLoaded(LocalDate date, Optional<StoredBoard> stored, Throwable failure) {
         if (failure != null) {
-            boardFailed(date, failure);
+            boardFailed(state, board, date, failure);
             return;
         }
         if (stored.isPresent()) {
-            adoptBoard(stored.get());
+            adoptBoard(state, stored.get());
             return;
         }
         GuildContent content = contentSource.get();
-        GuildSettings settings = content.settings();
+        Board found = content.boards().get(board);
+        if (found == null) {
+            boards.remove(board);
+            return;
+        }
         long revision = revisionId.getAsLong();
-        long seed = BoardDraw.seed(settings.salt(), date, revision);
-        List<Identifier> ids = BoardDraw.draw(rotationPool(content), settings.boardSize(), seed);
+        long seed = BoardDraw.seed(content.settings().salt(), date, revision, board);
+        List<Identifier> ids = BoardDraw.draw(boardPool(content, found), found.size(), seed);
         if (ids.isEmpty()) {
-            board = new Board(date, revision, List.of(), false);
-            boardLoading = false;
+            state.held = new HeldBoard(date, revision, List.of(), false);
+            state.loading = false;
             return;
         }
-        storage.storeBoard(new StoredBoard(date, revision, seed, ids))
-                .whenComplete((result, storeFailure) -> onServer("board store for " + date,
-                        () -> boardStored(date, result, storeFailure), NOTHING));
+        storage.storeBoard(new StoredBoard(date, board, revision, seed, ids))
+                .whenComplete((result, storeFailure) -> onServer("board store of " + board + " for " + date,
+                        () -> boardStored(state, board, date, result, storeFailure), NOTHING));
     }
 
-    private void boardStored(LocalDate date, StoredBoard result, Throwable failure) {
+    private void boardStored(BoardState state, Identifier board, LocalDate date, StoredBoard result, Throwable failure) {
+        if (!isHeld(state, board)) {
+            return;
+        }
         if (failure != null) {
-            boardFailed(date, failure);
+            boardFailed(state, board, date, failure);
             return;
         }
-        adoptBoard(result);
+        adoptBoard(state, result);
     }
 
-    private void adoptBoard(StoredBoard stored) {
-        board = new Board(stored.boardDate(), stored.revisionId(), stored.commissionIds(), true);
-        boardLoading = false;
+    private void adoptBoard(BoardState state, StoredBoard stored) {
+        state.held = new HeldBoard(stored.boardDate(), stored.revisionId(), stored.commissionIds(), true);
+        state.loading = false;
     }
 
-    private void boardFailed(LocalDate date, Throwable failure) {
-        Alina.LOGGER.warn("Alina could not load or store the Guild board for {}; it is tried again in 5 seconds",
-                date, failure);
-        boardLoading = false;
-        boardDate = null;
-        boardRetryAt = ticks + RETRY_TICKS;
+    private void boardFailed(BoardState state, Identifier board, LocalDate date, Throwable failure) {
+        Alina.LOGGER.warn("Alina could not load or store the Guild board {} for {}; it is tried again in 5 seconds",
+                board, date, failure);
+        state.loading = false;
+        state.date = null;
+        state.retryAt = ticks + RETRY_TICKS;
     }
 
     /**
      * Draws again a board that was drawn from an empty pool, now that the content has changed. An empty pool gives an
      * empty unstored board at once, so {@link #board} has no gap. A pool with repeatables is loaded, drawn and stored as
      * at the start of a day. Before the startup activation has finished, the board is only cleared, and
-     * {@link #advanceBoard} draws it once the content is ready.
+     * {@link #advanceBoards} draws it once the content is ready.
      */
-    private void redrawUnstored(GuildContent content) {
-        board = null;
-        boardDate = null;
-        boardRetryAt = 0;
+    private void redrawUnstored(Identifier id, BoardState state, GuildContent content) {
+        state.held = null;
+        state.date = null;
+        state.retryAt = 0;
         if (!contentReady.getAsBoolean()) {
             return;
         }
+        Board board = content.boards().get(id);
         GuildSettings settings = content.settings();
         LocalDate today = BoardDay.dateOf(clock.instant(), settings.resetTime(), settings.zone());
-        if (rotationPool(content).isEmpty()) {
-            board = new Board(today, revisionId.getAsLong(), List.of(), false);
-            boardDate = today;
+        if (boardPool(content, board).isEmpty()) {
+            state.held = new HeldBoard(today, revisionId.getAsLong(), List.of(), false);
+            state.date = today;
         } else {
-            requestBoard(today);
+            requestBoard(state, id, today);
         }
     }
 
-    /** A board as storage holds it: the ids are not filtered to the active content. */
-    private record Board(LocalDate date, long revisionId, List<Identifier> ids, boolean stored) {}
+    /** One board's state: the board day it holds, whether its load is in flight, the tick of its next retry, and its draw. */
+    private static final class BoardState {
+        /** The board day held or being loaded. Null before the first request and after a failed one. */
+        LocalDate date;
+        boolean loading;
+        long retryAt;
+        /** The draw held, or null while it loads or after a failure. */
+        HeldBoard held;
+    }
+
+    /** A board's draw as storage holds it: the ids are not filtered to the active content. */
+    private record HeldBoard(LocalDate date, long revisionId, List<Identifier> ids, boolean stored) {}
 
     // Helpers.
 
@@ -1169,6 +1230,11 @@ public final class GuildService {
         return found != null && found.kind() == Commission.Kind.REPEATABLE;
     }
 
+    /** Whether the id is a repeatable that the active content puts in {@code board}'s pool. */
+    private static boolean isRepeatableOf(GuildContent content, Identifier board, Identifier id) {
+        return isRepeatable(content, id) && content.boardOf(id).map(Board::id).filter(board::equals).isPresent();
+    }
+
     private static Optional<Refusal> refuse(Refusal.Reason reason, Component message) {
         return Optional.of(new Refusal(reason, message));
     }
@@ -1189,9 +1255,11 @@ public final class GuildService {
                 .count();
     }
 
-    private static List<Commission> rotationPool(GuildContent content) {
+    /** The pool a board draws from: the repeatables in rotation that the board holds. */
+    private static List<Commission> boardPool(GuildContent content, Board board) {
         return content.commissions().values().stream()
-                .filter(commission -> commission.kind() == Commission.Kind.REPEATABLE && commission.inRotation())
+                .filter(commission -> commission.kind() == Commission.Kind.REPEATABLE && commission.inRotation()
+                        && board.holds(commission))
                 .toList();
     }
 

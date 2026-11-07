@@ -37,6 +37,7 @@ final class GuildProviders {
     private static final String ABANDON = "alina:guild/abandon";
     private static final String STATUS = "alina:guild/status";
     private static final Set<String> NEXT = Set.of("next");
+    private static final Set<String> BOARD_ARGS = Set.of("next", "board");
     private static final Comparator<Identifier> BY_ID = Comparator.comparing(Identifier::toString);
 
     /** The service's check for one operation on a commission. */
@@ -47,11 +48,15 @@ final class GuildProviders {
 
     private GuildProviders() {}
 
-    /** Today's board, then the uncompleted feats. Picking an entry accepts it. */
+    /**
+     * The board's draw, then its uncompleted feats. Picking an entry accepts it. The board is fixed at parse time: the
+     * {@code board} argument, or the section's only board, or the board whose graph this provider is in.
+     */
     static DataResult<ChoiceProvider> board(JsonObject json, ParseContext context) {
-        return DialogueArgs.<ChoiceProvider>parse(context, BOARD, json, NEXT, args -> {
+        return DialogueArgs.<ChoiceProvider>parse(context, BOARD, json, BOARD_ARGS, args -> {
             Optional<String> next = args.node("next");
-            return ctx -> boardRows(ctx.player(), next);
+            Identifier board = args.boardOf("board", context.graphId());
+            return ctx -> boardRows(ctx.player(), board, next);
         });
     }
 
@@ -79,9 +84,9 @@ final class GuildProviders {
                 ctx -> statusRows(ctx.player()));
     }
 
-    private static List<ProvidedChoice> boardRows(ServerPlayer player, Optional<String> next) {
+    private static List<ProvidedChoice> boardRows(ServerPlayer player, Identifier board, Optional<String> next) {
         GuildService service = GuildModule.service();
-        Optional<List<Identifier>> entries = service.boardEntries(player);
+        Optional<List<Identifier>> entries = service.boardEntries(player, board);
         if (entries.isEmpty()) {
             Component text = service.view(player).isEmpty() ? GuildText.loading() : GuildText.boardLoading();
             return List.of(disabled(text));

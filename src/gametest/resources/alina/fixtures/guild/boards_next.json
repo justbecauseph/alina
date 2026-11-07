@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:guild_test/hunters_board": { "start": "hello", "nodes": { "hello": { "text": "The hunters' board." } } },
+    "alina:guild_test/town_board": { "start": "hello", "nodes": { "hello": { "text": "The town's board." } } },
+    "alina:guild_test/quarry_board": { "start": "hello", "nodes": { "hello": { "text": "The quarry's board." } } },
+    "alina:guild_test/dock_board": { "start": "hello", "nodes": { "hello": { "text": "The dock's board." } } }
+  },
+  "extensions": {
+    "alina:guild": {
+      "settings": {
+        "active_cap": 4,
+        "reset": { "time": "04:00", "zone": "Asia/Manila" },
+        "default_cooldown": "PT20H",
+        "salt": "boards"
+      },
+      "boards": {
+        "alina:guild/dock": { "graph": "alina:guild_test/dock_board", "categories": [ "D" ] },
+        "alina:guild/hunters": { "name": "Hunters' Lodge", "graph": "alina:guild_test/hunters_board", "size": 3, "categories": [ "A" ] },
+        "alina:guild/quarry": { "graph": "alina:guild_test/quarry_board", "size": 2, "categories": [ "C" ] },
+        "alina:guild/town": { "name": "Town Hall", "graph": "alina:guild_test/town_board", "size": 3, "categories": [ "B" ] }
+      },
+      "commissions": {
+        "alina:guild_test/hunt_1": { "category": "A", "kind": "repeatable", "name": "Hunt 1", "hint": "Bring paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] } },
+        "alina:guild_test/hunt_2": { "category": "A", "kind": "repeatable", "name": "Hunt 2", "hint": "Bring paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] } },
+        "alina:guild_test/hunt_3": { "category": "A", "kind": "repeatable", "name": "Hunt 3", "hint": "Bring paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] } },
+        "alina:guild_test/hunt_4": { "category": "A", "kind": "repeatable", "name": "Hunt 4", "hint": "Bring paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] } },
+        "alina:guild_test/hunt_5": { "category": "A", "kind": "repeatable", "name": "Hunt 5", "hint": "Bring paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] } },
+        "alina:guild_test/hunt_6": { "category": "A", "kind": "repeatable", "name": "Hunt 6", "hint": "Bring paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] } },
+        "alina:guild_test/hunt_feat": { "category": "A", "kind": "feat", "name": "Hunt Feat", "hint": "Bring paper.",
+          "proof": { "type": "item", "any_of": [ { "item": { "items": "minecraft:paper" } } ] } },
+        "alina:guild_test/town_1": { "category": "B", "kind": "repeatable", "name": "Town 1", "hint": "Bring paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] } },
+        "alina:guild_test/town_2": { "category": "B", "kind": "repeatable", "name": "Town 2", "hint": "Bring paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] } },
+        "alina:guild_test/town_3": { "category": "B", "kind": "repeatable", "name": "Town 3", "hint": "Bring paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] } },
+        "alina:guild_test/town_4": { "category": "B", "kind": "repeatable", "name": "Town 4", "hint": "Bring paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] } },
+        "alina:guild_test/town_5": { "category": "B", "kind": "repeatable", "name": "Town 5", "hint": "Bring paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] } },
+        "alina:guild_test/town_6": { "category": "B", "kind": "repeatable", "name": "Town 6", "hint": "Bring paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] } },
+        "alina:guild_test/town_feat": { "category": "B", "kind": "feat", "name": "Town Feat", "hint": "Bring paper.",
+          "proof": { "type": "item", "any_of": [ { "item": { "items": "minecraft:paper" } } ] } },
+        "alina:guild_test/quarry_2": { "category": "C", "kind": "repeatable", "name": "Quarry 2", "hint": "Bring paper.",
+          "proof": { "type": "item", "all_of": [ { "item": { "items": "minecraft:paper" } } ] } },
+        "alina:guild_test/dock_feat": { "category": "D", "kind": "feat", "name": "Dock Feat", "hint": "Bring paper.",
+          "proof": { "type": "item", "any_of": [ { "item": { "items": "minecraft:paper" } } ] } }
+      }
+    }
+  }
+}

@@ -26,6 +26,9 @@ import town.lampas.alina.content.Reward;
 /** The daily board draw (ALINA-PLAN §8.2). Expected values come from the definitions in the javadoc of BoardDraw. */
 class BoardDrawTest {
 
+    private static final Identifier BOARD = Identifier.parse("alina:board");
+    private static final Identifier HUNTERS = Identifier.parse("alina:guild/hunters");
+
     private static Commission commission(String path, int weight) {
         return new Commission(Identifier.fromNamespaceAndPath("alina", "guild/" + path), 'A',
                 Commission.Kind.REPEATABLE, Component.literal(path), Component.literal("hint"),
@@ -38,25 +41,45 @@ class BoardDrawTest {
 
     @Test
     void theSeedIsTheFirstEightBytesOfTheDefinedSha256() throws Exception {
-        // SHA-256 over "maraha", 0, "2026-11-05", 0, "7", read as a big-endian long.
+        // SHA-256 over "maraha", 0, "2026-11-05", 0, "7", 0, "alina:board", read as a big-endian long.
         ByteArrayOutputStream input = new ByteArrayOutputStream();
         input.write("maraha".getBytes(StandardCharsets.UTF_8));
         input.write(0);
         input.write("2026-11-05".getBytes(StandardCharsets.UTF_8));
         input.write(0);
         input.write("7".getBytes(StandardCharsets.UTF_8));
+        input.write(0);
+        input.write("alina:board".getBytes(StandardCharsets.UTF_8));
         long expected = ByteBuffer.wrap(MessageDigest.getInstance("SHA-256").digest(input.toByteArray())).getLong();
 
-        assertEquals(expected, BoardDraw.seed("maraha", LocalDate.of(2026, 11, 5), 7L));
+        assertEquals(expected, BoardDraw.seed("maraha", LocalDate.of(2026, 11, 5), 7L, BOARD));
     }
 
     @Test
     void theSeedChangesWithEachPartOfItsInput() {
-        long base = BoardDraw.seed("maraha", LocalDate.of(2026, 11, 5), 7L);
-        assertTrue(base != BoardDraw.seed("other", LocalDate.of(2026, 11, 5), 7L), "the salt");
-        assertTrue(base != BoardDraw.seed("maraha", LocalDate.of(2026, 11, 6), 7L), "the date");
-        assertTrue(base != BoardDraw.seed("maraha", LocalDate.of(2026, 11, 5), 8L), "the revision");
-        assertEquals(base, BoardDraw.seed("maraha", LocalDate.of(2026, 11, 5), 7L), "the same input");
+        long base = BoardDraw.seed("maraha", LocalDate.of(2026, 11, 5), 7L, BOARD);
+        assertTrue(base != BoardDraw.seed("other", LocalDate.of(2026, 11, 5), 7L, BOARD), "the salt");
+        assertTrue(base != BoardDraw.seed("maraha", LocalDate.of(2026, 11, 6), 7L, BOARD), "the date");
+        assertTrue(base != BoardDraw.seed("maraha", LocalDate.of(2026, 11, 5), 8L, BOARD), "the revision");
+        assertTrue(base != BoardDraw.seed("maraha", LocalDate.of(2026, 11, 5), 7L, HUNTERS), "the board");
+        assertEquals(base, BoardDraw.seed("maraha", LocalDate.of(2026, 11, 5), 7L, BOARD), "the same input");
+    }
+
+    @Test
+    void boardsWithOnePoolDrawDifferentlyOnMostDays() {
+        List<Commission> pool = List.of(commission("a", 1), commission("b", 1), commission("c", 1),
+                commission("d", 1), commission("e", 1), commission("f", 1));
+        int differing = 0;
+        for (int day = 1; day <= 20; day++) {
+            LocalDate date = LocalDate.of(2026, 11, day);
+            List<Identifier> board = BoardDraw.draw(pool, 4, BoardDraw.seed("maraha", date, 7L, BOARD));
+            List<Identifier> hunters = BoardDraw.draw(pool, 4, BoardDraw.seed("maraha", date, 7L, HUNTERS));
+            if (!board.equals(hunters)) {
+                differing++;
+            }
+        }
+        // Each board draws 4 of 6 in order, 360 outcomes, so two boards agree on a day about once in 360 days.
+        assertTrue(differing >= 15, "the two boards drew the same board on " + (20 - differing) + " of 20 days");
     }
 
     @Test

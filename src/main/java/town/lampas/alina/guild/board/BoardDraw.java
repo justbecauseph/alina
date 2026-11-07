@@ -23,15 +23,18 @@ public final class BoardDraw {
 
     /**
      * The first 8 bytes, big-endian, of SHA-256 over: the UTF-8 bytes of {@code salt}, a 0 byte, the UTF-8 bytes of the
-     * date in ISO form ({@code 2026-11-05}), a 0 byte, and the UTF-8 bytes of the revision id in decimal.
+     * date in ISO form ({@code 2026-11-05}), a 0 byte, the UTF-8 bytes of the revision id in decimal, a 0 byte, and the
+     * UTF-8 bytes of the board id ({@code alina:board}). Boards with the same pool therefore draw differently.
      */
-    public static long seed(String salt, LocalDate date, long revisionId) {
+    public static long seed(String salt, LocalDate date, long revisionId, Identifier boardId) {
         MessageDigest digest = sha256();
         digest.update(salt.getBytes(StandardCharsets.UTF_8));
         digest.update((byte) 0);
         digest.update(date.toString().getBytes(StandardCharsets.UTF_8));
         digest.update((byte) 0);
         digest.update(Long.toString(revisionId).getBytes(StandardCharsets.UTF_8));
+        digest.update((byte) 0);
+        digest.update(boardId.toString().getBytes(StandardCharsets.UTF_8));
         return ByteBuffer.wrap(digest.digest()).getLong();
     }
 

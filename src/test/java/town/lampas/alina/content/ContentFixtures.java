@@ -28,6 +28,8 @@ import town.lampas.haruhi.content.model.DialogueGraph;
  */
 final class ContentFixtures {
     static final Identifier BOARD_GRAPH = Identifier.fromNamespaceAndPath("alina", "guild/board");
+    static final Identifier HUNTERS_GRAPH = Identifier.fromNamespaceAndPath("alina", "guild/hunters_board");
+    static final Identifier TOWN_GRAPH = Identifier.fromNamespaceAndPath("alina", "guild/town_board");
 
     private static DynamicOps<JsonElement> ops;
 
@@ -57,10 +59,12 @@ final class ContentFixtures {
         return HolderLookup.Provider.create(lookups.stream());
     }
 
-    /** A bundle holding only the board graph, as the extension parsers see it. */
+    /** A bundle holding only the graphs the Guild boards name, as the extension parsers see it. */
     static ContentBundle bundle() {
         return new ContentBundle(ContentBundle.SCHEMA, Map.of(), Map.of(),
-                Map.of(BOARD_GRAPH, new DialogueGraph(BOARD_GRAPH, "start", Map.of())));
+                Map.of(BOARD_GRAPH, new DialogueGraph(BOARD_GRAPH, "start", Map.of()),
+                        HUNTERS_GRAPH, new DialogueGraph(HUNTERS_GRAPH, "start", Map.of()),
+                        TOWN_GRAPH, new DialogueGraph(TOWN_GRAPH, "start", Map.of())));
     }
 
     /** The result of one parse and every problem it recorded. */

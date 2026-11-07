@@ -143,10 +143,11 @@ final class PostgresStorage implements AlinaStorage {
             "UPDATE operation SET step = ?, note = ?, updated_at = ? WHERE operation_id = ?";
 
     private static final String SELECT_BOARD =
-            "SELECT board_date, revision_id, seed, commission_ids FROM board WHERE board_date = ?";
+            "SELECT board_date, board_id, revision_id, seed, commission_ids FROM board "
+            + "WHERE board_date = ? AND board_id = ?";
     private static final String INSERT_BOARD = """
-            INSERT INTO board (board_date, revision_id, seed, commission_ids) VALUES (?, ?, ?, ?)
-            ON CONFLICT (board_date) DO NOTHING
+            INSERT INTO board (board_date, board_id, revision_id, seed, commission_ids) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (board_date, board_id) DO NOTHING
             """;
 
     private final String schema;
@@ -457,10 +458,11 @@ final class PostgresStorage implements AlinaStorage {
     }
 
     @Override
-    public CompletableFuture<Optional<StoredBoard>> loadBoard(LocalDate boardDate) {
+    public CompletableFuture<Optional<StoredBoard>> loadBoard(LocalDate boardDate, Identifier boardId) {
         return query(connection -> {
             try (PreparedStatement statement = connection.prepareStatement(SELECT_BOARD)) {
                 statement.setObject(1, boardDate);
+                statement.setString(2, boardId.toString());
                 return firstBoard(statement);
             }
         });
@@ -471,16 +473,18 @@ final class PostgresStorage implements AlinaStorage {
         return inTransaction(connection -> {
             try (PreparedStatement insert = connection.prepareStatement(INSERT_BOARD)) {
                 insert.setObject(1, board.boardDate());
-                insert.setLong(2, board.revisionId());
-                insert.setLong(3, board.seed());
-                insert.setArray(4, commissionArray(connection, board.commissionIds()));
+                insert.setString(2, board.boardId().toString());
+                insert.setLong(3, board.revisionId());
+                insert.setLong(4, board.seed());
+                insert.setArray(5, commissionArray(connection, board.commissionIds()));
                 insert.executeUpdate();
             }
             // Inserted now, or inserted earlier by a committed transaction, so the row exists either way.
             try (PreparedStatement select = connection.prepareStatement(SELECT_BOARD)) {
                 select.setObject(1, board.boardDate());
-                return firstBoard(select).orElseThrow(
-                        () -> new SQLException("Board " + board.boardDate() + " is missing after its insert"));
+                select.setString(2, board.boardId().toString());
+                return firstBoard(select).orElseThrow(() -> new SQLException(
+                        "Board " + board.boardId() + " for " + board.boardDate() + " is missing after its insert"));
             }
         });
     }
@@ -626,11 +630,12 @@ final class PostgresStorage implements AlinaStorage {
             if (!rows.next()) {
                 return Optional.empty();
             }
-            String[] ids = (String[]) rows.getArray(4).getArray();
+            String[] ids = (String[]) rows.getArray(5).getArray();
             return Optional.of(new StoredBoard(
                     rows.getObject(1, LocalDate.class),
-                    rows.getLong(2),
+                    Identifier.parse(rows.getString(2)),
                     rows.getLong(3),
+                    rows.getLong(4),
                     Arrays.stream(ids).map(Identifier::parse).toList()));
         }
     }
