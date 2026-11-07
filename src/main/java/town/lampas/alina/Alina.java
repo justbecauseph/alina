@@ -4,6 +4,7 @@ import net.fabricmc.api.ModInitializer;
 import net.minecraft.resources.Identifier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import town.lampas.alina.achievement.AchievementModule;
 import town.lampas.alina.content.AlinaContent;
 import town.lampas.alina.criteria.AlinaTriggers;
 import town.lampas.alina.criteria.CriteriaModule;
@@ -32,5 +33,6 @@ public final class Alina implements ModInitializer {
         AlinaContent.init();
         SettlementModule.init();
         GuildModule.init();
+        AchievementModule.init();
     }
 }

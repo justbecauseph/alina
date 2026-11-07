@@ -127,7 +127,7 @@ public final class SettlementService {
      *
      * <p>A refused begin changes nothing: the proof is back where it was, the escrow is not written, and nothing is
      * saved. The caller must keep its own state, such as a commission's board slot, and try again later. A begin is
-     * refused when the player already has an operation with the same kind, subject and tier; when the escrow with the new
+     * refused when the player already has an operation of this world with the same kind, subject and tier; when the escrow with the new
      * operation would be over {@link #ESCROW_LIMIT_BYTES}; and when the removal or the encoding throws (the failure is
      * logged).
      *
@@ -138,8 +138,9 @@ public final class SettlementService {
         requireServerThread();
         List<PendingOperation> pending = read(player);
         for (PendingOperation operation : pending) {
-            if (operation.kind() == request.kind() && operation.subjectId().equals(request.subjectId())
-                    && operation.tier() == request.tier()) {
+            // An operation of another world is never applied here, and stays in the escrow for reconciliation: it does not refuse.
+            if (operation.worldId().equals(worldId) && operation.kind() == request.kind()
+                    && operation.subjectId().equals(request.subjectId()) && operation.tier() == request.tier()) {
                 return Optional.empty();
             }
         }

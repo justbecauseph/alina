@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "extensions": {
+    "alina:achievements": {
+      "tabs": {
+        "alina:sync_test/hall": {
+          "title": "The Hall",
+          "icon": { "id": "minecraft:writable_book" },
+          "background": "minecraft:block/spruce_planks"
+        }
+      },
+      "achievements": {
+        "alina:sync_test/greeter": {
+          "tab": "alina:sync_test/hall",
+          "title": "Greeter",
+          "description": "Greet someone.",
+          "icon": { "id": "minecraft:paper" },
+          "criteria": { "greet": { "trigger": "alina:manual", "conditions": { "key": "greet" } } }
+        },
+        "alina:sync_test/visitor": {
+          "tab": "alina:sync_test/hall",
+          "parent": "alina:sync_test/greeter",
+          "title": "Visitor",
+          "description": "Visit 37 times.",
+          "icon": { "id": "minecraft:compass" },
+          "frame": "goal",
+          "criteria": { "visit": { "trigger": "alina:manual", "conditions": { "key": "visit" }, "count": 37 } }
+        },
+        "alina:sync_test/bell": {
+          "tab": "alina:sync_test/hall",
+          "parent": "alina:sync_test/greeter",
+          "title": "Bell",
+          "description": "Ring the bell.",
+          "icon": { "id": "minecraft:bell" },
+          "criteria": { "ring": { "trigger": "alina:manual", "conditions": { "key": "ring" } } },
+          "tiers": [
+            { "count": 2, "title": "Bell I" },
+            { "count": 5, "title": "Bell II", "frame": "challenge" }
+          ]
+        },
+        "alina:sync_test/hermit": {
+          "tab": "alina:sync_test/hall",
+          "title": "Hermit",
+          "description": "Withheld until earned.",
+          "icon": { "id": "minecraft:ender_pearl" },
+          "hidden": true,
+          "criteria": { "hide": { "trigger": "alina:manual", "conditions": { "key": "hide" } } }
+        },
+        "alina:sync_test/recluse": {
+          "tab": "alina:sync_test/hall",
+          "title": "Recluse",
+          "description": "Found once, found again.",
+          "icon": { "id": "minecraft:ender_eye" },
+          "hidden": true,
+          "criteria": { "seek": { "trigger": "alina:manual", "conditions": { "key": "seek" } } },
+          "tiers": [ { "count": 1, "title": "Recluse I" }, { "count": 2, "title": "Recluse II" }, { "count": 3, "title": "Recluse III" } ]
+        },
+        "alina:sync_test/pair": {
+          "tab": "alina:sync_test/hall",
+          "title": "Pair",
+          "description": "Do both.",
+          "icon": { "id": "minecraft:stick" },
+          "criteria": {
+            "one": { "trigger": "alina:manual", "conditions": { "key": "one" } },
+            "two": { "trigger": "alina:manual", "conditions": { "key": "two" } }
+          },
+          "requirements": [ [ "one" ], [ "two" ] ]
+        }
+      }
+    }
+  }
+}

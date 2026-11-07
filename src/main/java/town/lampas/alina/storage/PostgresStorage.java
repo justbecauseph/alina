@@ -106,7 +106,9 @@ final class PostgresStorage implements AlinaStorage {
             VALUES (?, ?, ?, 1, ?, ?, ?)
             ON CONFLICT (character_id, achievement_id) DO UPDATE SET
                 tier = GREATEST(achievement.tier, EXCLUDED.tier), earn_count = achievement.earn_count + 1,
-                last_earned_at = EXCLUDED.last_earned_at, available_at = EXCLUDED.available_at,
+                last_earned_at = EXCLUDED.last_earned_at,
+                available_at = CASE WHEN achievement.tier > EXCLUDED.tier
+                    THEN achievement.available_at ELSE EXCLUDED.available_at END,
                 updated_at = EXCLUDED.updated_at
             """;
     private static final String DELETE_ACHIEVEMENT =
@@ -588,7 +590,10 @@ final class PostgresStorage implements AlinaStorage {
         }
     }
 
-    /** An earn. The tier keeps the highest, the count goes up by one, and the availability is the new earn's. */
+    /**
+     * An earn. The tier keeps the highest, the count goes up by one, and the availability is the earn's unless the stored tier
+     * is above the earn's, when the stored availability stays.
+     */
     private static void earn(Connection connection, Operation operation, OperationEffect.AchievementEarned earned)
             throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(EARN_ACHIEVEMENT)) {

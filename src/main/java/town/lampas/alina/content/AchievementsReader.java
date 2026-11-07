@@ -63,6 +63,7 @@ final class AchievementsReader {
         Map<Identifier, Achievement> achievements = new LinkedHashMap<>();
         Map<Identifier, String> claimed = new HashMap<>();
         Map<Identifier, Identifier> declaredTabs = new HashMap<>();
+        Set<Identifier> declaredHidden = new HashSet<>();
         for (Map.Entry<String, JsonElement> entry : achievementEntries.entrySet()) {
             Identifier id = Json.keyId(entry.getKey());
             if (id == null) {
@@ -71,11 +72,11 @@ final class AchievementsReader {
             }
             if (GuildReader.claim(claimed, id, entry.getKey(), "achievements", section)) {
                 readAchievement(id, entry.getValue(), where + ", achievement " + id, context, claimedTabs.keySet(),
-                        achievementIds, declaredTabs)
+                        achievementIds, declaredTabs, declaredHidden)
                         .ifPresent(achievement -> achievements.put(id, achievement));
             }
         }
-        checkParents(achievements, declaredTabs, where, context);
+        checkParents(achievements, declaredTabs, declaredHidden, where, context);
         checkAchievementReferences(achievements, achievementIds, where, context);
         return Optional.of(new AchievementsContent(tabs, achievements));
     }
@@ -130,7 +131,8 @@ final class AchievementsReader {
             ExtensionContext context,
             Set<Identifier> tabIds,
             Set<Identifier> achievementIds,
-            Map<Identifier, Identifier> declaredTabs) {
+            Map<Identifier, Identifier> declaredTabs,
+            Set<Identifier> declaredHidden) {
         Optional<Section> parsed = Section.of(value, where, context);
         if (parsed.isEmpty()) {
             return Optional.empty();
@@ -154,6 +156,10 @@ final class AchievementsReader {
         AdvancementType frame =
                 achievement.optional("frame", Json.codec(AdvancementType.CODEC, context.ops())).orElse(AdvancementType.TASK);
         boolean hidden = achievement.optional("hidden", Json::bool).orElse(false);
+        // Recorded before the early return below, so a parent that fails to parse still counts as hidden for its children.
+        if (hidden) {
+            declaredHidden.add(id);
+        }
         boolean announce = achievement.optional("announce", Json::bool).orElse(true);
         boolean toast = achievement.optional("toast", Json::bool).orElse(true);
 
@@ -290,10 +296,14 @@ final class AchievementsReader {
         return tiers;
     }
 
-    /** Every parent is in the same tab as its child, and following parents never loops. */
+    /**
+     * Every parent is in the same tab as its child, no parent is hidden (a hidden achievement is withheld, so its child
+     * would wait for a holder the client never gets), and following parents never loops.
+     */
     private static void checkParents(
             Map<Identifier, Achievement> achievements,
             Map<Identifier, Identifier> declaredTabs,
+            Set<Identifier> declaredHidden,
             String where,
             ExtensionContext context) {
         for (Achievement achievement : achievements.values()) {
@@ -302,6 +312,10 @@ final class AchievementsReader {
                 if (parentTab != null && !parentTab.equals(achievement.tab())) {
                     context.problem(where + ", achievement " + achievement.id(),
                             "parent '" + parent + "' is in tab " + parentTab + ", not " + achievement.tab());
+                }
+                if (declaredHidden.contains(parent)) {
+                    context.problem(where + ", achievement " + achievement.id(),
+                            "parent '" + parent + "' is hidden, and a hidden achievement cannot be a parent");
                 }
             });
             Set<Identifier> seen = new HashSet<>();

@@ -283,7 +283,11 @@
         "description": { "$ref": "#/$defs/text" },
         "icon": { "$ref": "#/$defs/icon" },
         "frame": { "$ref": "#/$defs/frame", "default": "task" },
-        "hidden": { "type": "boolean", "default": false },
+        "hidden": {
+          "type": "boolean",
+          "default": false,
+          "description": "Withheld from the player until earned once. A hidden achievement cannot be a parent."
+        },
         "announce": { "type": "boolean", "default": true },
         "toast": { "type": "boolean", "default": true },
         "criteria": {

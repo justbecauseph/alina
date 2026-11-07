@@ -28,5 +28,9 @@
   "alina.guild.status.progress": "%s: %s of %s",
   "alina.guild.status.settling": "%s: being settled",
   "alina.guild.status.cooldown": "%s: available in %s",
-  "alina.guild.status.completed": "%s: completed"
+  "alina.guild.status.completed": "%s: completed",
+  "alina.achievement.earned_once": "Earned once",
+  "alina.achievement.earned_times": "Earned %s times",
+  "alina.achievement.completed_once": "Completed once",
+  "alina.achievement.completed_times": "Completed %s times"
 }
