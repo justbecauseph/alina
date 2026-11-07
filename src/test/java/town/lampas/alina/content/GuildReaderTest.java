@@ -625,6 +625,19 @@ class GuildReaderTest {
     }
 
     @Test
+    void aBadSettingDoesNotHideTheProblemsOfTheBoards() {
+        // The zone is not a time zone, and the board misspells categories, so its commission belongs to no board.
+        String misspelt = "{ \"settings\": { \"reset\": { \"zone\": \"Mars/Olympus\" } }, \"commissions\": { " + ONE_COMMISSION
+                + " }, \"boards\": { \"alina:guild/a\": { \"graph\": \"alina:guild/hunters_board\", \"categoires\": [\"A\"] } } }";
+        assertEquals(List.of(
+                "extension alina:guild, settings, reset: zone 'Mars/Olympus' is not a time zone id such as Asia/Manila",
+                "extension alina:guild, board alina:guild/a: unknown key 'categoires'",
+                "extension alina:guild: commission alina:c belongs to no board; list it in a board's commissions or give its "
+                        + "category to a board"),
+                guild(misspelt).problems());
+    }
+
+    @Test
     void aSettingsReachOutsideTheRangeIsAProblemAndNotAnError() {
         assertEquals(List.of("extension alina:guild, settings: board_reach must be above 0 and at most 64"),
                 guild("{ \"settings\": { \"board_graph\": \"alina:guild/board\", \"board_reach\": 100 } }").problems());

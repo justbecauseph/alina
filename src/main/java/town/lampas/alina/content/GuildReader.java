@@ -89,14 +89,16 @@ final class GuildReader {
                     .ifPresent(commission -> commissions.put(id, commission));
         }
         checkTriggerReferences(commissions, declared(guild.entries("volumes")), claimed.keySet(), where, context);
+        // The boards are read even when the settings failed, so one validation lists every problem. They take the
+        // defaults of the settings then, which are valid values, so a board does not fail for a setting that is not its own.
+        GuildSettings values = settings.map(Settings::values).orElse(GuildSettings.DEFAULTS);
+        Optional<Map<Identifier, Board>> boards = boarded
+                ? readBoards(guild, where, context, values, commissions, claimed.keySet())
+                : settings.flatMap(Settings::implicitGraph).map(graph -> Map.of(GuildContent.DEFAULT_BOARD,
+                        GuildContent.implicitBoard(graph, values, commissions.keySet())));
         if (settings.isEmpty()) {
             return Optional.empty();
         }
-        GuildSettings values = settings.get().values();
-        Optional<Map<Identifier, Board>> boards = boarded
-                ? readBoards(guild, where, context, values, commissions, claimed.keySet())
-                : settings.get().implicitGraph().map(graph -> Map.of(GuildContent.DEFAULT_BOARD,
-                        GuildContent.implicitBoard(graph, values, commissions.keySet())));
         return boards.map(parsed -> new GuildContent(values, commissions, volumes, parsed));
     }
 
