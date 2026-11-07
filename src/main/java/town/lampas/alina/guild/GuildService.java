@@ -97,8 +97,12 @@ import town.lampas.haruhi.api.HaruhiServices;
  * complete, the service makes sure every board holds the board of the current board day: it loads the board's stored
  * draw, or draws one from the board's pool (its repeatables in rotation, that {@link GuildContent#boardOf} puts in the
  * board) with {@code BoardDraw}, seeded by the board's id, and stores it. A board with an empty pool is not stored. A
- * board the content no longer has is dropped. {@link #board(Identifier)} filters the stored ids to the repeatables of the
- * active content. A repeatable is accepted only when it is on today's draw of its own board; a feat need not be drawn.
+ * board the content no longer has is dropped. {@link #board(Identifier)} filters the stored ids to the repeatables that
+ * the active content's {@link GuildContent#boardOf} puts in this board, so a stored draw keeps no commission its pool no
+ * longer holds. A commission that an activation moves to another board leaves its old board's view and entries at once,
+ * and joins the new board at that board's next draw: the next board day, or the activation itself when the new board's
+ * pool was empty and is drawn again then. A repeatable is accepted only when it is on today's draw of its own board; a
+ * feat need not be drawn.
  *
  * <p><b>Content activation.</b> {@link #contentActivated} withdraws, for every loaded record, each active commission the
  * new content lacks (it is abandoned in storage and the player gets {@link GuildText#withdrawn}), stops all tracking and
@@ -110,7 +114,7 @@ import town.lampas.haruhi.api.HaruhiServices;
  * until an activation with a section withdraws it. A withdrawal whose storage write fails is written once more; if that
  * fails too, the next load withdraws the row. Each board whose draw came from an empty pool is drawn again at once when
  * the content changes, and each stored draw is kept, so a board the new content still has keeps its draw less the
- * commissions it removed.
+ * commissions its pool no longer holds.
  */
 public final class GuildService {
     /** Server ticks between progress write-behind flushes: 5 seconds. */
@@ -325,7 +329,8 @@ public final class GuildService {
 
     /**
      * Today's draw of the board, or empty while it loads, when the content has no such board, or while the draw is held
-     * for a day the service has not reached. Its commissions are the stored ids the active content still has as repeatables.
+     * for a day the service has not reached. Its commissions are the stored ids that are still repeatables of this board's
+     * pool in the active content.
      */
     public Optional<BoardView> board(Identifier board) {
         BoardState state = boards.get(board);
@@ -335,7 +340,7 @@ public final class GuildService {
         }
         HeldBoard held = state.held;
         List<Identifier> ids = held.ids().stream()
-                .filter(id -> isRepeatable(content, id))
+                .filter(id -> isRepeatableOf(content, board, id))
                 .toList();
         return Optional.of(new BoardView(board, held.date(), held.revisionId(), ids, held.stored()));
     }
@@ -1223,6 +1228,11 @@ public final class GuildService {
     private static boolean isRepeatable(GuildContent content, Identifier id) {
         Commission found = content.commissions().get(id);
         return found != null && found.kind() == Commission.Kind.REPEATABLE;
+    }
+
+    /** Whether the id is a repeatable that the active content puts in {@code board}'s pool. */
+    private static boolean isRepeatableOf(GuildContent content, Identifier board, Identifier id) {
+        return isRepeatable(content, id) && content.boardOf(id).map(Board::id).filter(board::equals).isPresent();
     }
 
     private static Optional<Refusal> refuse(Refusal.Reason reason, Component message) {

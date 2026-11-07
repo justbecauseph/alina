@@ -92,6 +92,8 @@ public final class GuildGameTests {
     private static final String BOARDS = "boards.json";
     /** The same content without quarry_1, which the quarry board then loses. */
     private static final String BOARDS_NEXT = "boards_next.json";
+    /** The same content with quarry_1 in category A: the quarry board loses it and the hunters' pool gains it. */
+    private static final String BOARDS_MOVED = "boards_moved.json";
     private static final Identifier HUNTERS = Alina.id("guild/hunters");
     private static final Identifier TOWN = Alina.id("guild/town");
     private static final Identifier QUARRY = Alina.id("guild/quarry");
@@ -101,8 +103,9 @@ public final class GuildGameTests {
     private static final Identifier DOCK_FEAT = Alina.id("guild_test/dock_feat");
     private static final Identifier QUARRY_1 = Alina.id("guild_test/quarry_1");
     private static final Identifier QUARRY_2 = Alina.id("guild_test/quarry_2");
-    /** The board day of {@link GuildRig#START}. */
+    /** The board day of {@link GuildRig#START}, and the one after it, which begins at 04:00 in Manila on that day. */
     private static final LocalDate BOARD_DAY = LocalDate.of(2026, 11, 5);
+    private static final LocalDate NEXT_DAY = LocalDate.of(2026, 11, 6);
     private static final ZoneId MANILA = ZoneId.of("Asia/Manila");
     /** The courier's cooldown: the content's default, PT20H. */
     private static final Duration COURIER_COOLDOWN = Duration.ofHours(20);
@@ -1457,8 +1460,10 @@ public final class GuildGameTests {
     }
 
     /**
-     * A stored draw per board: the quarry's draw loses the commission its pool lost in a mid-day activation, and the other
-     * boards keep theirs. A service restarted on the new content, with a new revision, serves the stored draws.
+     * A stored draw per board: a mid-day activation keeps the hunters' and the town's draws, and the quarry's draw loses
+     * quarry_1, which the new content removes from the bundle. The kept draws are checked with no tick after the
+     * activation, so a service that dropped them fails rather than passing once a reload has put them back. A service
+     * restarted on the new content, with a new revision, serves the stored draws.
      */
     @GameTest(maxTicks = 500)
     public void aStoredDrawPerBoardSurvivesARestartAndAMidDayActivation(GameTestHelper helper) {
@@ -1479,12 +1484,28 @@ public final class GuildGameTests {
                             List.of(QUARRY_1, QUARRY_2), "quarry draws both its repeatables");
                     hunterDraw.set(hunters.commissions());
                     townDraw.set(town.commissions());
-                    // A revision is activated mid-day, and the quarry's pool loses quarry_1.
-                    rig.useContent(BOARDS_NEXT);
-                    rig.service().contentActivated();
                     advance(helper, step, 1);
                 }
                 case 1 -> {
+                    // A revision is activated mid-day, and the quarry's pool loses quarry_1. No tick runs before the checks.
+                    rig.useContent(BOARDS_NEXT);
+                    rig.service().contentActivated();
+                    Optional<BoardView> hunters = rig.service().board(HUNTERS);
+                    helper.assertTrue(hunters.isPresent(), "the activation dropped the stored hunters draw");
+                    helper.assertValueEqual(hunters.get().commissions(), hunterDraw.get(),
+                            "the hunters draw changed in a mid-day activation");
+                    Optional<BoardView> town = rig.service().board(TOWN);
+                    helper.assertTrue(town.isPresent(), "the activation dropped the stored town draw");
+                    helper.assertValueEqual(town.get().commissions(), townDraw.get(),
+                            "the town draw changed in a mid-day activation");
+                    Optional<BoardView> quarry = rig.service().board(QUARRY);
+                    helper.assertTrue(quarry.isPresent(), "the activation dropped the stored quarry draw");
+                    helper.assertValueEqual(quarry.get().commissions(), List.of(QUARRY_2),
+                            "the quarry draw, less the commission its pool lost");
+                    helper.assertTrue(quarry.get().stored(), "the quarry draw was not kept as stored");
+                    advance(helper, step, 2);
+                }
+                case 2 -> {
                     helper.assertValueEqual(loadedBoard(helper, rig.service(), HUNTERS).commissions(), hunterDraw.get(),
                             "the hunters draw changed in a mid-day activation");
                     helper.assertValueEqual(loadedBoard(helper, rig.service(), TOWN).commissions(), townDraw.get(),
@@ -1495,7 +1516,7 @@ public final class GuildGameTests {
                     helper.assertTrue(quarry.stored(), "the quarry draw was not kept as stored");
                     // A restart on the new content, with a new revision, serves what storage holds.
                     restarted.set(rig.serviceOver(rig.storage(), rig::currentContent, () -> GuildRig.REVISION + 1));
-                    advance(helper, step, 2);
+                    advance(helper, step, 3);
                 }
                 default -> {
                     GuildService service = restarted.get();
@@ -1508,6 +1529,69 @@ public final class GuildGameTests {
                     helper.assertValueEqual(quarry.commissions(), List.of(QUARRY_2), "the quarry draw after the restart");
                     helper.assertValueEqual(quarry.revisionId(), GuildRig.REVISION, "the stored revision after the restart");
                     helper.assertTrue(quarry.stored(), "the restarted quarry draw was redrawn");
+                }
+            }
+        });
+    }
+
+    /**
+     * A repeatable that a mid-day activation moves to another board leaves its old board's draw and entries at once. The new
+     * board keeps its stored draw, which was made without the commission, so the commission is refused NOT_ON_BOARD for the
+     * rest of the day. On the next board day the new board draws again, and the commission is accepted only if that draw
+     * holds it. The quarry's draw holds both its repeatables, so quarry_1 is on the quarry's draw before the move.
+     */
+    @GameTest(maxTicks = 600)
+    public void aRepeatableMovedToAnotherBoardLeavesItsOldBoardAtOnce(GameTestHelper helper) {
+        GuildRig rig = GuildRig.create(helper, BOARDS);
+        ServerPlayer player = rig.joined();
+        AtomicReference<List<Identifier>> hunterDraw = new AtomicReference<>();
+        AtomicInteger step = new AtomicInteger();
+        helper.succeedWhen(() -> {
+            rig.tick();
+            helper.assertTrue(rig.service().view(player).isPresent(), "the record has not loaded");
+            switch (step.get()) {
+                case 0 -> {
+                    BoardView quarry = loadedBoard(helper, rig.service(), QUARRY);
+                    helper.assertValueEqual(quarry.commissions().stream().sorted().toList(),
+                            List.of(QUARRY_1, QUARRY_2), "quarry draws both its repeatables");
+                    hunterDraw.set(loadedBoard(helper, rig.service(), HUNTERS).commissions());
+                    helper.assertTrue(!hunterDraw.get().contains(QUARRY_1),
+                            "hunters drew quarry_1 before it was in their pool");
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    // quarry_1 moves to the hunters' pool. No tick runs before these checks.
+                    rig.useContent(BOARDS_MOVED);
+                    rig.service().contentActivated();
+                    Optional<BoardView> quarry = rig.service().board(QUARRY);
+                    helper.assertTrue(quarry.isPresent(), "the move dropped the stored quarry draw");
+                    helper.assertValueEqual(quarry.get().commissions(), List.of(QUARRY_2), "the quarry draw after the move");
+                    helper.assertTrue(!entriesOf(helper, rig, player, QUARRY).contains(QUARRY_1),
+                            "the quarry entries list quarry_1 after the move");
+                    Optional<BoardView> hunters = rig.service().board(HUNTERS);
+                    helper.assertTrue(hunters.isPresent(), "the move dropped the stored hunters draw");
+                    helper.assertValueEqual(hunters.get().commissions(), hunterDraw.get(), "the hunters draw changed in the move");
+                    helper.assertTrue(!entriesOf(helper, rig, player, HUNTERS).contains(QUARRY_1),
+                            "the hunters entries list quarry_1 before the hunters' next draw");
+                    assertReason(helper, rig.service().checkAccept(player, QUARRY_1), Refusal.Reason.NOT_ON_BOARD,
+                            "quarry_1 after the move");
+                    // The clock passes the 04:00 reset in Manila, so the next tick starts the next board day.
+                    rig.clock().advance(Duration.ofHours(20));
+                    advance(helper, step, 2);
+                }
+                default -> {
+                    BoardView hunters = loadedBoard(helper, rig.service(), HUNTERS);
+                    helper.assertValueEqual(hunters.date(), NEXT_DAY, "the hunters draw of the next board day");
+                    helper.assertValueEqual(loadedBoard(helper, rig.service(), QUARRY).commissions(), List.of(QUARRY_2),
+                            "the quarry draw of the next board day");
+                    Optional<Refusal> refusal = rig.service().checkAccept(player, QUARRY_1);
+                    if (hunters.commissions().contains(QUARRY_1)) {
+                        helper.assertTrue(refusal.isEmpty(),
+                                "quarry_1 is on the next day's hunters draw, but was refused: " + reasonOf(refusal));
+                    } else {
+                        assertReason(helper, refusal, Refusal.Reason.NOT_ON_BOARD,
+                                "quarry_1 is not on the next day's draw");
+                    }
                 }
             }
         });
@@ -1599,6 +1683,7 @@ public final class GuildGameTests {
     @GameTest(maxTicks = 300)
     public void aBoardWithAnEmptyPoolIsUnstoredAndEmptyWhileTheOthersStore(GameTestHelper helper) {
         GuildRig rig = GuildRig.create(helper, BOARDS);
+        AtomicReference<List<Identifier>> hunterDraw = new AtomicReference<>();
         AtomicInteger step = new AtomicInteger();
         helper.succeedWhen(() -> {
             rig.tick();
@@ -1609,12 +1694,23 @@ public final class GuildGameTests {
                             "the dock is not an empty, unstored board: " + dock.commissions());
                     helper.assertTrue(rig.storage().loadBoard(BOARD_DAY, DOCK).join().isEmpty(),
                             "the dock's empty draw was stored");
-                    helper.assertTrue(loadedBoard(helper, rig.service(), HUNTERS).stored(), "hunters was not stored");
-                    // The same content is activated again: the dock is present at once, drawn again, and still empty.
+                    BoardView hunters = loadedBoard(helper, rig.service(), HUNTERS);
+                    helper.assertTrue(hunters.stored(), "hunters was not stored");
+                    hunterDraw.set(hunters.commissions());
+                    advance(helper, step, 1);
+                }
+                case 1 -> {
+                    // The same content is activated again: the dock is present at once, drawn again, and still empty. The
+                    // hunters' stored draw is present at once too, unchanged, so no tick may be what restores it.
                     rig.useContent(BOARDS);
                     rig.service().contentActivated();
                     helper.assertTrue(rig.service().board(DOCK).isPresent(), "the dock is missing right after an activation");
-                    advance(helper, step, 1);
+                    Optional<BoardView> kept = rig.service().board(HUNTERS);
+                    helper.assertTrue(kept.isPresent(), "the activation dropped the stored hunters draw");
+                    helper.assertValueEqual(kept.get().commissions(), hunterDraw.get(),
+                            "the hunters draw changed in the activation");
+                    helper.assertTrue(kept.get().stored(), "the hunters draw is no longer stored after the activation");
+                    advance(helper, step, 2);
                 }
                 default -> {
                     BoardView dock = loadedBoard(helper, rig.service(), DOCK);
