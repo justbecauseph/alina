@@ -29,5 +29,12 @@
     "java": ">=25",
     "fabric-api": "*",
     "haruhi": ">=0.1.0"
+  },
+  "suggests": {
+    "farmersdelight": "*",
+    "gateways": "*",
+    "placebo": "*",
+    "architectury": "*",
+    "apothic_attributes": "*"
   }
 }

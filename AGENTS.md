@@ -30,6 +30,35 @@ so on) refer to that plan.
 - Java 25 and Minecraft 26.2 names (`Identifier`, not `ResourceLocation`). When unsure of a 26.2 API, check the
   decompiled jar with `javap -cp ~/.gradle/caches/fabric-loom/26.2/minecraft-merged.jar <class>`, not memory.
 
+### Dev runtime with the Lampas optional mods
+
+`build.gradle` puts the optional dependencies named in `fabric.mod.json` `suggests` on the dev classpath, for `runClient`
+and the GameTests. They are `localRuntime`, never published.
+
+- Farmer's Delight 3.6.30 (`maven.modrinth:7vxePowz:J6sAZl6u`) and Architectury 21.1.12
+  (`maven.modrinth:lhGA9TYQ:ohb3PBGZ`) come from Modrinth's Maven repository, so a build needs network access to it.
+- Gateways to Eternity 7.1.0, Placebo 11.0.2 and Apothic Attributes 4.0.7 are not on Modrinth. They are read from
+  `../lampas-pipeline/pack/custom` (git-ignored there). Set `-Palina.packDir=<folder>` to read them elsewhere. Without
+  the folder all three are left out, and the Gateways GameTests skip.
+- GeckoLib 5.5.5 (`geckolib_version`) is `localRuntime` for haruhi's client renderer. The server does not load it.
+- Architectury needs Fabric API 0.160.0 and Fabric Loader 0.19.5, so `gradle.properties` pins the versions the Lampas
+  pack runs: Fabric API 0.161.0+26.2 and Loader 0.20.1.
+
+Tests that need these mods (`SpikeGameTests`):
+- S5, the Gateways trigger: `s5GatewayIdsAreTheNineOfTheJar`, `s5FinishGatewayIsARegisteredCriterionTrigger`,
+  `s5F3ProofParsesAndNamesAGatewayTheRegistryHolds` and `s5FinishGatewayReachesTheWatcherOfTheGatewayItNames` need
+  `gateways`.
+- D3, Farmer's Delight's dishes: `d3ProofIsMetByTheServedDishesAndNotByAFeastBlockOrAnotherDish` needs
+  `farmersdelight`.
+
+Each of these checks `FabricLoader.isModLoaded` first. Without its mod it logs `is skipped` and succeeds, so `build`
+passes without the pack. A skipped test counts as a pass in the report, so look for `is skipped` in the log. F2,
+`f2ListIsTheCreeperDiscsNoChestTableDrops`, needs no mod.
+
+The GameTest runner collects `fabric-gametest` entrypoints from every mod. While Apothic Attributes is on the dev
+classpath, `runGameTest` also runs its 45 GameTests (`apothic_attributes:` in the report), so a failure there fails
+this build.
+
 ## Packages
 
 | Package under `town.lampas.alina` | Delivers |

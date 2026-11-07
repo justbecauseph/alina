@@ -17,6 +17,22 @@ repositories {
 		url = 'https://justbecauseph.github.io/maven'
 		content { includeGroup 'town.lampas' }
 	}
+	// Modrinth's Maven repository: the dev runtime's Farmer's Delight, Architectury and GeckoLib (dependencies below).
+	maven {
+		url = 'https://api.modrinth.com/maven'
+		content { includeGroup 'maven.modrinth' }
+	}
+}
+
+// The Lampas pack's jars that are not on Modrinth: Gateways to Eternity (F3), and the two libraries it needs, Placebo
+// and Apothic Attributes. They are read from the pack folder of a lampas-pipeline checkout beside this one; the folder is
+// git-ignored there. Without the folder all three are left out, and the GameTests that need them skip (AGENTS.md).
+def packCustomDir = file(providers.gradleProperty('alina.packDir').getOrElse('../lampas-pipeline/pack/custom'))
+def packCustomJars = ['GatewaysToEternity-26.2-7.1.0.jar', 'Placebo-26.2-11.0.2.jar', 'ApothicAttributes-26.2-4.0.7.jar']
+def packCustomFound = packCustomJars.collect { new File(packCustomDir, it) }.findAll { it.isFile() }
+if (packCustomFound.size() > 0 && packCustomFound.size() != packCustomJars.size()) {
+	logger.warn("Only ${packCustomFound.size()} of ${packCustomJars.size()} Lampas pack jars are in ${packCustomDir}; "
+			+ "the Gateways GameTests will skip. Missing: ${packCustomJars - packCustomFound*.name}")
 }
 
 dependencies {
@@ -27,6 +43,17 @@ dependencies {
 	// haruhi: dialogue, NPCs and the content bundle Alina's extensions live in. A ../haruhi checkout replaces the
 	// published jar (settings.gradle).
 	implementation "town.lampas:haruhi:${project.haruhi_version}"
+
+	// The optional dependencies named in fabric.mod.json "suggests", for the dev client and the GameTests only. localRuntime
+	// is never published, unlike runtimeOnly. D3 needs Farmer's Delight; F3 needs Gateways to Eternity and its libraries.
+	// Farmer's Delight is the pack's 26.2-3.6.30 release. Architectury is what the other three need.
+	localRuntime "maven.modrinth:7vxePowz:J6sAZl6u"
+	localRuntime "maven.modrinth:lhGA9TYQ:ohb3PBGZ"
+	if (packCustomFound.size() == packCustomJars.size()) {
+		localRuntime files(packCustomFound)
+	}
+	// haruhi's client renderer uses GeckoLib classes, so the dev client (runClient) needs it. The server does not load it.
+	localRuntime "maven.modrinth:geckolib:${project.geckolib_version}"
 
 	// PostgreSQL storage adapter, nested in the jar.
 	implementation "org.postgresql:postgresql:${project.postgresql_version}"
