@@ -1,0 +1,88 @@
+name: Release
+
+# Builds Alina and attaches its jars to a GitHub release v<mod_version> when the release is published, or by hand for
+# such a tag whose run failed. Modelled on haruhi's release.yml, without the Maven step: no project depends on Alina
+# through Maven, and the Lampas pack takes the jar from the release (lampas-pipeline `lampasctl add <jar>`).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Release tag to build and attach the jars to, v<mod_version> (for a release whose run failed)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'release' && github.event.release.tag_name || inputs.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and attach the jars
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_REF: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.ref }}
+
+    steps:
+      - name: Checkout alina
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          fetch-depth: 0
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v5.7.0
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6.3.0
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      # Both triggers build only a tag v<mod_version>, so a release never carries a jar built from untagged code.
+      - name: Verify release version
+        shell: bash
+        run: |
+          MOD_VERSION="$(grep '^mod_version=' gradle.properties | cut -d= -f2)"
+          TAG="$(git describe --exact-match --tags HEAD 2>/dev/null || true)"
+          echo "Source ref:  $SOURCE_REF"
+          echo "Tag at HEAD: ${TAG:-none}"
+          echo "mod_version: $MOD_VERSION"
+          if [ "$SOURCE_REF" != "v$MOD_VERSION" ] || [ "$TAG" != "v$MOD_VERSION" ]; then
+            echo "::error::Only the tag v$MOD_VERSION can be released; $SOURCE_REF is not it"
+            exit 1
+          fi
+
+      # Unit tests (with Testcontainers PostgreSQL; the runner has Docker) and the server GameTests, against
+      # haruhi_version from the JustBecause Maven repository, since no haruhi checkout sits beside this one. The runner
+      # has no lampas-pipeline pack folder either, so the Gateways and Lampas bundle GameTests log "is skipped" here;
+      # run them locally before tagging (AGENTS.md).
+      - name: Build and test
+        run: ./gradlew clean build
+
+      # An attached jar is never replaced: the pack may already have taken it. A manual rerun skips the jars that are
+      # there.
+      - name: Attach jars to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          MOD_VERSION="$(grep '^mod_version=' gradle.properties | cut -d= -f2)"
+          ATTACHED="$(gh release view "$SOURCE_REF" --json assets --jq '.assets[].name')"
+          for FILE in "build/libs/alina-$MOD_VERSION.jar" "build/libs/alina-$MOD_VERSION-sources.jar"; do
+            NAME="$(basename "$FILE")"
+            if grep -qxF "$NAME" <<< "$ATTACHED"; then
+              echo "$NAME is already attached; skipping."
+              continue
+            fi
+            gh release upload "$SOURCE_REF" "$FILE"
+          done

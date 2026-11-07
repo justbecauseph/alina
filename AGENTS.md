@@ -29,6 +29,11 @@ so on) refer to that plan.
 - GameTests that activate content wait until `HaruhiServices.content().isStartupComplete()` first.
 - Java 25 and Minecraft 26.2 names (`Identifier`, not `ResourceLocation`). When unsure of a 26.2 API, check the
   decompiled jar with `javap -cp ~/.gradle/caches/fabric-loom/26.2/minecraft-merged.jar <class>`, not memory.
+- **Releasing:** `.github/workflows/release.yml` runs `./gradlew clean build` and attaches `alina-<mod_version>.jar`
+  and the sources jar to a GitHub release `v<mod_version>` when it is published. It publishes nothing to Maven. The
+  runner has no `../lampas-pipeline/pack/custom`, so the Gateways and Lampas bundle GameTests skip there: run
+  `./gradlew clean build -Palina.publishedHaruhi=true` locally, with the pack folder, before tagging. An attached jar
+  is never replaced, so bump `mod_version` for every release.
 
 ### Dev runtime with the Lampas optional mods
 
