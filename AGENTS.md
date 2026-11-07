@@ -37,9 +37,11 @@ and the GameTests. They are `localRuntime`, never published.
 
 - Farmer's Delight 3.6.30 (`maven.modrinth:7vxePowz:J6sAZl6u`) and Architectury 21.1.12
   (`maven.modrinth:lhGA9TYQ:ohb3PBGZ`) come from Modrinth's Maven repository, so a build needs network access to it.
-- Gateways to Eternity 7.1.0, Placebo 11.0.2 and Apothic Attributes 4.0.7 are not on Modrinth. They are read from
-  `../lampas-pipeline/pack/custom` (git-ignored there). Set `-Palina.packDir=<folder>` to read them elsewhere. Without
-  the folder all three are left out, and the Gateways GameTests skip.
+- Gateways to Eternity, Placebo and Apothic Attributes are not on Modrinth. They are read from
+  `../lampas-pipeline/pack/custom` (git-ignored there) by name prefix (`GatewaysToEternity-26.2-`, `Placebo-26.2-`,
+  `ApothicAttributes-26.2-`), so a version the pack bumps is still found. Set `-Palina.packDir=<folder>` to read them
+  elsewhere. When one is missing, all three are left out, a warning names the missing prefix, and the Gateways tests
+  skip.
 - GeckoLib 5.5.5 (`geckolib_version`) is `localRuntime` for haruhi's client renderer. The server does not load it.
 - Architectury needs Fabric API 0.160.0 and Fabric Loader 0.19.5, so `gradle.properties` pins the versions the Lampas
   pack runs: Fabric API 0.161.0+26.2 and Loader 0.20.1.
@@ -50,6 +52,10 @@ Tests that need these mods (`SpikeGameTests`):
   `gateways`.
 - D3, Farmer's Delight's dishes: `d3ProofIsMetByTheServedDishesAndNotByAFeastBlockOrAnotherDish` needs
   `farmersdelight`.
+- The Lampas bundle (`LampasContentGameTests`): `lampasBundleParsesWithNoProblems`,
+  `lampasBundleHoldsEveryCatalogCommissionExceptE3AndF1`, `everyLampasCommissionBelongsToExactlyOneBoard` and
+  `everyLampasAchievementCriterionNamingACommissionNamesOneOfItsCommissions` need both mods, because D3 and F3 name
+  their items and trigger.
 
 Each of these checks `FabricLoader.isModLoaded` first. Without its mod it logs `is skipped` and succeeds, so `build`
 passes without the pack. A skipped test counts as a pass in the report, so look for `is skipped` in the log. F2,
@@ -305,3 +311,25 @@ The achievement service (ALINA-PLAN §9) is `AchievementModule.service()` on a r
   the normal earn path, reward included) and `revoke <player> <achievement> [tier]` (no reward taken back).
 - **Seeing it in a client** (the tabs, the `x/y` text and the toasts) needs `./gradlew runClient`; GameTests check
   the packets the server sends.
+
+## Lampas content
+
+`content/lampas.bundle.json` is the Lampas bundle: the Receptionist, one graph per board, the `alina:guild` section
+(settings, the `lampas:guild/daily` and `lampas:guild/feats` boards, 21 catalog commissions) and a small
+`alina:achievements` tab. Deploy it with `/haruhi content import` and `activate` (copy it to `config/haruhi/bundles/`
+first). haruhi activates one revision for the whole server, so this bundle holds every NPC and graph the Lampas server
+uses. The reward tables it names are `alina:rewards/guild/<code>`, in this jar.
+
+It is a first pass. The JSON format has no comments, so its placeholders are listed here and in ALINA-PLAN §14:
+- the `lampas` id namespace;
+- kinds: criterion proofs are feats (A5, B5, E1, E2, F3), item proofs repeatables;
+- rewards: one emerald per commission, reputation 1 for a repeatable and 3 for a feat;
+- settings: the defaults;
+- boards: every repeatable on the Daily Board, every feat on the Feats Board;
+- the Receptionist: name, skin (Steve), default model and every line;
+- the achievements;
+- F2 lists the ten creeper-drop discs no vanilla chest table holds;
+- F3 names `gateways:overworldian_nights`, since the catalog names no gateway.
+
+E3 and F1 are left out until builders give their coordinates. `LampasBundleSchemaTest` checks the file against the
+schemas, and `LampasContentGameTests` parses it on a server with the mods.
