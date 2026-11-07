@@ -17,6 +17,31 @@ repositories {
 		url = 'https://justbecauseph.github.io/maven'
 		content { includeGroup 'town.lampas' }
 	}
+	// Modrinth's Maven repository: the dev runtime's Farmer's Delight, Architectury and GeckoLib (dependencies below).
+	maven {
+		url = 'https://api.modrinth.com/maven'
+		content { includeGroup 'maven.modrinth' }
+	}
+}
+
+// The Lampas pack's jars that are not on Modrinth: Gateways to Eternity (F3), and the two libraries it needs, Placebo
+// and Apothic Attributes. They are read from the pack folder of a lampas-pipeline checkout beside this one; the folder is
+// git-ignored there. Without the folder all three are left out, and the GameTests that need them skip (AGENTS.md).
+def packCustomDir = file(providers.gradleProperty('alina.packDir').getOrElse('../lampas-pipeline/pack/custom'))
+// Found by name prefix, so a version the pack bumps is still picked up; with several versions the last by name is used.
+def packCustomPrefixes = ['GatewaysToEternity-26.2-', 'Placebo-26.2-', 'ApothicAttributes-26.2-']
+def packCustomMatches = packCustomPrefixes.collectEntries { prefix ->
+	[(prefix): (packCustomDir.listFiles()?.findAll { it.isFile() && it.name.startsWith(prefix) && it.name.endsWith('.jar') }
+			?.sort { it.name } ?: [])]
+}
+def packCustomMissing = packCustomMatches.findAll { it.value.isEmpty() }.keySet()
+def packCustomFound = packCustomMissing.isEmpty() ? packCustomMatches.values().collect { it.last() } : []
+if (packCustomDir.isDirectory() && !packCustomMissing.isEmpty()) {
+	logger.warn("Lampas pack jars missing from ${packCustomDir}: ${packCustomMissing.collect { it + '*.jar' }}; "
+			+ "the Gateways GameTests and the Lampas bundle checks will skip")
+}
+packCustomMatches.findAll { it.value.size() > 1 }.each { prefix, jars ->
+	logger.warn("Several ${prefix}*.jar in ${packCustomDir}; using ${jars.last().name}")
 }
 
 dependencies {
@@ -27,6 +52,17 @@ dependencies {
 	// haruhi: dialogue, NPCs and the content bundle Alina's extensions live in. A ../haruhi checkout replaces the
 	// published jar (settings.gradle).
 	implementation "town.lampas:haruhi:${project.haruhi_version}"
+
+	// The optional dependencies named in fabric.mod.json "suggests", for the dev client and the GameTests only. localRuntime
+	// is never published, unlike runtimeOnly. D3 needs Farmer's Delight; F3 needs Gateways to Eternity and its libraries.
+	// Farmer's Delight is the pack's 26.2-3.6.30 release. Architectury is what the other three need.
+	localRuntime "maven.modrinth:7vxePowz:J6sAZl6u"
+	localRuntime "maven.modrinth:lhGA9TYQ:ohb3PBGZ"
+	if (!packCustomFound.isEmpty()) {
+		localRuntime files(packCustomFound)
+	}
+	// haruhi's client renderer uses GeckoLib classes, so the dev client (runClient) needs it. The server does not load it.
+	localRuntime "maven.modrinth:geckolib:${project.geckolib_version}"
 
 	// PostgreSQL storage adapter, nested in the jar.
 	implementation "org.postgresql:postgresql:${project.postgresql_version}"
@@ -54,9 +90,12 @@ fabricApi {
 }
 
 def gameTestReportFile = layout.buildDirectory.file('test-results/gameTest/TEST-alina-gametest.xml')
+// LampasContentGameTests reads content/lampas.bundle.json from the project directory; the game runs in run/.
+def projectDirPath = layout.projectDirectory.asFile.absolutePath
 
 tasks.named('runGameTest') {
 	systemProperty 'fabric-api.gametest.report-file', gameTestReportFile.get().asFile.absolutePath
+	systemProperty 'alina.projectDir', projectDirPath
 	doFirst {
 		gameTestReportFile.get().asFile.parentFile.mkdirs()
 	}

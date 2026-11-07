@@ -16,7 +16,9 @@
       "town.lampas.alina.gametest.GuildGameTests",
       "town.lampas.alina.gametest.GuildDialogueGameTests",
       "town.lampas.alina.gametest.AchievementGameTests",
-      "town.lampas.alina.gametest.AdvancementSyncGameTests"
+      "town.lampas.alina.gametest.AdvancementSyncGameTests",
+      "town.lampas.alina.gametest.SpikeGameTests",
+      "town.lampas.alina.gametest.LampasContentGameTests"
     ]
   },
   "depends": {
