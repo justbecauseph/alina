@@ -2005,8 +2005,13 @@ public final class AchievementGameTests {
                     helper.assertValueEqual(storedTier(rig, player, CLIMBER), 3, "the last tier in storage");
                     armed.set(true);
                     CompletableFuture<Optional<String>> started = rig.service().revoke(player, CLIMBER, OptionalInt.of(2));
-                    helper.assertTrue(!started.isDone(), "the revoke was refused, tried again: "
-                            + (started.isDone() ? started.join() : ""));
+                    // A refusal completes at once, before any write, so the armed failure has not fired. An accepted revoke
+                    // can complete at once too: the injected failure is returned already failed, so the revoke's writes are
+                    // done as soon as the count write answers, and when that is before the revoke attaches its completion,
+                    // the completion runs on this thread before revoke returns.
+                    boolean refused = started.isDone() && !fired.get();
+                    helper.assertTrue(!refused, "the revoke was refused, tried again: "
+                            + (refused && !started.isCompletedExceptionally() ? started.join() : ""));
                     revoke.set(started);
                     advance(helper, step, 4);
                 }

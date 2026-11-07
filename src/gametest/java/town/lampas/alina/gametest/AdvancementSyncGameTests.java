@@ -516,6 +516,12 @@ public final class AdvancementSyncGameTests {
      * The first packet after a join goes through the server's own mixin and module. The hold is engaged on purpose: the
      * first flush is run right after the join, before the record can have loaded, so vanilla's packet must be held. The
      * reset then comes after the record loads, and must carry vanilla's holders and Alina's holders with their progress.
+     *
+     * <p>Only the JOIN handler starts the load. Fabric fires JOIN inside {@code placeNewPlayer} before the player is in the
+     * server's list, so a load that has answered by then is held until the player is online, and a later answer reaches
+     * the server thread as a task, after this step. The record therefore cannot have loaded at the first flush. A second
+     * {@code join} here, with the player in the list, could load the record before it returned: a storage future that is
+     * already complete runs its completion on the server thread at once, and {@code server.execute} runs it inline there.
      */
     @GameTest(maxTicks = 400, environment = "alina:sync_join")
     public void aJoiningPlayersFirstResetCarriesVanillasHoldersAndTheAlinaHoldersWithTheirProgress(GameTestHelper helper) {
@@ -529,10 +535,6 @@ public final class AdvancementSyncGameTests {
                 .thenExecute(() -> {
                     Joined join = joinThroughTheServer(helper);
                     joined.set(join);
-                    // The JOIN handler's load may complete before the player is in the server's list, and a refused load
-                    // is retried only 100 ticks later, the length of the hold. Starting the load again now that the player
-                    // is in the list makes the record load within a few ticks, so the hold is not left to that race.
-                    AchievementModule.service().join(join.player());
                     helper.assertTrue(AchievementModule.service().view(join.player()).isEmpty(),
                             "the record loaded before the first flush, so the hold is not exercised");
                     join.player().getAdvancements().flushDirty(join.player(), true);
