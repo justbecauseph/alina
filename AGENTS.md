@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Alina is a Fabric 26.2 mod on [haruhi](https://github.com/justbecauseph/haruhi) that runs the Maraha Guild (daily
+Alina is a Fabric 26.2 mod on [Haruhi](https://github.com/justbecauseph/haruhi) that runs the Maraha Guild (daily
 commission board, active cap, cooldowns, proofs, crash-safe turn-ins, rewards and reputation) and a configurable
 achievement system shown in the vanilla advancement screen. Mod id `alina`, package `town.lampas.alina`, licence
 MPL-2.0.
@@ -18,12 +18,12 @@ so on) refer to that plan.
 ```
 
 - Alina depends on `town.lampas:haruhi` from the JustBecause Maven repository
-  (`https://justbecauseph.github.io/maven`, the GitHub Pages site of `justbecauseph/maven`), where haruhi's release
-  workflow publishes it. When a haruhi checkout sits beside this one, `settings.gradle` includes it, so Gradle builds
+  (`https://justbecauseph.github.io/maven`, the GitHub Pages site of `justbecauseph/maven`), where Haruhi's release
+  workflow publishes it. When a Haruhi checkout sits beside this one, `settings.gradle` includes it, so Gradle builds
   against the checkout instead; pass `-Palina.publishedHaruhi=true` to use the published jar anyway. Until
-  `haruhi_version` is released there, the build needs the checkout. Changes Alina needs in haruhi are made in that
+  `haruhi_version` is released there, the build needs the checkout. Changes Alina needs in Haruhi are made in that
   repository, released there, and then `haruhi_version` in `gradle.properties` is raised.
-- `AlinaSchemaTest` reads haruhi's bundle schema from the haruhi jar (`haruhi/bundle.schema.json`).
+- `AlinaSchemaTest` reads Haruhi's bundle schema from the Haruhi jar (`haruhi/bundle.schema.json`).
 - Testcontainers tests need Docker. Annotate them `@Testcontainers(disabledWithoutDocker = true)` so `build` still
   passes without Docker, and say in your report when they were skipped.
 - GameTests that activate content wait until `HaruhiServices.content().isStartupComplete()` first.
@@ -42,7 +42,7 @@ and the GameTests. They are `localRuntime`, never published.
   `ApothicAttributes-26.2-`), so a version the pack bumps is still found. Set `-Palina.packDir=<folder>` to read them
   elsewhere. When one is missing, all three are left out, a warning names the missing prefix, and the Gateways tests
   skip.
-- GeckoLib 5.5.5 (`geckolib_version`) is `localRuntime` for haruhi's client renderer. The server does not load it.
+- GeckoLib 5.5.5 (`geckolib_version`) is `localRuntime` for Haruhi's client renderer. The server does not load it.
 - Architectury needs Fabric API 0.160.0 and Fabric Loader 0.19.5, so `gradle.properties` pins the versions the Lampas
   pack runs: Fabric API 0.161.0+26.2 and Loader 0.20.1.
 
@@ -74,14 +74,14 @@ this build.
 | `content` | the `alina:guild` and `alina:achievements` bundle extensions: records, readers, validation, `AlinaContent` |
 | `criteria` | `CriterionWatchers`: watches one player's criterion trigger events, indexed by trigger and then player; `CriteriaModule` closes a player's watches on leave |
 | `settlement` | `SettlementService` (escrow attachment, verified player-data saves, recovery, world id, reconciliation), `SettlementModule` (the attachment, the service's lifecycle and tick), `SettlementTriggers` (the reputation and commission triggers, attached to the service's listeners by `SettlementModule`) |
-| `guild` | `GuildService` (each online character's record, the daily board, accept, abandon, turn-in, criterion and descent proof tracking), `GuildModule` (its lifecycle and events), `GuildText` (player-facing text); `guild.board` (board days and the draw), `guild.proof` (the item proof planner), `guild.dialogue` (haruhi conditions, actions and providers), `guild.block` (the Notice Board), `guild.command` (`/alina guild`) |
+| `guild` | `GuildService` (each online character's record, the daily board, accept, abandon, turn-in, criterion and descent proof tracking), `GuildModule` (its lifecycle and events), `GuildText` (player-facing text); `guild.board` (board days and the draw), `guild.proof` (the item proof planner), `guild.dialogue` (Haruhi conditions, actions and providers), `guild.block` (the Notice Board), `guild.command` (`/alina guild`) |
 | `achievement` | `AchievementService` (each online character's achievement record, counting, tiers, repeat cycles, earns), `AdvancementSync` (Alina achievements in the vanilla advancement screen), `AchievementModule` (their lifecycle and events), the `alina:achievement` condition and `/alina achievement` |
 | `mixin` | `SimpleCriterionTriggerMixin`: hands every simple criterion trigger event to the watchers, before vanilla's early return for players with no unfinished advancement on it; `PlayerStorageAccess`: the server's `playerDataStorage`, for settlement's saves; `PlayerAdvancementsMixin`: holds a join's first advancement packet for the achievement record and adds Alina's holders to every reset packet |
 | `client` | `AlinaClient` entrypoint |
 
 Initialisation, in `Alina.onInitialize`: storage, criteria, content, settlement, guild, achievement (§5). Criterion
 trigger types register before content, because content parses criteria through `BuiltInRegistries.TRIGGER_TYPES`.
-haruhi's services are read from server events onward, never during init.
+Haruhi's services are read from server events onward, never during init.
 
 ## Rules
 
@@ -93,9 +93,9 @@ haruhi's services are read from server events onward, never during init.
   step, so the save cannot be left to a background thread.
 - **Player-facing text** is translatable with an English fallback (`GuildText`), with its keys in
   `assets/alina/lang/en_us.json`. Staff command feedback is `Component.literal`.
-- **The server checks again whatever the client sends.** The client sends only haruhi's session id, node id and choice
+- **The server checks again whatever the client sends.** The client sends only Haruhi's session id, node id and choice
   index.
-- **Content follows haruhi's bundle rules:** snake_case keys, unknown keys are errors at every level, ids are
+- **Content follows Haruhi's bundle rules:** snake_case keys, unknown keys are errors at every level, ids are
   `namespace:path`, text fields are text components, and every problem is reported in one pass through the extension
   context.
 - **`docs/alina.schema.json` changes with the content format.** `AlinaSchemaTest` fails when it names different keys
@@ -114,7 +114,7 @@ takes `volume` (an id), fired as `trigger(player, volume)`. `alina:achievement_e
 
 ## Content
 
-Two sections under the haruhi bundle's `extensions` object. The format, with examples, is in the plan's §6;
+Two sections under the Haruhi bundle's `extensions` object. The format, with examples, is in the plan's §6;
 `GuildReaderTest.EXAMPLE` and `AchievementsReaderTest.EXAMPLE` hold the examples the tests check.
 
 - `alina:guild`: `settings` (required; `board_graph` required and must be a graph in the bundle), `commissions`,
@@ -138,7 +138,7 @@ Two sections under the haruhi bundle's `extensions` object. The format, with exa
 - Ids inside Alina trigger conditions are checked within their own extension (`TriggerReferences`): a commission
   proof's `volume` and `commission`, and an achievement criterion's `achievement`. A commission or volume named by an
   achievement criterion is not checked, because it lives in `alina:guild`, which the achievements parser cannot see;
-  that needs haruhi to let an extension read the extensions parsed before it.
+  that needs Haruhi to let an extension read the extensions parsed before it.
 
 ## Settlement
 
@@ -218,7 +218,7 @@ The Guild service (ALINA-PLAN §8) is `GuildModule.service()` on a running serve
   result and when the reward is delivered.
 - **Boards.** The `alina:guild` section's optional `boards` map gives several notice boards, each with its own graph,
   size, reach and pool (`categories` and `commissions`); every commission belongs to exactly one board. Without
-  `boards` there is one implicit board, `alina:board`, with `settings.board_graph`. Once haruhi's startup activation is
+  `boards` there is one implicit board, `alina:board`, with `settings.board_graph`. Once Haruhi's startup activation is
   complete, the service holds each board's draw of the current board day: the stored one (keyed by date and board), or
   one drawn from that board's repeatables in rotation, seeded with the board id, and stored. A board with an empty pool
   is not stored and is drawn again after each activation. `board(id)` leaves out ids that are no longer repeatables of
@@ -226,8 +226,8 @@ The Guild service (ALINA-PLAN §8) is `GuildModule.service()` on a running serve
   only from its own board's draw; the active cap is shared by all boards.
 - **Content activation** withdraws, for loaded records, each active commission the new content lacks (abandoned in
   storage, with a chat message), and restarts proof tracking from the new content. It withdraws only when the active
-  bundle has an `alina:guild` section. A record that loads withdraws the same way, and only once haruhi's startup is
-  complete; haruhi runs its activation listeners before it reports startup complete, so the startup activation withdraws
+  bundle has an `alina:guild` section. A record that loads withdraws the same way, and only once Haruhi's startup is
+  complete; Haruhi runs its activation listeners before it reports startup complete, so the startup activation withdraws
   from records loaded before it. A refused or late startup load therefore never deletes players' commissions.
 - **Proofs.** Item proofs are planned by `ItemProofPlanner`: main inventory, hotbar and off-hand only; `all_of` is a
   matching, so one item never counts for two entries. Criterion proofs count through `CriterionWatchers` only while
@@ -238,7 +238,7 @@ The Guild service (ALINA-PLAN §8) is `GuildModule.service()` on a running serve
   baseline and do not fire.
 - **Notice Board** (`alina:notice_board`): survival cannot break it, and the wither and the ender dragon cannot either.
   Each placed board holds the board it shows, in a block entity set with `/alina guild noticeboard`; with none set, it
-  shows the content's only board. Using it opens that board's graph with haruhi's `openAt`, anchored at the block
+  shows the content's only board. Using it opens that board's graph with Haruhi's `openAt`, anchored at the block
   within the board's reach.
 - **Commands**, for gamemasters: `/alina guild board [board]`, `noticeboard <pos> [<board>|clear]`, `show <player>`, `accept|turn_in|abandon <player>
   <commission>`, `reset <player> <commission>`, `reputation <player> <value>`; `/alina settlement pending <player>` and
@@ -248,7 +248,7 @@ The Guild service (ALINA-PLAN §8) is `GuildModule.service()` on a running serve
 
 Registered by `GuildDialogue`. Every type refuses unknown argument keys; a `commission` argument must name a commission
 of the bundle's `alina:guild` section, and `next` must name a node of the same graph. Provider entries show the
-commission's name only, so haruhi can match a pick by position and text.
+commission's name only, so Haruhi can match a pick by position and text.
 
 | Kind | Id | Arguments | Does |
 |---|---|---|---|
@@ -317,7 +317,7 @@ The achievement service (ALINA-PLAN §9) is `AchievementModule.service()` on a r
 `content/lampas.bundle.json` is the Lampas bundle: the Receptionist, one graph per board, the `alina:guild` section
 (settings, the `lampas:guild/daily` and `lampas:guild/feats` boards, 21 catalog commissions) and a small
 `alina:achievements` tab. Deploy it with `/haruhi content import` and `activate` (copy it to `config/haruhi/bundles/`
-first). haruhi activates one revision for the whole server, so this bundle holds every NPC and graph the Lampas server
+first). Haruhi activates one revision for the whole server, so this bundle holds every NPC and graph the Lampas server
 uses. The reward tables it names are `alina:rewards/guild/<code>`, in this jar.
 
 It is a first pass. The JSON format has no comments, so its placeholders are listed here and in ALINA-PLAN §14:
