@@ -18,7 +18,7 @@ too: content revisions, `/haruhi` commands and Haruhi's own storage are document
 Put these in the server's `mods/` folder:
 
 - `alina-<version>.jar`;
-- Haruhi 0.2.0 or newer;
+- Haruhi 0.6.0 or newer;
 - Fabric API.
 
 Give every player the same three jars, and GeckoLib 5.5.5 for Haruhi's NPC models. A client without Alina cannot join:

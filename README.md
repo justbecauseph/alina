@@ -45,7 +45,7 @@ From `src/main/resources/fabric.mod.json` and `gradle.properties`:
 | Java | 25 or newer | server and client |
 | Fabric Loader | 0.19.3 or newer; the build uses 0.20.1 | server and client |
 | Fabric API | any version; the build uses 0.161.0+26.2 | server and client |
-| Haruhi | 0.2.0 or newer | server and client |
+| Haruhi | 0.6.0 or newer | server and client |
 
 Alina also names Farmer's Delight, Gateways to Eternity, Placebo, Architectury and Apothic Attributes under
 `suggests`. None of them is required. The Lampas bundle's D3 commission names Farmer's Delight's dishes and F3 names a
@@ -90,12 +90,12 @@ without running any tests.
 When a Haruhi checkout sits beside this one (`../haruhi`), Gradle builds against that checkout in place of the
 published jar. Pass `-Palina.publishedHaruhi=true` to use the published jar anyway.
 
-The mod jar is `build/libs/alina-0.1.0.jar`; `build/libs/alina-0.1.0-sources.jar` holds the sources. The PostgreSQL JDBC
+The mod jar is `build/libs/alina-0.2.0.jar`; `build/libs/alina-0.2.0-sources.jar` holds the sources. The PostgreSQL JDBC
 driver 42.7.7 and HikariCP 7.1.0 are nested inside the jar.
 
 ## Quick start for a server operator
 
-1. Put `alina-0.1.0.jar`, Haruhi and Fabric API in the server's `mods/` folder, with Farmer's Delight, Gateways to
+1. Put `alina-0.2.0.jar`, Haruhi and Fabric API in the server's `mods/` folder, with Farmer's Delight, Gateways to
    Eternity and their libraries for the Lampas bundle. Give each player the same jars, plus GeckoLib 5.5.5 for Haruhi's
    NPC models.
 2. Start the server. The first start writes `config/alina.json` (in-memory storage) and creates
