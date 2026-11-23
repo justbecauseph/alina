@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/justbecauseph/alina/main/docs/alina.schema.json",
   "title": "Haruhi content bundle with Alina's extensions",
-  "description": "A haruhi content bundle (haruhi's docs/bundle.schema.json) whose extensions object holds Alina's two sections, alina:guild and alina:achievements. It checks the shape of each value. Validation on the server also checks what this schema cannot: that each board's graph (or settings.board_graph) names a graph in the bundle, that every commission belongs to exactly one board, that volumes, tabs and parents exist, that triggers are registered and their conditions parse, that loot tables, tags and effects exist, that a counted criterion uses an event trigger, that tier counts rise, and that requirements name the achievement's criteria.",
+  "description": "A haruhi content bundle (haruhi's docs/bundle.schema.json) whose extensions object holds Alina's three sections, alina:guild, alina:achievements and alina:trade. It checks the shape of each value. Validation on the server also checks what this schema cannot: that each board's graph (or settings.board_graph) names a graph in the bundle, that every commission belongs to exactly one board, that volumes, tabs and parents exist, that triggers are registered and their conditions parse, that loot tables, tags and effects exist, that a counted criterion uses an event trigger, that tier counts rise, that requirements name the achievement's criteria, that the currency has a denomination of value 1, that a trade rule's namespace has registered items, and that no experience rate or offer lets a player mint Aur.",
   "allOf": [
     { "$ref": "https://raw.githubusercontent.com/justbecauseph/haruhi/main/docs/bundle.schema.json" },
     {
@@ -10,7 +10,8 @@
         "extensions": {
           "properties": {
             "alina:guild": { "$ref": "#/$defs/guild" },
-            "alina:achievements": { "$ref": "#/$defs/achievements" }
+            "alina:achievements": { "$ref": "#/$defs/achievements" },
+            "alina:trade": { "$ref": "#/$defs/trade" }
           }
         }
       }
@@ -377,6 +378,281 @@
         "reward": { "$ref": "#/$defs/reward" }
       },
       "required": ["count"],
+      "additionalProperties": false
+    },
+    "trade": {
+      "description": "Alina's trade section: the currency, the experience market, the price lists and the shops. With an experience_market every shop's experience is fees; without one it is rates.",
+      "type": "object",
+      "properties": {
+        "currency": {
+          "description": "The denominations. One has value 1, so any amount can be paid out.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/denomination" }
+        },
+        "experience_market": { "$ref": "#/$defs/experienceMarket" },
+        "price_lists": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/id" },
+          "additionalProperties": { "$ref": "#/$defs/priceList" }
+        },
+        "shops": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/id" },
+          "additionalProperties": { "$ref": "#/$defs/shop" }
+        }
+      },
+      "required": ["currency"],
+      "if": { "required": ["experience_market"] },
+      "then": {
+        "properties": {
+          "shops": {
+            "additionalProperties": {
+              "properties": {
+                "experience": {
+                  "properties": {
+                    "sell": { "$ref": "#/$defs/fee" },
+                    "buy": { "$ref": "#/$defs/fee" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "shops": {
+            "additionalProperties": {
+              "properties": {
+                "experience": {
+                  "properties": {
+                    "sell": { "$ref": "#/$defs/rate" },
+                    "buy": { "$ref": "#/$defs/rate" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "experienceMarket": {
+      "description": "The one pool every experience broker of the section trades against.",
+      "type": "object",
+      "properties": {
+        "reserve": {
+          "description": "The seed reserves. Their ratio is the base rate, and the restock heads for them.",
+          "type": "object",
+          "properties": {
+            "points": { "type": "integer", "minimum": 1000, "maximum": 1000000000 },
+            "aur": { "type": "integer", "minimum": 1000, "maximum": 1000000000 }
+          },
+          "required": ["points", "aur"],
+          "additionalProperties": false
+        },
+        "restock_percent": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "How far each reserve moves back to the seed once per Guild board day, in percent."
+        },
+        "max_trade_percent": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "default": 10,
+          "description": "The most of the reserve one trade may take from it, in percent."
+        }
+      },
+      "required": ["reserve", "restock_percent"],
+      "additionalProperties": false
+    },
+    "denomination": {
+      "type": "object",
+      "properties": {
+        "item": { "$ref": "#/$defs/id", "description": "A registered item." },
+        "value": { "type": "integer", "minimum": 1, "description": "The Aur the item stands for when it is paid out." }
+      },
+      "required": ["item", "value"],
+      "additionalProperties": false
+    },
+    "priceList": {
+      "type": "object",
+      "properties": {
+        "rules": { "type": "array", "items": { "$ref": "#/$defs/sellRule" } }
+      },
+      "required": ["rules"],
+      "additionalProperties": false
+    },
+    "sellRule": {
+      "type": "object",
+      "properties": {
+        "match": {
+          "type": "object",
+          "description": "A vanilla item predicate without count. A predicate with components or predicates also takes modified stacks.",
+          "not": { "required": ["count"] }
+        },
+        "namespace": {
+          "type": "string",
+          "pattern": "^[a-z0-9_.-]+$",
+          "description": "Every item of this namespace. Takes unmodified stacks only."
+        },
+        "price": { "$ref": "#/$defs/price" },
+        "junk": { "type": "boolean", "default": false },
+        "refuse": {
+          "type": "boolean",
+          "default": false,
+          "description": "The shop takes none of the items, and no later rule of the shop is tried for them."
+        }
+      },
+      "oneOf": [ { "required": ["match"] }, { "required": ["namespace"] } ],
+      "if": { "properties": { "refuse": { "const": true } }, "required": ["refuse"] },
+      "then": { "not": { "anyOf": [ { "required": ["price"] }, { "required": ["junk"] } ] } },
+      "else": { "required": ["price"] },
+      "additionalProperties": false
+    },
+    "price": {
+      "type": "object",
+      "properties": {
+        "aur": { "type": "integer", "minimum": 1 },
+        "per": { "type": "integer", "minimum": 1, "maximum": 64, "description": "The number of items the Aur is for." }
+      },
+      "required": ["aur", "per"],
+      "additionalProperties": false
+    },
+    "shop": {
+      "type": "object",
+      "properties": {
+        "name": { "$ref": "#/$defs/text" },
+        "sell": { "$ref": "#/$defs/sell", "description": "What players sell to the shop." },
+        "buy": {
+          "description": "What players buy from the shop.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/offer" }
+        },
+        "experience": { "$ref": "#/$defs/experience" },
+        "lines": { "$ref": "#/$defs/shopLines" }
+      },
+      "required": ["name"],
+      "anyOf": [
+        { "required": ["sell"] },
+        { "required": ["experience"] },
+        { "required": ["buy"], "properties": { "buy": { "minItems": 1 } } }
+      ],
+      "if": { "required": ["experience"], "properties": { "experience": { "required": ["sell"] } } },
+      "then": { "required": ["sell"] },
+      "additionalProperties": false
+    },
+    "sell": {
+      "type": "object",
+      "properties": {
+        "daily_budget": { "type": "integer", "minimum": 1, "description": "The most Aur the shop pays players in one day." },
+        "lists": {
+          "description": "Price lists of this section. Their rules follow the shop's own rules, in this order.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "rules": {
+          "description": "The shop's own rules, tried before the rules of its lists.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/sellRule" }
+        }
+      },
+      "required": ["daily_budget"],
+      "additionalProperties": false
+    },
+    "offer": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9_]+$", "maxLength": 64, "description": "Unique within the shop." },
+        "item": { "$ref": "#/$defs/stack" },
+        "price": { "type": "integer", "minimum": 1, "description": "The Aur the stack's count of the item costs." },
+        "limit": { "$ref": "#/$defs/limit" },
+        "requires": { "$ref": "#/$defs/requires" }
+      },
+      "required": ["id", "item", "price"],
+      "additionalProperties": false
+    },
+    "stack": {
+      "description": "An item stack: an item id, and optionally a count and components. Leave out a count of 1, the default.",
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "count": { "type": "integer", "minimum": 2, "maximum": 99 },
+        "components": { "type": "object" }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    },
+    "limit": {
+      "type": "object",
+      "properties": {
+        "count": { "type": "integer", "minimum": 1 },
+        "per": { "enum": ["day", "character"], "description": "How often the count applies: each day, or once per character." }
+      },
+      "required": ["count", "per"],
+      "additionalProperties": false
+    },
+    "requires": {
+      "description": "What a player needs before the offer is open to them: a reputation, an achievement, or both.",
+      "type": "object",
+      "properties": {
+        "reputation": { "type": "integer" },
+        "achievement": { "$ref": "#/$defs/id", "description": "Not checked against alina:achievements." }
+      },
+      "anyOf": [ { "required": ["reputation"] }, { "required": ["achievement"] } ],
+      "additionalProperties": false
+    },
+    "experience": {
+      "type": "object",
+      "properties": {
+        "sell": {
+          "description": "The experience a player sells to the shop: a rate, or a fee in a section with an experience_market.",
+          "oneOf": [ { "$ref": "#/$defs/rate" }, { "$ref": "#/$defs/fee" } ]
+        },
+        "buy": {
+          "description": "The experience a player buys from the shop: a rate, or a fee in a section with an experience_market.",
+          "oneOf": [ { "$ref": "#/$defs/rate" }, { "$ref": "#/$defs/fee" } ]
+        }
+      },
+      "anyOf": [ { "required": ["sell"] }, { "required": ["buy"] } ],
+      "additionalProperties": false
+    },
+    "rate": {
+      "type": "object",
+      "properties": {
+        "points": { "type": "integer", "minimum": 1 },
+        "aur": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["points", "aur"],
+      "additionalProperties": false
+    },
+    "fee": {
+      "description": "A shop's fee for one direction of experience, in a section with an experience_market.",
+      "type": "object",
+      "properties": {
+        "fee_percent": { "type": "integer", "minimum": 0, "maximum": 50, "description": "The fee, in percent." }
+      },
+      "required": ["fee_percent"],
+      "additionalProperties": false
+    },
+    "shopLines": {
+      "description": "The player-facing lines of a shop. Each is optional.",
+      "type": "object",
+      "properties": {
+        "greeting": { "$ref": "#/$defs/text" },
+        "sold": { "$ref": "#/$defs/text" },
+        "bought": { "$ref": "#/$defs/text" },
+        "cannot_afford": { "$ref": "#/$defs/text" },
+        "budget_spent": { "$ref": "#/$defs/text" },
+        "no_room": { "$ref": "#/$defs/text" },
+        "nothing_to_sell": { "$ref": "#/$defs/text" },
+        "limit_reached": { "$ref": "#/$defs/text" },
+        "locked": { "$ref": "#/$defs/text" },
+        "busy": { "$ref": "#/$defs/text" }
+      },
       "additionalProperties": false
     }
   }

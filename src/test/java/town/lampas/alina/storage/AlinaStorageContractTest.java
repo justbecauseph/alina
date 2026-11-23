@@ -47,6 +47,8 @@ abstract class AlinaStorageContractTest {
     private static final Instant T6 = Instant.parse("2026-11-05T10:06:00Z");
     private static final LocalDate DAY = LocalDate.parse("2026-11-05");
     private static final LocalDate NEXT_DAY = LocalDate.parse("2026-11-06");
+    private static final LocalDate THIRD_DAY = LocalDate.parse("2026-11-07");
+    private static final LocalDate FOURTH_DAY = LocalDate.parse("2026-11-08");
     private static final Identifier COURIER = Identifier.parse("alina:guild/courier");
     private static final Identifier SCRIBE = Identifier.parse("alina:guild/scribe");
     private static final Identifier PORTER = Identifier.parse("alina:guild/porter");
@@ -55,6 +57,8 @@ abstract class AlinaStorageContractTest {
     private static final Identifier UNLISTED = Identifier.parse("alina:guild/unlisted");
     private static final Identifier FIRST_STEPS = Identifier.parse("alina:achievement/first_steps");
     private static final Identifier MINER = Identifier.parse("alina:achievement/miner");
+    private static final Identifier STALL = Identifier.parse("alina:shop/stall");
+    private static final Identifier BAZAAR = Identifier.parse("alina:shop/bazaar");
     private static final CriterionKey WALK = new CriterionKey(FIRST_STEPS, "walk");
     private static final CriterionKey JUMP = new CriterionKey(FIRST_STEPS, "jump");
     private static final CriterionKey DIG = new CriterionKey(MINER, "dig");
@@ -578,6 +582,288 @@ abstract class AlinaStorageContractTest {
         assertNotNull(failure(loaded));
     }
 
+    @Test
+    void aTradeAppliedOnceAddsItsBudgetAndItsPurchases() {
+        Operation trade = trade(OP1, ALICE, STALL, DAY, 30,
+                List.of(purchase("scroll", DAY.toString(), 2), purchase("charm", "character", 1)), T1);
+
+        assertEquals(new ApplyResult(true, 0), await(storage.applyOperation(trade)));
+
+        assertEquals(new TradeState(ALICE,
+                Map.of(new TradeBudgetKey(STALL, DAY), 30),
+                Map.of(new TradePurchaseKey(STALL, "scroll", DAY.toString()), 2,
+                        new TradePurchaseKey(STALL, "charm", "character"), 1)),
+                await(storage.loadTradeState(ALICE, DAY)));
+    }
+
+    @Test
+    void aRepeatedTradeChangesNothing() {
+        Operation trade = trade(OP1, ALICE, STALL, DAY, 30, List.of(purchase("scroll", DAY.toString(), 2)), T1);
+        await(storage.applyOperation(trade));
+
+        assertEquals(new ApplyResult(false, 0), await(storage.applyOperation(trade)));
+
+        TradeState state = await(storage.loadTradeState(ALICE, DAY));
+        assertEquals(Map.of(new TradeBudgetKey(STALL, DAY), 30), state.aurPaid());
+        assertEquals(Map.of(new TradePurchaseKey(STALL, "scroll", DAY.toString()), 2), state.purchases());
+    }
+
+    @Test
+    void tradesOnOneDayAddUpPerShopAndPerOffer() {
+        await(storage.applyOperation(trade(OP1, ALICE, STALL, DAY, 30, List.of(purchase("scroll", DAY.toString(), 2)), T1)));
+        await(storage.applyOperation(trade(OP2, ALICE, STALL, DAY, 12, List.of(purchase("scroll", DAY.toString(), 1)), T2)));
+        await(storage.applyOperation(trade(OP3, ALICE, BAZAAR, DAY, 5, List.of(), T3)));
+
+        TradeState state = await(storage.loadTradeState(ALICE, DAY));
+        assertEquals(Map.of(new TradeBudgetKey(STALL, DAY), 42, new TradeBudgetKey(BAZAAR, DAY), 5), state.aurPaid());
+        assertEquals(Map.of(new TradePurchaseKey(STALL, "scroll", DAY.toString()), 3), state.purchases());
+    }
+
+    @Test
+    void aTradeThatPaidNoAurAddsNoBudgetRow() {
+        await(storage.applyOperation(trade(OP1, ALICE, STALL, DAY, 0, List.of(purchase("charm", "character", 1)), T1)));
+
+        TradeState state = await(storage.loadTradeState(ALICE, DAY));
+        assertEquals(Map.of(), state.aurPaid());
+        assertEquals(Map.of(new TradePurchaseKey(STALL, "charm", "character"), 1), state.purchases());
+    }
+
+    @Test
+    void loadingTradesFromADayLeavesOutEarlierBudgetsAndDayPurchasesButKeepsCharacterPurchases() {
+        await(storage.applyOperation(trade(OP1, ALICE, STALL, DAY, 30,
+                List.of(purchase("scroll", DAY.toString(), 2), purchase("charm", "character", 1)), T1)));
+        await(storage.applyOperation(trade(OP2, ALICE, STALL, NEXT_DAY, 8,
+                List.of(purchase("scroll", NEXT_DAY.toString(), 1)), T2)));
+
+        assertEquals(new TradeState(ALICE,
+                Map.of(new TradeBudgetKey(STALL, NEXT_DAY), 8),
+                Map.of(new TradePurchaseKey(STALL, "scroll", NEXT_DAY.toString()), 1,
+                        new TradePurchaseKey(STALL, "charm", "character"), 1)),
+                await(storage.loadTradeState(ALICE, NEXT_DAY)));
+        assertEquals(new TradeState(ALICE,
+                Map.of(new TradeBudgetKey(STALL, DAY), 30, new TradeBudgetKey(STALL, NEXT_DAY), 8),
+                Map.of(new TradePurchaseKey(STALL, "scroll", DAY.toString()), 2,
+                        new TradePurchaseKey(STALL, "scroll", NEXT_DAY.toString()), 1,
+                        new TradePurchaseKey(STALL, "charm", "character"), 1)),
+                await(storage.loadTradeState(ALICE, DAY)));
+    }
+
+    @Test
+    void aCharacterWithNoTradesLoadsEmptyMapsAndSeesNoOthersTrades() {
+        await(storage.applyOperation(trade(OP1, BOB, STALL, DAY, 30, List.of(purchase("charm", "character", 1)), T1)));
+
+        assertEquals(new TradeState(ALICE, Map.of(), Map.of()), await(storage.loadTradeState(ALICE, DAY)));
+        assertEquals(new TradeState(BOB, Map.of(new TradeBudgetKey(STALL, DAY), 30),
+                Map.of(new TradePurchaseKey(STALL, "charm", "character"), 1)), await(storage.loadTradeState(BOB, DAY)));
+    }
+
+    @Test
+    void resettingADaysBudgetClearsOneShopOrAllShopsAndKeepsThePurchases() {
+        await(storage.applyOperation(trade(OP1, ALICE, STALL, DAY, 30, List.of(purchase("scroll", DAY.toString(), 2)), T1)));
+        await(storage.applyOperation(trade(OP2, ALICE, BAZAAR, DAY, 5, List.of(), T2)));
+        await(storage.applyOperation(trade(OP3, ALICE, STALL, NEXT_DAY, 8, List.of(), T3)));
+        Map<TradePurchaseKey, Integer> purchases = Map.of(new TradePurchaseKey(STALL, "scroll", DAY.toString()), 2);
+
+        await(storage.resetTradeBudget(ALICE, Optional.of(STALL), DAY));
+
+        assertEquals(Map.of(new TradeBudgetKey(BAZAAR, DAY), 5, new TradeBudgetKey(STALL, NEXT_DAY), 8),
+                await(storage.loadTradeState(ALICE, DAY)).aurPaid());
+        assertEquals(purchases, await(storage.loadTradeState(ALICE, DAY)).purchases());
+
+        await(storage.resetTradeBudget(ALICE, Optional.empty(), DAY));
+
+        assertEquals(Map.of(new TradeBudgetKey(STALL, NEXT_DAY), 8), await(storage.loadTradeState(ALICE, DAY)).aurPaid());
+        assertEquals(purchases, await(storage.loadTradeState(ALICE, DAY)).purchases());
+    }
+
+    @Test
+    void aTradeThatOverflowsABudgetIsRefusedAndRecordsNothing() {
+        await(storage.applyOperation(trade(OP1, ALICE, STALL, DAY, Integer.MAX_VALUE, List.of(), T1)));
+
+        assertNotNull(failure(storage.applyOperation(
+                trade(OP2, ALICE, STALL, DAY, 1, List.of(purchase("charm", "character", 1)), T2))));
+
+        assertEquals(Optional.empty(), await(storage.loadOperation(OP2)));
+        TradeState state = await(storage.loadTradeState(ALICE, DAY));
+        assertEquals(Map.of(new TradeBudgetKey(STALL, DAY), Integer.MAX_VALUE), state.aurPaid());
+        assertEquals(Map.of(), state.purchases());
+    }
+
+    @Test
+    void loadingTheMarketCreatesItFromTheSeedOnce() {
+        assertEquals(new MarketState(500000, 10000, DAY), await(storage.loadOrCreateMarket(500000, 10000, DAY, T0)));
+
+        assertEquals(new MarketState(500000, 10000, DAY), await(storage.loadOrCreateMarket(1, 2, NEXT_DAY, T1)));
+    }
+
+    @Test
+    void theMarketIsEmptyUntilItIsCreated() {
+        assertEquals(Optional.empty(), await(storage.loadMarket()));
+
+        await(storage.loadOrCreateMarket(500000, 10000, DAY, T0));
+
+        assertEquals(Optional.of(new MarketState(500000, 10000, DAY)), await(storage.loadMarket()));
+        // Creating the row is not a change of the pool, so it records no tick.
+        assertEquals(List.of(), await(storage.loadMarketTicks(10)));
+    }
+
+    @Test
+    void aTradesMarketDeltasAddToTheReservesAndAReplayAddsThemOnce() {
+        await(storage.loadOrCreateMarket(500000, 10000, DAY, T0));
+        Operation trade = marketTrade(OP1, ALICE, 0, List.of(), 5051, -100, T1);
+
+        assertEquals(new ApplyResult(true, 0), await(storage.applyOperation(trade)));
+        assertEquals(new MarketState(505051, 9900, DAY), await(storage.loadMarket()).orElseThrow());
+        assertEquals(List.of(new MarketTick(505051, 9900, T1)), await(storage.loadMarketTicks(10)));
+
+        assertEquals(new ApplyResult(false, 0), await(storage.applyOperation(trade)));
+        assertEquals(new MarketState(505051, 9900, DAY), await(storage.loadMarket()).orElseThrow());
+        assertEquals(List.of(new MarketTick(505051, 9900, T1)), await(storage.loadMarketTicks(10)));
+    }
+
+    @Test
+    void aTradeWithNoMarketDeltaRecordsNoTick() {
+        await(storage.loadOrCreateMarket(500000, 10000, DAY, T0));
+
+        assertEquals(new ApplyResult(true, 0), await(storage.applyOperation(marketTrade(OP1, ALICE, 30, List.of(), 0, 0, T1))));
+
+        assertEquals(List.of(), await(storage.loadMarketTicks(10)));
+    }
+
+    @Test
+    void twoTradesMarketDeltasReachTheSameReservesInEitherOrder() throws Exception {
+        Operation first = marketTrade(OP1, ALICE, 0, List.of(), 5051, -100, T1);
+        Operation second = marketTrade(OP2, BOB, 0, List.of(), -2000, 300, T2);
+        await(storage.loadOrCreateMarket(500000, 10000, DAY, T0));
+        await(storage.applyOperation(first));
+        await(storage.applyOperation(second));
+
+        try (AlinaStorage reversed = createStorage()) {
+            await(reversed.loadOrCreateMarket(500000, 10000, DAY, T0));
+            await(reversed.applyOperation(second));
+            await(reversed.applyOperation(first));
+
+            assertEquals(new MarketState(503051, 10200, DAY), await(storage.loadMarket()).orElseThrow());
+            assertEquals(await(storage.loadMarket()), await(reversed.loadMarket()));
+        }
+    }
+
+    @Test
+    void theExactSumIsKeptWhenAnOrderPassesThroughReservesBelowOne() throws Exception {
+        // P1 buys 10000 Aur, P2 sells 10000 Aur and P3 sells 5000 Aur. Applied as P2, P3, P1, the Aur passes below 1 (to 0,
+        // then -5000) before P1 gives it back. The sum is the same in either order.
+        Operation buy = marketTrade(OP1, ALICE, 0, List.of(), -60000, 10000, T1);
+        Operation firstSale = marketTrade(OP2, BOB, 0, List.of(), 40000, -10000, T2);
+        Operation secondSale = marketTrade(OP3, ALICE, 0, List.of(), 20000, -5000, T3);
+        await(storage.loadOrCreateMarket(500000, 10000, DAY, T0));
+
+        await(storage.applyOperation(firstSale));
+        assertEquals(new MarketState(540000, 0, DAY), await(storage.loadMarket()).orElseThrow());
+        await(storage.applyOperation(secondSale));
+        assertEquals(new MarketState(560000, -5000, DAY), await(storage.loadMarket()).orElseThrow());
+        await(storage.applyOperation(buy));
+        assertEquals(new MarketState(500000, 5000, DAY), await(storage.loadMarket()).orElseThrow());
+
+        try (AlinaStorage reversed = createStorage()) {
+            await(reversed.loadOrCreateMarket(500000, 10000, DAY, T0));
+            await(reversed.applyOperation(buy));
+            await(reversed.applyOperation(firstSale));
+            await(reversed.applyOperation(secondSale));
+
+            assertEquals(new MarketState(500000, 5000, DAY), await(reversed.loadMarket()).orElseThrow());
+            assertEquals(await(storage.loadMarket()), await(reversed.loadMarket()));
+        }
+    }
+
+    @Test
+    void theSeedOfANewMarketIsValidatedWhenItIsCreated() {
+        assertInstanceOf(IllegalArgumentException.class, failure(storage.loadOrCreateMarket(0, 10000, DAY, T0)));
+        assertInstanceOf(IllegalArgumentException.class, failure(storage.loadOrCreateMarket(500000, -1, DAY, T0)));
+
+        assertEquals(Optional.empty(), await(storage.loadMarket()));
+    }
+
+    @Test
+    void aTradeWithNoMarketAppliesItsOtherEffectsAndCreatesNoMarket() {
+        Operation trade = marketTrade(OP1, ALICE, 30, List.of(purchase("charm", "character", 1)), 5051, -100, T1);
+
+        assertEquals(new ApplyResult(true, 0), await(storage.applyOperation(trade)));
+
+        assertEquals(Map.of(new TradeBudgetKey(STALL, DAY), 30), await(storage.loadTradeState(ALICE, DAY)).aurPaid());
+        assertEquals(Optional.empty(), await(storage.loadMarket()));
+        assertEquals(List.of(), await(storage.loadMarketTicks(10)));
+        // The deltas were dropped, so a market created later keeps its seed.
+        assertEquals(new MarketState(500000, 10000, DAY), await(storage.loadOrCreateMarket(500000, 10000, DAY, T2)));
+    }
+
+    @Test
+    void aRestockAppliesOncePerDayAndRecordsTheReservesAfterIt() {
+        await(storage.loadOrCreateMarket(500000, 10000, DAY, T0));
+
+        assertTrue(await(storage.restockMarket(NEXT_DAY, 20000, 500, T1)));
+        assertEquals(new MarketState(520000, 10500, NEXT_DAY), await(storage.loadMarket()).orElseThrow());
+        assertEquals(List.of(new MarketTick(520000, 10500, T1)), await(storage.loadMarketTicks(10)));
+
+        assertFalse(await(storage.restockMarket(NEXT_DAY, 20000, 500, T2)));
+        assertEquals(new MarketState(520000, 10500, NEXT_DAY), await(storage.loadMarket()).orElseThrow());
+        assertEquals(List.of(new MarketTick(520000, 10500, T1)), await(storage.loadMarketTicks(10)));
+    }
+
+    @Test
+    void aRestockWithNoMarketReturnsFalseAndRecordsNothing() {
+        assertFalse(await(storage.restockMarket(NEXT_DAY, 20000, 500, T1)));
+
+        assertEquals(Optional.empty(), await(storage.loadMarket()));
+        assertEquals(List.of(), await(storage.loadMarketTicks(10)));
+    }
+
+    @Test
+    void loadingMarketTicksReturnsTheNewestFirstUpToTheLimit() {
+        await(storage.loadOrCreateMarket(500000, 10000, DAY, T0));
+        assertTrue(await(storage.restockMarket(NEXT_DAY, 1, 0, T1)));
+        assertTrue(await(storage.restockMarket(THIRD_DAY, 1, 0, T2)));
+        assertTrue(await(storage.restockMarket(FOURTH_DAY, 1, 0, T3)));
+
+        assertEquals(List.of(new MarketTick(500003, 10000, T3), new MarketTick(500002, 10000, T2),
+                new MarketTick(500001, 10000, T1)), await(storage.loadMarketTicks(10)));
+        assertEquals(List.of(new MarketTick(500003, 10000, T3), new MarketTick(500002, 10000, T2)),
+                await(storage.loadMarketTicks(2)));
+        assertInstanceOf(IllegalArgumentException.class, failure(storage.loadMarketTicks(0)));
+    }
+
+    @Test
+    void theTicksKeepTheNewest64ChangesNewestFirst() {
+        await(storage.loadOrCreateMarket(500000, 10000, DAY, T0));
+        for (int change = 1; change <= 70; change++) {
+            assertTrue(await(storage.adjustMarket(1, 0, T0.plusSeconds(change))));
+        }
+
+        List<MarketTick> ticks = await(storage.loadMarketTicks(100));
+        assertEquals(64, ticks.size());
+        // The 70th change is the newest; the 64 kept are changes 7 to 70, so the oldest kept holds 500000 + 7.
+        assertEquals(new MarketTick(500070, 10000, T0.plusSeconds(70)), ticks.get(0));
+        assertEquals(new MarketTick(500007, 10000, T0.plusSeconds(7)), ticks.get(63));
+        assertEquals(64, await(storage.loadMarketTicks(64)).size());
+    }
+
+    @Test
+    void adjustingTheMarketAddsToBothReservesKeepsTheRestockedDayAndRecordsATick() {
+        await(storage.loadOrCreateMarket(500000, 10000, DAY, T0));
+
+        assertTrue(await(storage.adjustMarket(100000, -2500, T1)));
+
+        assertEquals(Optional.of(new MarketState(600000, 7500, DAY)), await(storage.loadMarket()));
+        assertEquals(List.of(new MarketTick(600000, 7500, T1)), await(storage.loadMarketTicks(10)));
+    }
+
+    @Test
+    void adjustingAMarketWithNoRowReturnsFalseAndRecordsNothing() {
+        assertFalse(await(storage.adjustMarket(100000, -2500, T1)));
+
+        assertEquals(Optional.empty(), await(storage.loadMarket()));
+        assertEquals(List.of(), await(storage.loadMarketTicks(10)));
+    }
+
     private static Operation turnIn(UUID operationId, UUID character, Identifier commission, int delta, Instant at,
             CommissionStatus status, Optional<Instant> cooldownUntil) {
         return new Operation(operationId, character, OperationKind.TURN_IN, commission, 0, REVISION, WORLD, REWARD,
@@ -587,6 +873,23 @@ abstract class AlinaStorageContractTest {
     private static Operation earned(UUID operationId, Identifier achievement, int tier, Instant availableAt, Instant at) {
         return new Operation(operationId, ALICE, OperationKind.ACHIEVEMENT_REWARD, achievement, tier, REVISION, WORLD,
                 REWARD, 0, new OperationEffect.AchievementEarned(achievement, tier, Optional.of(availableAt)), at);
+    }
+
+    private static Operation trade(UUID operationId, UUID character, Identifier shop, LocalDate day, int aurPaid,
+            List<OperationEffect.TradeSettled.Purchase> purchases, Instant at) {
+        return new Operation(operationId, character, OperationKind.TRADE, shop, 0, REVISION, WORLD, REWARD, 0,
+                new OperationEffect.TradeSettled(shop, day, aurPaid, purchases, "{}"), at);
+    }
+
+    private static OperationEffect.TradeSettled.Purchase purchase(String offer, String period, int count) {
+        return new OperationEffect.TradeSettled.Purchase(offer, period, count);
+    }
+
+    /** A trade at STALL on DAY that moves the experience market by the deltas, and pays and buys as given. */
+    private static Operation marketTrade(UUID operationId, UUID character, int aurPaid,
+            List<OperationEffect.TradeSettled.Purchase> purchases, long marketPoints, long marketAur, Instant at) {
+        return new Operation(operationId, character, OperationKind.TRADE, STALL, 0, REVISION, WORLD, REWARD, 0,
+                new OperationEffect.TradeSettled(STALL, DAY, aurPaid, purchases, "{}", marketPoints, marketAur), at);
     }
 
     /** An earn that makes no availability, as a tier short of the last one does. */

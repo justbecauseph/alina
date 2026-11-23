@@ -43,8 +43,8 @@ import town.lampas.alina.storage.OperationStep;
  *       called. A refused begin changes nothing.
  *   <li>{@link #tick}, every server tick: calls {@link AlinaStorage#applyOperation} for the first operation that is due,
  *       off the server thread. A player who is dead, or whose entity was removed, is not served.
- *   <li>Back on the server thread, when the storage call completes: delivers the reward stacks that fit, records the
- *       storage result in the escrow and saves verified. The applied listeners run once that save has verified. A failed
+ *   <li>Back on the server thread, when the storage call completes: delivers the reward stacks that fit and the experience
+ *       due, records the storage result in the escrow and saves verified. The applied listeners run once that save has verified. A failed
  *       save puts the inventory and the escrow back, so the next attempt starts from the saved state. Once the reward is
  *       delivered, the operation leaves the escrow, its row is marked settled, and the settled listeners run.
  * </ol>
@@ -129,7 +129,10 @@ public final class SettlementService {
      * saved. The caller must keep its own state, such as a commission's board slot, and try again later. A begin is
      * refused when the player already has an operation of this world with the same kind, subject and tier; when the escrow with the new
      * operation would be over {@link #ESCROW_LIMIT_BYTES}; and when the removal or the encoding throws (the failure is
-     * logged).
+     * logged). A refused begin also puts the player's experience back as it was, since the removal may take some.
+     *
+     * <p>The delivered stacks are the rolled reward, if the request has a loot table, followed by the request's grant. The
+     * request's experience is given when the operation is delivered.
      *
      * @return the operation id, or empty when the operation was refused
      * @throws IllegalArgumentException when the reward's loot table is not on this server, before anything changes
@@ -145,22 +148,26 @@ public final class SettlementService {
             }
         }
         UUID operationId = UUID.randomUUID();
-        List<ItemStack> rolled = request.reward().map(table -> roll(table, player, operationId)).orElse(List.of());
+        List<ItemStack> delivered = new ArrayList<>(
+                request.reward().map(table -> roll(table, player, operationId)).orElse(List.of()));
+        delivered.addAll(Stacks.split(copies(request.grant())));
         Inventory inventory = player.getInventory();
         ItemStack[] before = snapshot(inventory, inventory.getContainerSize());
+        Experience experienceBefore = Experience.of(player);
         List<PendingOperation> next;
         String json;
         try {
             List<ItemStack> removed = Stacks.split(copies(request.removal().remove(player)));
             PendingOperation operation = new PendingOperation(operationId, request.kind(), request.subjectId(),
                     request.tier(), request.revisionId(), worldId, request.reputationDelta(), request.effect(),
-                    Instant.now(), rolled, rolled.stream().map(ItemStack::copy).toList(), removed, Optional.empty(),
-                    request.commissionCategory(), request.commissionKind());
+                    Instant.now(), delivered, delivered.stream().map(ItemStack::copy).toList(), removed, Optional.empty(),
+                    request.commissionCategory(), request.commissionKind(), request.experience());
             next = new ArrayList<>(pending);
             next.add(operation);
             json = EscrowJson.encode(next, registries());
         } catch (RuntimeException failure) {
             restore(inventory, before);
+            experienceBefore.restore(player);
             Alina.LOGGER.error("Alina could not prepare operation {} for {}; the proof is back in the inventory",
                     operationId, player.getUUID(), failure);
             return Optional.empty();
@@ -168,6 +175,7 @@ public final class SettlementService {
         int bytes = Stacks.modifiedUtf8Length(json);
         if (bytes > ESCROW_LIMIT_BYTES) {
             restore(inventory, before);
+            experienceBefore.restore(player);
             Alina.LOGGER.warn("Alina refused operation {} for {}: its escrow would be {} bytes, over the {} byte limit; "
                     + "the proof is back in the inventory", operationId, player.getUUID(), bytes, ESCROW_LIMIT_BYTES);
             return Optional.empty();
@@ -327,23 +335,29 @@ public final class SettlementService {
     }
 
     /**
-     * Delivers the stacks that fit, then saves the escrow with the storage result recorded. A save that does not verify
-     * puts the inventory and the escrow back as they were, so the operation is attempted again from its saved state. A
-     * step with a recorded result that moves no stack saves nothing.
+     * Delivers the stacks that fit and the experience due, then saves the escrow with the storage result recorded. The
+     * experience is given in the step that inserts the stacks, and it is stored as given (0 left). A save that does not
+     * verify puts the inventory, the experience and the escrow back as they were, so the operation is attempted again from
+     * its saved state. A step with a recorded result that moves no stack and gives no experience saves nothing.
      */
     private void commit(ServerPlayer player, List<PendingOperation> ops, PendingOperation op, ApplyResult result) {
         Inventory inventory = player.getInventory();
         String previous = player.getAttached(SettlementModule.ESCROW);
         boolean recorded = op.applied().isPresent();
         ItemStack[] main = snapshot(inventory, inventory.getNonEquipmentItems().size());
+        Experience experienceBefore = Experience.of(player);
+        boolean giving = op.experience() > 0;
         List<ItemStack> remaining = insert(inventory, op.reward());
-        if (recorded && !moved(op.reward(), remaining)) {
-            // The escrow already holds the result and nothing went into the inventory: there is nothing to save.
+        if (recorded && !giving && !moved(op.reward(), remaining)) {
+            // The escrow already holds the result, nothing went into the inventory, and no experience is due: nothing to save.
             retryAt.put(op.operationId(), ticks + RETRY_TICKS);
             return;
         }
-        boolean finished = remaining.stream().allMatch(ItemStack::isEmpty);
-        PendingOperation updated = op.withApplied(result).withReward(remaining);
+        if (giving) {
+            player.giveExperiencePoints(op.experience());
+        }
+        PendingOperation updated = op.withApplied(result).withReward(remaining).withExperience(0);
+        boolean finished = updated.experience() == 0 && remaining.stream().allMatch(ItemStack::isEmpty);
         List<PendingOperation> next = new ArrayList<>();
         for (PendingOperation candidate : ops) {
             if (!candidate.operationId().equals(op.operationId())) {
@@ -357,6 +371,9 @@ public final class SettlementService {
             json = next.isEmpty() ? null : EscrowJson.encode(next, registries());
         } catch (RuntimeException failure) {
             restore(inventory, main);
+            if (giving) {
+                experienceBefore.restore(player);
+            }
             retryAt.put(op.operationId(), ticks + RETRY_TICKS);
             Alina.LOGGER.error("Alina could not encode the escrow of {} for operation {}; the delivery is tried again "
                     + "in 5 seconds", player.getUUID(), op.operationId(), failure);
@@ -366,6 +383,9 @@ public final class SettlementService {
         inventory.setChanged();
         if (!save.save(player, json)) {
             restore(inventory, main);
+            if (giving) {
+                experienceBefore.restore(player);
+            }
             write(player, previous);
             inventory.setChanged();
             retryAt.put(op.operationId(), ticks + RETRY_TICKS);
@@ -508,6 +528,30 @@ public final class SettlementService {
             if (!ItemStack.matches(inventory.getItem(slot), slots[slot])) {
                 inventory.setItem(slot, slots[slot]);
             }
+        }
+    }
+
+    /**
+     * The player's experience as vanilla keeps it: the level, the progress towards the next level, the total, and the score,
+     * which giving experience also changes. {@link #restore} puts all four back.
+     */
+    private record Experience(int level, float progress, int total, int score) {
+
+        static Experience of(ServerPlayer player) {
+            return new Experience(player.experienceLevel, player.experienceProgress, player.totalExperience,
+                    player.getScore());
+        }
+
+        /**
+         * Sets the experience back to what {@link #of} read. No tick runs between a change and this restore, so the client
+         * never received the changed values and needs no packet of its own; the next tick sends whatever vanilla has marked
+         * unsent.
+         */
+        void restore(ServerPlayer player) {
+            player.experienceLevel = level;
+            player.experienceProgress = progress;
+            player.totalExperience = total;
+            player.setScore(score);
         }
     }
 

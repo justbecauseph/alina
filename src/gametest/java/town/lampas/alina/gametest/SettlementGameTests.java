@@ -9,10 +9,12 @@ import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -64,6 +66,9 @@ import town.lampas.alina.storage.OperationEffect;
 import town.lampas.alina.storage.OperationKind;
 import town.lampas.alina.storage.OperationStep;
 import town.lampas.alina.storage.StoredOperation;
+import town.lampas.alina.storage.TradeBudgetKey;
+import town.lampas.alina.storage.TradePurchaseKey;
+import town.lampas.alina.storage.TradeState;
 
 /**
  * Server GameTests owned by the settlement component (ALINA-PLAN section 7 and section 12, spike S3). Most tests make their
@@ -83,6 +88,9 @@ public final class SettlementGameTests {
     private static final Identifier PLACEHOLDER = Alina.id("rewards/placeholder");
     private static final Identifier TWO_ITEMS = Alina.id("test/two_items");
     private static final Identifier FIVE_EMERALDS = Alina.id("test/five_emeralds");
+    private static final Identifier STALL = Alina.id("settlement_test/stall");
+    private static final int EXPERIENCE = 7;
+    private static final LocalDate TRADE_DAY = LocalDate.parse("2026-11-23");
 
     @GameTest(maxTicks = 400)
     public void aTurnInIsSettledOnce(GameTestHelper helper) {
@@ -777,6 +785,121 @@ public final class SettlementGameTests {
         helper.succeed();
     }
 
+    @GameTest(maxTicks = 400)
+    public void aFixedGrantIsDeliveredOnceAfterTheRolledStacks(GameTestHelper helper) {
+        Rig rig = rig(helper);
+        rig.player().getInventory().setItem(0, new ItemStack(Items.PAPER));
+        SettlementService service = serviceFor(rig);
+        List<SettledOperation> settled = new ArrayList<>();
+        service.addSettledListener(settled::add);
+        UUID operation = begin(helper, service, rig,
+                turnInWith(takeOnePaper(), Optional.of(PLACEHOLDER), List.of(new ItemStack(Items.DIAMOND, 2)), 0));
+        List<ItemStack> rolled = service.pendingFor(rig.player()).get(0).rolled();
+        helper.assertValueEqual(rolled.size(), 2, "delivered stacks: the rolled reward, then the grant");
+        helper.assertTrue(rolled.get(1).is(Items.DIAMOND) && rolled.get(1).getCount() == 2,
+                "the grant is not the last delivered stack: " + rolled);
+
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    service.tick();
+                    checkSettled(helper, rig, operation, REPUTATION);
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    service.tick();
+                    helper.assertValueEqual(count(rig.player(), Items.EMERALD), 1, "emeralds in total");
+                    helper.assertValueEqual(count(rig.player(), Items.DIAMOND), 2, "diamonds in total");
+                    helper.assertValueEqual(settled.size(), 1, "settled listener calls");
+                })
+                .thenSucceed();
+    }
+
+    @GameTest(maxTicks = 40)
+    public void experienceTakenByARemovalIsPutBackWhenBeginIsRefused(GameTestHelper helper) {
+        Rig rig = rig(helper);
+        ServerPlayer player = rig.player();
+        player.giveExperiencePoints(120);
+        int level = player.experienceLevel;
+        float progress = player.experienceProgress;
+        int total = player.totalExperience;
+        int score = player.getScore();
+        helper.assertTrue(level > 0 && total > 0, "the player has no experience to take");
+        SettlementRequest.Removal removal = taken -> {
+            taken.giveExperiencePoints(-50);
+            throw new IllegalStateException("injected removal failure after the experience was taken");
+        };
+        SettlementService service = serviceFor(rig);
+
+        helper.assertTrue(service.begin(player, turnIn(removal, PLACEHOLDER)).isEmpty(), "a refused begin was accepted");
+        helper.assertValueEqual(player.experienceLevel, level, "level after the refused begin");
+        helper.assertTrue(player.experienceProgress == progress,
+                "progress after the refused begin: " + player.experienceProgress + ", was " + progress);
+        helper.assertValueEqual(player.totalExperience, total, "total experience after the refused begin");
+        helper.assertValueEqual(player.getScore(), score, "score after the refused begin");
+        helper.assertTrue(player.getAttached(SettlementModule.ESCROW) == null, "an escrow was written");
+        helper.succeed();
+    }
+
+    @GameTest(maxTicks = 400)
+    public void anExperienceGrantIsGivenOnceEvenWhenItsDeliverySaveFailsFirst(GameTestHelper helper) {
+        Rig rig = rig(helper);
+        ServerPlayer player = rig.player();
+        player.getInventory().setItem(0, new ItemStack(Items.PAPER));
+        int total = player.totalExperience;
+        int score = player.getScore();
+        SettlementService service = serviceFor(rig);
+        UUID operation = begin(helper, service, rig,
+                turnInWith(takeOnePaper(), Optional.of(PLACEHOLDER), List.of(), EXPERIENCE));
+        // The save before the storage call has verified. The next save is the delivery's, and it fails.
+        rig.saves().failNext(1);
+
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    service.tick();
+                    helper.assertTrue(rig.saves().attempts() >= 2, "the delivery save was not tried");
+                    helper.assertValueEqual(player.totalExperience, total, "total experience after the failed save");
+                    helper.assertValueEqual(player.getScore(), score, "score after the failed save");
+                    helper.assertValueEqual(service.pendingFor(player).get(0).experience(), EXPERIENCE,
+                            "experience still due in the escrow");
+                })
+                .thenWaitUntil(() -> {
+                    service.tick();
+                    checkSettled(helper, rig, operation, REPUTATION);
+                    helper.assertValueEqual(player.totalExperience, total + EXPERIENCE, "total experience in total");
+                })
+                .thenIdle(120)
+                .thenExecute(() -> {
+                    service.tick();
+                    helper.assertValueEqual(player.totalExperience, total + EXPERIENCE,
+                            "experience given again after the operation settled");
+                })
+                .thenSucceed();
+    }
+
+    @GameTest(maxTicks = 400)
+    public void aSettledTradeRecordsItsBudgetAndPurchasesInStorage(GameTestHelper helper) {
+        Rig rig = rig(helper);
+        rig.player().getInventory().setItem(0, new ItemStack(Items.PAPER));
+        SettlementService service = serviceFor(rig);
+        OperationEffect.TradeSettled trade = new OperationEffect.TradeSettled(STALL, TRADE_DAY, 30,
+                List.of(new OperationEffect.TradeSettled.Purchase("scroll", TRADE_DAY.toString(), 2)),
+                "{\"sold\":\"paper\"}");
+        SettlementRequest request = new SettlementRequest(OperationKind.TRADE, STALL, 0, REVISION, Optional.empty(), 0,
+                trade, takeOnePaper(), Optional.empty(), Optional.empty());
+        UUID operation = begin(helper, service, rig, request);
+
+        helper.succeedWhen(() -> {
+            service.tick();
+            checkSettled(helper, rig, operation, 0);
+            TradeState state = rig.storage().loadTradeState(rig.player().getUUID(), TRADE_DAY).join();
+            helper.assertTrue(state.aurPaid().equals(Map.of(new TradeBudgetKey(STALL, TRADE_DAY), 30)),
+                    "budget in storage: " + state.aurPaid());
+            helper.assertTrue(state.purchases().equals(
+                            Map.of(new TradePurchaseKey(STALL, "scroll", TRADE_DAY.toString()), 2)),
+                    "purchases in storage: " + state.purchases());
+        });
+    }
+
     private static CriterionSpec alinaSpec(GameTestHelper helper, String trigger, String conditions) {
         Identifier id = Identifier.parse(trigger);
         CriterionTrigger<?> type = BuiltInRegistries.TRIGGER_TYPES.getValue(id);
@@ -933,6 +1056,14 @@ public final class SettlementGameTests {
 
     private static SettlementRequest turnIn(SettlementRequest.Removal removal, Identifier reward) {
         return turnIn(removal, Optional.of(reward), REPUTATION, Optional.of('C'), Optional.of("repeatable"));
+    }
+
+    /** A turn-in as {@link #turnIn} builds it, with a fixed grant and experience. */
+    private static SettlementRequest turnInWith(SettlementRequest.Removal removal, Optional<Identifier> reward,
+            List<ItemStack> grant, int experience) {
+        return new SettlementRequest(OperationKind.TURN_IN, COURIER, 0, REVISION, reward, REPUTATION,
+                new OperationEffect.CommissionSettled(COURIER, CommissionStatus.COMPLETED, Optional.empty()), removal,
+                Optional.of('C'), Optional.of("repeatable"), grant, experience);
     }
 
     private static SettlementRequest turnIn(SettlementRequest.Removal removal, Identifier reward, int reputation,

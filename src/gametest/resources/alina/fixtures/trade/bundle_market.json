@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "extensions": {
+    "alina:trade": {
+      "currency": [
+        { "item": "minecraft:gold_nugget", "value": 1 },
+        { "item": "minecraft:gold_ingot", "value": 9 }
+      ],
+      "experience_market": {
+        "reserve": { "points": 500000, "aur": 10000 },
+        "restock_percent": 10
+      },
+      "shops": {
+        "alina:trade_test/broker": {
+          "name": "Broker",
+          "sell": { "daily_budget": 5000 },
+          "experience": { "sell": { "fee_percent": 0 }, "buy": { "fee_percent": 0 } }
+        },
+        "alina:trade_test/toll": {
+          "name": "Toll",
+          "sell": { "daily_budget": 5000 },
+          "experience": { "sell": { "fee_percent": 5 }, "buy": { "fee_percent": 5 } }
+        },
+        "alina:trade_test/oneway": {
+          "name": "One way",
+          "buy": [ { "id": "paper", "item": { "id": "minecraft:paper" }, "price": 13 } ],
+          "experience": { "buy": { "fee_percent": 0 } }
+        }
+      }
+    }
+  }
+}

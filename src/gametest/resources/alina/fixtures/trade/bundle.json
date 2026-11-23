@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:trade_test/counter": {
+      "start": "counter",
+      "nodes": {
+        "counter": {
+          "text": "Browse the stall?",
+          "choices": [
+            { "text": "Show me the stall.", "next": "bye",
+              "actions": [ { "type": "alina:trade/open", "shop": "alina:trade_test/mira", "then": "alina:trade_test/bye" } ] },
+            { "text": "Not today.", "next": "bye" }
+          ]
+        },
+        "bye": { "text": "Safe travels." }
+      }
+    },
+    "alina:trade_test/bye": {
+      "start": "bye",
+      "nodes": { "bye": { "text": "Come back soon." } }
+    }
+  },
+  "extensions": {
+    "alina:trade": {
+      "currency": [
+        { "item": "minecraft:gold_nugget", "value": 1 },
+        { "item": "minecraft:gold_ingot", "value": 9 }
+      ],
+      "price_lists": {
+        "alina:trade_test/junk": {
+          "rules": [
+            { "match": { "items": "minecraft:rotten_flesh" }, "price": { "aur": 1, "per": 4 }, "junk": true },
+            { "match": { "items": "minecraft:nether_star" }, "refuse": true }
+          ]
+        }
+      },
+      "shops": {
+        "alina:trade_test/mira": {
+          "name": "Mira's stall",
+          "sell": {
+            "daily_budget": 200,
+            "lists": ["alina:trade_test/junk"],
+            "rules": [ { "match": { "items": "minecraft:bone" }, "price": { "aur": 3, "per": 1 } } ]
+          },
+          "buy": [
+            { "id": "paper", "item": { "id": "minecraft:paper" }, "price": 13 },
+            { "id": "snowball", "item": { "id": "minecraft:snowball", "count": 16 }, "price": 16 },
+            { "id": "charm", "item": { "id": "minecraft:stick" }, "price": 1,
+              "limit": { "count": 1, "per": "character" } }
+          ],
+          "experience": { "sell": { "points": 50, "aur": 2 }, "buy": { "points": 50, "aur": 2 } },
+          "lines": {
+            "greeting": "Welcome.",
+            "sold": "A fair price.",
+            "bought": "Use it well.",
+            "busy": "Wait, I am still writing that down."
+          }
+        },
+        "alina:trade_test/tight": {
+          "name": "Tight purse",
+          "sell": {
+            "daily_budget": 10,
+            "rules": [ { "match": { "items": "minecraft:bone" }, "price": { "aur": 3, "per": 1 } } ]
+          }
+        },
+        "alina:trade_test/lumber": {
+          "name": "Lumber",
+          "sell": {
+            "daily_budget": 100,
+            "rules": [
+              { "match": { "items": "#minecraft:planks" }, "price": { "aur": 1, "per": 4 } },
+              { "namespace": "minecraft", "price": { "aur": 1, "per": 1 } }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

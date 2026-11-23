@@ -19,6 +19,9 @@ final class StorageSupport {
     /** How long a closing storage lets its queued work run before it drops the rest. */
     static final Duration SHUTDOWN_GRACE = Duration.ofSeconds(10);
 
+    /** The period of a trade purchase limit that applies per character, not per day. */
+    static final String CHARACTER_PERIOD = "character";
+
     private StorageSupport() {}
 
     static Instant micros(Instant instant) {
@@ -43,6 +46,16 @@ final class StorageSupport {
     static void requireNonNegative(int value, String what) {
         if (value < 0) {
             throw new IllegalArgumentException(what + " must not be negative, was " + value);
+        }
+    }
+
+    /** A reserve of the experience market is at least 1, as the database checks it. */
+    /** The newest experience market ticks storage keeps: the rate chart shows the last of these changes. */
+    static final int MARKET_TICKS_KEPT = 64;
+
+    static void requireReserve(long value, String what) {
+        if (value < 1) {
+            throw new IllegalArgumentException(what + " must be at least 1, was " + value);
         }
     }
 
@@ -82,12 +95,24 @@ final class StorageSupport {
                 micros(operation.createdAt()));
     }
 
+    /**
+     * The effect as storage keeps it. A trade's detail is in canonical form, as the reward is, because PostgreSQL's jsonb
+     * reorders the keys of an object: both backends then return the same text. A trade's market deltas are kept as given.
+     */
     static OperationEffect normalised(OperationEffect effect) {
         return switch (effect) {
             case OperationEffect.CommissionSettled settled -> new OperationEffect.CommissionSettled(
                     settled.commissionId(), settled.status(), micros(settled.cooldownUntil()));
             case OperationEffect.AchievementEarned earned -> new OperationEffect.AchievementEarned(
                     earned.achievementId(), earned.tier(), micros(earned.availableAt()));
+            case OperationEffect.TradeSettled trade -> {
+                for (OperationEffect.TradeSettled.Purchase purchase : trade.purchases()) {
+                    requireNoNul(purchase.offerId(), "offerId");
+                }
+                yield new OperationEffect.TradeSettled(trade.shopId(), trade.tradeDay(), trade.aurPaid(),
+                        trade.purchases(), CanonicalJson.of(trade.detailJson()),
+                        trade.marketPoints(), trade.marketAur());
+            }
         };
     }
 }

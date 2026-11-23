@@ -126,6 +126,64 @@ final class PostgresStorage implements AlinaStorage {
             """;
     private static final String DELETE_CRITERIA_OF_ACHIEVEMENT =
             "DELETE FROM criterion_progress WHERE character_id = ? AND achievement_id = ?";
+    private static final String ADD_TRADE_BUDGET = """
+            INSERT INTO trade_budget (character_id, shop_id, trade_day, aur_paid, updated_at) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (character_id, shop_id, trade_day) DO UPDATE SET
+                aur_paid = trade_budget.aur_paid + EXCLUDED.aur_paid, updated_at = EXCLUDED.updated_at
+            """;
+    private static final String ADD_TRADE_PURCHASE = """
+            INSERT INTO trade_purchase (character_id, shop_id, offer_id, period, count, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (character_id, shop_id, offer_id, period) DO UPDATE SET
+                count = trade_purchase.count + EXCLUDED.count, updated_at = EXCLUDED.updated_at
+            """;
+    /** The period text sorts as the dates do, since every period but {@code character} is an ISO date. */
+    private static final String SELECT_TRADE_BUDGET =
+            "SELECT shop_id, trade_day, aur_paid FROM trade_budget WHERE character_id = ? AND trade_day >= ?";
+    private static final String SELECT_TRADE_PURCHASES = """
+            SELECT shop_id, offer_id, period, count FROM trade_purchase
+            WHERE character_id = ? AND (period = 'character' OR period >= ?)
+            """;
+    private static final String DELETE_TRADE_BUDGET_OF_DAY =
+            "DELETE FROM trade_budget WHERE character_id = ? AND trade_day = ?";
+    private static final String DELETE_TRADE_BUDGET_OF_SHOP_AND_DAY =
+            "DELETE FROM trade_budget WHERE character_id = ? AND trade_day = ? AND shop_id = ?";
+
+    private static final String SELECT_MARKET = "SELECT points, aur, restocked_day FROM experience_market WHERE id = 1";
+    private static final String INSERT_MARKET = """
+            INSERT INTO experience_market (id, points, aur, restocked_day, updated_at) VALUES (1, ?, ?, ?, ?)
+            ON CONFLICT (id) DO NOTHING
+            """;
+    /**
+     * A trade's change to the reserves, added exactly: the reserves are the sum of every delta, so a reserve may pass below 1
+     * on the way. RETURNING gives the reserves after the change, for the tick. No row matches without a market, and then
+     * nothing is returned. The stamp only moves forward.
+     */
+    private static final String ADD_MARKET_RESERVES = """
+            UPDATE experience_market SET points = points + ?, aur = aur + ?, updated_at = GREATEST(updated_at, ?)
+            WHERE id = 1 RETURNING points, aur
+            """;
+    /** A restock applies only while the stored day is before the day it restocks for, so it is applied once per day. */
+    private static final String RESTOCK_MARKET = """
+            UPDATE experience_market SET points = points + ?, aur = aur + ?,
+                restocked_day = ?, updated_at = GREATEST(updated_at, ?)
+            WHERE id = 1 AND restocked_day < ? RETURNING points, aur
+            """;
+    /** A staff adjustment: the deltas added exactly, and restocked_day kept. */
+    private static final String ADJUST_MARKET = """
+            UPDATE experience_market SET points = points + ?, aur = aur + ?, updated_at = GREATEST(updated_at, ?)
+            WHERE id = 1 RETURNING points, aur
+            """;
+    private static final String INSERT_MARKET_TICK = """
+            INSERT INTO experience_market_tick (points, aur, at) VALUES (?, ?, ?)
+            """;
+    /** Deletes every tick older than the newest MARKET_TICKS_KEPT. */
+    private static final String PRUNE_MARKET_TICKS = """
+            DELETE FROM experience_market_tick WHERE id IN (
+                SELECT id FROM experience_market_tick ORDER BY id DESC OFFSET ?)
+            """;
+    private static final String SELECT_MARKET_TICKS =
+            "SELECT points, aur, at FROM experience_market_tick ORDER BY id DESC LIMIT ?";
 
     private static final String OPERATION_COLUMNS = "operation_id, character_id, kind, subject_id, tier, revision_id, "
             + "world_id, reward, reputation, effect, step, created_at, updated_at, note";
@@ -404,6 +462,56 @@ final class PostgresStorage implements AlinaStorage {
     }
 
     @Override
+    public CompletableFuture<TradeState> loadTradeState(UUID characterId, LocalDate fromDay) {
+        return inSnapshot(connection -> {
+            Map<TradeBudgetKey, Integer> budgets = new HashMap<>();
+            try (PreparedStatement statement = connection.prepareStatement(SELECT_TRADE_BUDGET)) {
+                statement.setObject(1, characterId);
+                statement.setObject(2, fromDay);
+                try (ResultSet rows = statement.executeQuery()) {
+                    while (rows.next()) {
+                        budgets.put(new TradeBudgetKey(Identifier.parse(rows.getString(1)),
+                                rows.getObject(2, LocalDate.class)), rows.getInt(3));
+                    }
+                }
+            }
+            Map<TradePurchaseKey, Integer> purchases = new HashMap<>();
+            try (PreparedStatement statement = connection.prepareStatement(SELECT_TRADE_PURCHASES)) {
+                statement.setObject(1, characterId);
+                statement.setString(2, fromDay.toString());
+                try (ResultSet rows = statement.executeQuery()) {
+                    while (rows.next()) {
+                        purchases.put(new TradePurchaseKey(Identifier.parse(rows.getString(1)), rows.getString(2),
+                                rows.getString(3)), rows.getInt(4));
+                    }
+                }
+            }
+            return new TradeState(characterId, budgets, purchases);
+        });
+    }
+
+    @Override
+    public CompletableFuture<Void> resetTradeBudget(UUID characterId, Optional<Identifier> shopId, LocalDate tradeDay) {
+        return query(connection -> {
+            if (shopId.isPresent()) {
+                try (PreparedStatement statement = connection.prepareStatement(DELETE_TRADE_BUDGET_OF_SHOP_AND_DAY)) {
+                    statement.setObject(1, characterId);
+                    statement.setObject(2, tradeDay);
+                    statement.setString(3, shopId.get().toString());
+                    statement.executeUpdate();
+                }
+            } else {
+                try (PreparedStatement statement = connection.prepareStatement(DELETE_TRADE_BUDGET_OF_DAY)) {
+                    statement.setObject(1, characterId);
+                    statement.setObject(2, tradeDay);
+                    statement.executeUpdate();
+                }
+            }
+            return null;
+        });
+    }
+
+    @Override
     public CompletableFuture<Void> markOperation(UUID operationId, OperationStep step, Optional<String> note, Instant at) {
         OffsetDateTime stamp = utc(StorageSupport.micros(at));
         return inTransaction(connection -> {
@@ -487,6 +595,86 @@ final class PostgresStorage implements AlinaStorage {
                         "Board " + board.boardId() + " for " + board.boardDate() + " is missing after its insert"));
             }
         });
+    }
+
+    @Override
+    public CompletableFuture<MarketState> loadOrCreateMarket(long seedPoints, long seedAur, LocalDate day, Instant at) {
+        if (seedPoints < 1 || seedAur < 1) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException(
+                    "the seed reserves are at least 1, were " + seedPoints + " points and " + seedAur + " Aur"));
+        }
+        OffsetDateTime stamp = utc(StorageSupport.micros(at));
+        return inTransaction(connection -> {
+            Optional<MarketState> stored = selectMarket(connection);
+            if (stored.isPresent()) {
+                return stored.get();
+            }
+            MarketState seed = new MarketState(seedPoints, seedAur, day);
+            try (PreparedStatement insert = connection.prepareStatement(INSERT_MARKET)) {
+                insert.setLong(1, seed.points());
+                insert.setLong(2, seed.aur());
+                insert.setObject(3, seed.restockedDay());
+                insert.setObject(4, stamp);
+                insert.executeUpdate();
+            }
+            // Inserted now, or inserted earlier by a committed transaction, so the row exists either way.
+            return selectMarket(connection).orElseThrow(() -> new SQLException(
+                    "The experience market is missing after its insert"));
+        });
+    }
+
+    @Override
+    public CompletableFuture<Boolean> restockMarket(LocalDate day, long deltaPoints, long deltaAur, Instant at) {
+        OffsetDateTime stamp = utc(StorageSupport.micros(at));
+        return inTransaction(connection -> {
+            // The update takes the row's lock and checks the day under it, so one day's restock applies once.
+            try (PreparedStatement restock = connection.prepareStatement(RESTOCK_MARKET)) {
+                restock.setLong(1, deltaPoints);
+                restock.setLong(2, deltaAur);
+                restock.setObject(3, day);
+                restock.setObject(4, stamp);
+                restock.setObject(5, day);
+                return recordedMove(connection, restock, stamp);
+            }
+        });
+    }
+
+    @Override
+    public CompletableFuture<Boolean> adjustMarket(long deltaPoints, long deltaAur, Instant at) {
+        OffsetDateTime stamp = utc(StorageSupport.micros(at));
+        return inTransaction(connection -> {
+            try (PreparedStatement statement = connection.prepareStatement(ADJUST_MARKET)) {
+                statement.setLong(1, deltaPoints);
+                statement.setLong(2, deltaAur);
+                statement.setObject(3, stamp);
+                return recordedMove(connection, statement, stamp);
+            }
+        });
+    }
+
+    @Override
+    public CompletableFuture<List<MarketTick>> loadMarketTicks(int limit) {
+        if (limit < 1) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("limit must be positive, was " + limit));
+        }
+        return query(connection -> {
+            List<MarketTick> ticks = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement(SELECT_MARKET_TICKS)) {
+                statement.setInt(1, limit);
+                try (ResultSet rows = statement.executeQuery()) {
+                    while (rows.next()) {
+                        ticks.add(new MarketTick(rows.getLong(1), rows.getLong(2),
+                                rows.getObject(3, OffsetDateTime.class).toInstant()));
+                    }
+                }
+            }
+            return List.copyOf(ticks);
+        });
+    }
+
+    @Override
+    public CompletableFuture<Optional<MarketState>> loadMarket() {
+        return query(PostgresStorage::selectMarket);
     }
 
     @Override
@@ -575,6 +763,90 @@ final class PostgresStorage implements AlinaStorage {
         switch (operation.effect()) {
             case OperationEffect.CommissionSettled settled -> settle(connection, operation, settled);
             case OperationEffect.AchievementEarned earned -> earn(connection, operation, earned);
+            case OperationEffect.TradeSettled trade -> trade(connection, operation, trade);
+        }
+    }
+
+    /**
+     * A trade. The shop's budget for the day goes up by the Aur paid, unless none was paid, and each purchase's count
+     * goes up under its offer and period. The experience market's reserves move by the trade's deltas exactly, when a delta
+     * is not 0. An integer that would overflow fails the statement, so the transaction rolls back.
+     */
+    private static void trade(Connection connection, Operation operation, OperationEffect.TradeSettled trade)
+            throws SQLException {
+        OffsetDateTime at = utc(operation.createdAt());
+        if (trade.aurPaid() > 0) {
+            try (PreparedStatement statement = connection.prepareStatement(ADD_TRADE_BUDGET)) {
+                statement.setObject(1, operation.characterId());
+                statement.setString(2, trade.shopId().toString());
+                statement.setObject(3, trade.tradeDay());
+                statement.setInt(4, trade.aurPaid());
+                statement.setObject(5, at);
+                statement.executeUpdate();
+            }
+        }
+        try (PreparedStatement statement = connection.prepareStatement(ADD_TRADE_PURCHASE)) {
+            for (OperationEffect.TradeSettled.Purchase purchase : trade.purchases()) {
+                statement.setObject(1, operation.characterId());
+                statement.setString(2, trade.shopId().toString());
+                statement.setString(3, purchase.offerId());
+                statement.setString(4, purchase.period());
+                statement.setInt(5, purchase.count());
+                statement.setObject(6, at);
+                statement.executeUpdate();
+            }
+        }
+        if (trade.marketPoints() != 0 || trade.marketAur() != 0) {
+            addMarketReserves(connection, at, trade.marketPoints(), trade.marketAur());
+        }
+    }
+
+    /**
+     * Adds a trade's change to the market's reserves exactly, and records a tick of them. No row matches without a market, so
+     * the change is dropped and no tick is recorded.
+     */
+    private static void addMarketReserves(Connection connection, OffsetDateTime at, long points, long aur)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(ADD_MARKET_RESERVES)) {
+            statement.setLong(1, points);
+            statement.setLong(2, aur);
+            statement.setObject(3, at);
+            recordedMove(connection, statement, at);
+        }
+    }
+
+    /**
+     * Runs a statement that changes the market row and returns its reserves after the change. Each such change records a tick
+     * of those reserves, then prunes the ticks older than the newest {@link StorageSupport#MARKET_TICKS_KEPT}. Returns false,
+     * and records nothing, when no row matched.
+     */
+    private static boolean recordedMove(Connection connection, PreparedStatement statement, OffsetDateTime at)
+            throws SQLException {
+        try (ResultSet row = statement.executeQuery()) {
+            if (!row.next()) {
+                return false;
+            }
+            try (PreparedStatement insert = connection.prepareStatement(INSERT_MARKET_TICK)) {
+                insert.setLong(1, row.getLong(1));
+                insert.setLong(2, row.getLong(2));
+                insert.setObject(3, at);
+                insert.executeUpdate();
+            }
+        }
+        try (PreparedStatement prune = connection.prepareStatement(PRUNE_MARKET_TICKS)) {
+            prune.setInt(1, StorageSupport.MARKET_TICKS_KEPT);
+            prune.executeUpdate();
+        }
+        return true;
+    }
+
+    private static Optional<MarketState> selectMarket(Connection connection) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(SELECT_MARKET);
+                ResultSet row = statement.executeQuery()) {
+            if (!row.next()) {
+                return Optional.empty();
+            }
+            return Optional.of(new MarketState(row.getLong(1), row.getLong(2), row.getObject(3, LocalDate.class)));
         }
     }
 

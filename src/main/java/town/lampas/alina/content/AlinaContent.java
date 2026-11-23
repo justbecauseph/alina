@@ -6,23 +6,26 @@ import town.lampas.haruhi.content.api.ContentExtensionKey;
 import town.lampas.haruhi.content.api.ContentExtensions;
 
 /**
- * Owned by the content component. Registers Alina's two sections of the haruhi bundle, {@code alina:guild} and
- * {@code alina:achievements}, and reads them from the active bundle.
+ * Owned by the content component. Registers Alina's three sections of the haruhi bundle, {@code alina:guild},
+ * {@code alina:achievements} and {@code alina:trade}, and reads them from the active bundle.
  */
 public final class AlinaContent {
     public static final ContentExtensionKey<GuildContent> GUILD =
             new ContentExtensionKey<>(Alina.id("guild"), GuildContent.class);
     public static final ContentExtensionKey<AchievementsContent> ACHIEVEMENTS =
             new ContentExtensionKey<>(Alina.id("achievements"), AchievementsContent.class);
+    public static final ContentExtensionKey<TradeContent> TRADE =
+            new ContentExtensionKey<>(Alina.id("trade"), TradeContent.class);
 
     private AlinaContent() {}
 
-    /** Registers both extensions with haruhi. Call from {@code onInitialize}, after the criterion trigger types. */
+    /** Registers all three extensions with haruhi. Call from {@code onInitialize}, after the criterion trigger types. */
     public static void init() {
         ServerLookups.init();
         ContentExtensions.register(GUILD.id(), GuildContent.class,
                 (section, context) -> GuildReader.read(section, new CountingContext(context)));
         ContentExtensions.register(ACHIEVEMENTS.id(), AchievementsContent.class, AchievementsReader::read);
+        ContentExtensions.register(TRADE.id(), TradeContent.class, TradeReader::read);
     }
 
     /** The active bundle's {@code alina:guild} section, or {@link GuildContent#EMPTY}. Server thread only. */
@@ -33,5 +36,10 @@ public final class AlinaContent {
     /** The active bundle's {@code alina:achievements} section, or {@link AchievementsContent#EMPTY}. */
     public static AchievementsContent achievements() {
         return HaruhiServices.content().active().extension(ACHIEVEMENTS).orElse(AchievementsContent.EMPTY);
+    }
+
+    /** The active bundle's {@code alina:trade} section, or {@link TradeContent#EMPTY}. Server thread only. */
+    public static TradeContent trade() {
+        return HaruhiServices.content().active().extension(TRADE).orElse(TradeContent.EMPTY);
     }
 }

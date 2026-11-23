@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -115,7 +116,24 @@ class AlinaSchemaTest {
                 () -> assertEquals(sorted(GuildReader.STEW_EFFECT_CHECK_KEYS), branch("itemCheck", "alina:stew_effect"),
                         "stew_effect"),
                 () -> assertEquals(sorted(GuildReader.INSTRUMENT_TAG_CHECK_KEYS),
-                        branch("itemCheck", "alina:instrument_tag"), "instrument_tag"));
+                        branch("itemCheck", "alina:instrument_tag"), "instrument_tag"),
+                () -> assertEquals(sorted(TradeReader.TRADE_KEYS), properties("trade"), "trade"),
+                () -> assertEquals(sorted(TradeReader.DENOMINATION_KEYS), properties("denomination"), "denomination"),
+                () -> assertEquals(sorted(TradeReader.PRICE_LIST_KEYS), properties("priceList"), "priceList"),
+                () -> assertEquals(sorted(TradeReader.SELL_RULE_KEYS), properties("sellRule"), "sellRule"),
+                () -> assertEquals(sorted(TradeReader.PRICE_KEYS), properties("price"), "price"),
+                () -> assertEquals(sorted(TradeReader.SHOP_KEYS), properties("shop"), "shop"),
+                () -> assertEquals(sorted(TradeReader.SELL_KEYS), properties("sell"), "sell"),
+                () -> assertEquals(sorted(TradeReader.OFFER_KEYS), properties("offer"), "offer"),
+                () -> assertEquals(sorted(TradeReader.LIMIT_KEYS), properties("limit"), "limit"),
+                () -> assertEquals(sorted(TradeReader.REQUIRES_KEYS), properties("requires"), "requires"),
+                () -> assertEquals(sorted(TradeReader.EXPERIENCE_KEYS), properties("experience"), "experience"),
+                () -> assertEquals(sorted(TradeReader.RATE_KEYS), properties("rate"), "rate"),
+                () -> assertEquals(sorted(TradeReader.FEE_KEYS), properties("fee"), "fee"),
+                () -> assertEquals(sorted(TradeReader.EXPERIENCE_MARKET_KEYS), properties("experienceMarket"),
+                        "experienceMarket"),
+                () -> assertEquals(sorted(TradeReader.RESERVE_KEYS), nested("experienceMarket", "reserve"), "reserve"),
+                () -> assertEquals(sorted(TradeReader.LINE_KEYS), properties("shopLines"), "shopLines"));
     }
 
     /** The property names of an object nested under a definition's property. */
@@ -145,7 +163,7 @@ class AlinaSchemaTest {
         return values;
     }
 
-    /** A whole bundle holding the board graph and both documented examples. */
+    /** A whole bundle holding the board graph and the three documented examples. */
     private static JsonObject bundle() {
         JsonObject bundle = JsonParser.parseString("""
                 { "schema": 1,
@@ -154,6 +172,7 @@ class AlinaSchemaTest {
         JsonObject extensions = new JsonObject();
         extensions.add("alina:guild", JsonParser.parseString(GuildReaderTest.EXAMPLE));
         extensions.add("alina:achievements", JsonParser.parseString(AchievementsReaderTest.EXAMPLE));
+        extensions.add("alina:trade", JsonParser.parseString(TradeReaderTest.EXAMPLE));
         bundle.add("extensions", extensions);
         return bundle;
     }
@@ -172,6 +191,46 @@ class AlinaSchemaTest {
 
     private static JsonObject guild(JsonObject bundle) {
         return bundle.getAsJsonObject("extensions").getAsJsonObject("alina:guild");
+    }
+
+    private static JsonObject tradeSection(JsonObject bundle) {
+        return bundle.getAsJsonObject("extensions").getAsJsonObject("alina:trade");
+    }
+
+    private static JsonObject shop(JsonObject bundle, String id) {
+        return tradeSection(bundle).getAsJsonObject("shops").getAsJsonObject(id);
+    }
+
+    /** The offer at {@code index} of the shop's buy list. */
+    private static JsonObject offer(JsonObject bundle, String shop, int index) {
+        return shop(bundle, shop).getAsJsonArray("buy").get(index).getAsJsonObject();
+    }
+
+    /** The first rule of the price list lampas:common_drops. */
+    private static JsonObject commonDropsRule(JsonObject bundle, int index) {
+        return tradeSection(bundle).getAsJsonObject("price_lists").getAsJsonObject("lampas:common_drops")
+                .getAsJsonArray("rules").get(index).getAsJsonObject();
+    }
+
+    private static JsonObject market(JsonObject bundle) {
+        return tradeSection(bundle).getAsJsonObject("experience_market");
+    }
+
+    private static JsonObject reserve(JsonObject bundle) {
+        return market(bundle).getAsJsonObject("reserve");
+    }
+
+    /** The bundle's trade section takes the experience market of the example, and Mira's experience as the example's fees. */
+    private static void useMarket(JsonObject bundle) {
+        JsonObject example = JsonParser.parseString(TradeReaderTest.MARKET_EXAMPLE).getAsJsonObject();
+        tradeSection(bundle).add("experience_market", example.get("experience_market"));
+        shop(bundle, "lampas:mira").add("experience",
+                example.getAsJsonObject("shops").getAsJsonObject("lampas:mira").get("experience"));
+    }
+
+    /** Mira's experience of the given JSON text. */
+    private static void miraExperience(JsonObject bundle, String experience) {
+        shop(bundle, "lampas:mira").add("experience", JsonParser.parseString(experience));
     }
 
     private static JsonObject commission(JsonObject bundle, String id) {
@@ -258,15 +317,8 @@ class AlinaSchemaTest {
     void schemaAndReadersBothAllow(String name, Consumer<JsonObject> change) {
         JsonObject bundle = bundle();
         change.accept(bundle);
-        List<String> readerProblems = Stream.concat(
-                        ContentFixtures.guild(bundle.getAsJsonObject("extensions").get("alina:guild").toString())
-                                .problems().stream(),
-                        ContentFixtures.achievements(
-                                        bundle.getAsJsonObject("extensions").get("alina:achievements").toString())
-                                .problems().stream())
-                .toList();
         assertAll(
-                () -> assertEquals(List.of(), readerProblems, "the readers refuse it"),
+                () -> assertEquals(List.of(), readerProblems(bundle), "the readers refuse it"),
                 () -> assertEquals(List.of(), errors(bundle), "the schema refuses it"));
     }
 
@@ -275,14 +327,8 @@ class AlinaSchemaTest {
     void schemaAndReadersBothRefuse(String name, Consumer<JsonObject> change) {
         JsonObject bundle = bundle();
         change.accept(bundle);
-        JsonElement guildSection = bundle.getAsJsonObject("extensions").get("alina:guild");
-        JsonElement achievementsSection = bundle.getAsJsonObject("extensions").get("alina:achievements");
-        List<String> readerProblems = Stream.concat(
-                        ContentFixtures.guild(guildSection.toString()).problems().stream(),
-                        ContentFixtures.achievements(achievementsSection.toString()).problems().stream())
-                .toList();
         assertAll(
-                () -> assertFalse(readerProblems.isEmpty(), "the readers accept it"),
+                () -> assertFalse(readerProblems(bundle).isEmpty(), "the readers accept it"),
                 () -> assertFalse(errors(bundle).isEmpty(), "the schema accepts it"));
     }
 
@@ -297,15 +343,24 @@ class AlinaSchemaTest {
         return guild(bundle).getAsJsonObject("boards").getAsJsonObject(id);
     }
 
-    /** What the readers report for both sections of the bundle. */
+    /** What the readers report for the three sections of the bundle. */
     private static List<String> readerProblems(JsonObject bundle) {
-        return Stream.concat(
-                        ContentFixtures.guild(bundle.getAsJsonObject("extensions").get("alina:guild").toString())
-                                .problems().stream(),
-                        ContentFixtures.achievements(
-                                        bundle.getAsJsonObject("extensions").get("alina:achievements").toString())
-                                .problems().stream())
+        JsonObject extensions = bundle.getAsJsonObject("extensions");
+        return Stream.of(
+                        ContentFixtures.guild(extensions.get("alina:guild").toString()).problems(),
+                        ContentFixtures.achievements(extensions.get("alina:achievements").toString()).problems(),
+                        ContentFixtures.trade(extensions.get("alina:trade").toString()).problems())
+                .flatMap(List::stream)
                 .toList();
+    }
+
+    @Test
+    void schemaAndReadersBothAcceptTheExperienceMarketExample() {
+        JsonObject bundle = bundle();
+        bundle.getAsJsonObject("extensions").add("alina:trade", JsonParser.parseString(TradeReaderTest.MARKET_EXAMPLE));
+        assertAll(
+                () -> assertEquals(List.of(), readerProblems(bundle), "the readers refuse it"),
+                () -> assertEquals(List.of(), errors(bundle), "the schema refuses it"));
     }
 
     @Test
@@ -387,5 +442,186 @@ class AlinaSchemaTest {
     void readersAcceptTheExamples() {
         assertTrue(ContentFixtures.guild(GuildReaderTest.EXAMPLE).problems().isEmpty());
         assertTrue(ContentFixtures.achievements(AchievementsReaderTest.EXAMPLE).problems().isEmpty());
+        assertTrue(ContentFixtures.trade(TradeReaderTest.EXAMPLE).problems().isEmpty());
+    }
+
+    /** Changes to the trade example that the format allows. The readers and the schema must both take them. */
+    static Stream<Arguments> allowedTradeShapes() {
+        return Stream.of(
+                Arguments.of("a shop with experience buy only", (Consumer<JsonObject>) b -> {
+                    shop(b, "lampas:mira").remove("sell");
+                    shop(b, "lampas:mira").remove("buy");
+                    shop(b, "lampas:mira").getAsJsonObject("experience").remove("sell");
+                }),
+                Arguments.of("a shop name as a text component", (Consumer<JsonObject>) b ->
+                        shop(b, "lampas:mira").add("name", JsonParser.parseString("{ \"text\": \"Mira\" }"))),
+                Arguments.of("a limit per day", (Consumer<JsonObject>) b ->
+                        offer(b, "lampas:mira", 1).getAsJsonObject("limit").addProperty("per", "day")),
+                Arguments.of("requires with an achievement alone", (Consumer<JsonObject>) b ->
+                        offer(b, "lampas:mira", 1).add("requires",
+                                JsonParser.parseString("{ \"achievement\": \"lampas:guild/first_commission\" }"))),
+                Arguments.of("a refuse namespace rule with no price or junk", (Consumer<JsonObject>) b -> {
+                    commonDropsRule(b, 2).remove("price");
+                    commonDropsRule(b, 2).remove("junk");
+                    commonDropsRule(b, 2).addProperty("refuse", true);
+                }),
+                Arguments.of("a second denomination of value 81", (Consumer<JsonObject>) b ->
+                        tradeSection(b).getAsJsonArray("currency").add(JsonParser.parseString(
+                                "{ \"item\": \"minecraft:gold_block\", \"value\": 81 }"))),
+                Arguments.of("an offer id of 64 characters", (Consumer<JsonObject>) b ->
+                        offer(b, "lampas:mira", 0).addProperty("id", "a".repeat(64))),
+                Arguments.of("an experience market with fee shops", (Consumer<JsonObject>) AlinaSchemaTest::useMarket),
+                Arguments.of("an experience market with no shop that trades experience", (Consumer<JsonObject>) b -> {
+                    useMarket(b);
+                    shop(b, "lampas:mira").remove("experience");
+                }),
+                Arguments.of("an experience market without max_trade_percent", (Consumer<JsonObject>) b -> {
+                    useMarket(b);
+                    market(b).remove("max_trade_percent");
+                }),
+                Arguments.of("an experience market at the reserve bounds", (Consumer<JsonObject>) b -> {
+                    useMarket(b);
+                    reserve(b).addProperty("points", 1000);
+                    reserve(b).addProperty("aur", 1000000000);
+                }),
+                Arguments.of("a fee of 0 on a sell alone", (Consumer<JsonObject>) b -> {
+                    useMarket(b);
+                    shop(b, "lampas:mira").getAsJsonObject("experience").remove("buy");
+                    shop(b, "lampas:mira").getAsJsonObject("experience").getAsJsonObject("sell")
+                            .addProperty("fee_percent", 0);
+                }));
+    }
+
+    /** Changes to the trade example that the format refuses. The readers and the schema must both refuse them. */
+    static Stream<Arguments> refusedTradeShapes() {
+        return Stream.of(
+                Arguments.of("an experience sell with no sell block", (Consumer<JsonObject>) b ->
+                        shop(b, "lampas:mira").remove("sell")),
+                Arguments.of("a currency value of 0", (Consumer<JsonObject>) b ->
+                        tradeSection(b).getAsJsonArray("currency").get(0).getAsJsonObject().addProperty("value", 0)),
+                Arguments.of("an unknown trade key", (Consumer<JsonObject>) b ->
+                        tradeSection(b).addProperty("sell_all", true)),
+                Arguments.of("a currency entry with an unknown key", (Consumer<JsonObject>) b ->
+                        tradeSection(b).getAsJsonArray("currency").get(0).getAsJsonObject().addProperty("only_if", true)),
+                Arguments.of("a rule with match and namespace", (Consumer<JsonObject>) b ->
+                        commonDropsRule(b, 0).addProperty("namespace", "minecraft")),
+                Arguments.of("a rule with neither match nor namespace", (Consumer<JsonObject>) b ->
+                        commonDropsRule(b, 0).remove("match")),
+                Arguments.of("a refuse rule with a price", (Consumer<JsonObject>) b ->
+                        commonDropsRule(b, 3).add("price", JsonParser.parseString("{ \"aur\": 1, \"per\": 1 }"))),
+                Arguments.of("a rule with no price and no refuse", (Consumer<JsonObject>) b ->
+                        commonDropsRule(b, 3).remove("refuse")),
+                Arguments.of("a refuse rule with junk", (Consumer<JsonObject>) b ->
+                        commonDropsRule(b, 3).addProperty("junk", true)),
+                Arguments.of("a match with a count", (Consumer<JsonObject>) b ->
+                        commonDropsRule(b, 0).getAsJsonObject("match").addProperty("count", 2)),
+                Arguments.of("a price per of 65", (Consumer<JsonObject>) b ->
+                        commonDropsRule(b, 0).getAsJsonObject("price").addProperty("per", 65)),
+                Arguments.of("a namespace with a capital letter", (Consumer<JsonObject>) b ->
+                        commonDropsRule(b, 2).addProperty("namespace", "FarmersDelight")),
+                Arguments.of("a shop with only a name", (Consumer<JsonObject>) b -> {
+                    shop(b, "lampas:mira").remove("sell");
+                    shop(b, "lampas:mira").remove("buy");
+                    shop(b, "lampas:mira").remove("experience");
+                }),
+                Arguments.of("a shop with an empty buy list only", (Consumer<JsonObject>) b -> {
+                    shop(b, "lampas:mira").remove("sell");
+                    shop(b, "lampas:mira").remove("experience");
+                    shop(b, "lampas:mira").add("buy", new JsonArray());
+                }),
+                Arguments.of("a daily budget of 0", (Consumer<JsonObject>) b ->
+                        shop(b, "lampas:mira").getAsJsonObject("sell").addProperty("daily_budget", 0)),
+                Arguments.of("an offer id with a capital letter", (Consumer<JsonObject>) b ->
+                        offer(b, "lampas:mira", 0).addProperty("id", "XP_Flask")),
+                Arguments.of("an offer id of 65 characters", (Consumer<JsonObject>) b ->
+                        offer(b, "lampas:mira", 0).addProperty("id", "a".repeat(65))),
+                Arguments.of("an offer item with a count of 1", (Consumer<JsonObject>) b ->
+                        offer(b, "lampas:mira", 0).getAsJsonObject("item").addProperty("count", 1)),
+                Arguments.of("an offer item with a count of 100", (Consumer<JsonObject>) b ->
+                        offer(b, "lampas:mira", 0).getAsJsonObject("item").addProperty("count", 100)),
+                Arguments.of("a limit per week", (Consumer<JsonObject>) b ->
+                        offer(b, "lampas:mira", 1).getAsJsonObject("limit").addProperty("per", "week")),
+                Arguments.of("requires with nothing in it", (Consumer<JsonObject>) b ->
+                        offer(b, "lampas:mira", 1).add("requires", new JsonObject())),
+                Arguments.of("an unknown shop line", (Consumer<JsonObject>) b ->
+                        shop(b, "lampas:mira").getAsJsonObject("lines").addProperty("hello", "x")),
+                Arguments.of("an experience rate of 0 points", (Consumer<JsonObject>) b ->
+                        shop(b, "lampas:mira").getAsJsonObject("experience").getAsJsonObject("sell")
+                                .addProperty("points", 0)),
+                Arguments.of("a shop id that is not an id", (Consumer<JsonObject>) b ->
+                        tradeSection(b).getAsJsonObject("shops").add("Bad Key",
+                                shop(b, "lampas:mira").deepCopy())),
+                Arguments.of("a sell list that is not an array", (Consumer<JsonObject>) b ->
+                        shop(b, "lampas:mira").getAsJsonObject("sell").addProperty("lists", "lampas:common_drops")),
+                Arguments.of("a rate form with an experience market", (Consumer<JsonObject>) b -> {
+                    useMarket(b);
+                    miraExperience(b, "{ \"sell\": { \"points\": 50, \"aur\": 1 } }");
+                }),
+                Arguments.of("a fee form without an experience market", (Consumer<JsonObject>) b ->
+                        miraExperience(b, "{ \"sell\": { \"fee_percent\": 5 }, \"buy\": { \"fee_percent\": 5 } }")),
+                Arguments.of("a fee with the keys of a rate", (Consumer<JsonObject>) b -> {
+                    useMarket(b);
+                    shop(b, "lampas:mira").getAsJsonObject("experience").getAsJsonObject("sell")
+                            .addProperty("points", 50);
+                }),
+                Arguments.of("a fee of 51", (Consumer<JsonObject>) b -> {
+                    useMarket(b);
+                    shop(b, "lampas:mira").getAsJsonObject("experience").getAsJsonObject("sell")
+                            .addProperty("fee_percent", 51);
+                }),
+                Arguments.of("a reserve of 999 points", (Consumer<JsonObject>) b -> {
+                    useMarket(b);
+                    reserve(b).addProperty("points", 999);
+                }),
+                Arguments.of("a reserve of 1000000001 aur", (Consumer<JsonObject>) b -> {
+                    useMarket(b);
+                    reserve(b).addProperty("aur", 1000000001);
+                }),
+                Arguments.of("a reserve with an unknown key", (Consumer<JsonObject>) b -> {
+                    useMarket(b);
+                    reserve(b).addProperty("only_if", true);
+                }),
+                Arguments.of("a restock of 101", (Consumer<JsonObject>) b -> {
+                    useMarket(b);
+                    market(b).addProperty("restock_percent", 101);
+                }),
+                Arguments.of("a max trade of 51", (Consumer<JsonObject>) b -> {
+                    useMarket(b);
+                    market(b).addProperty("max_trade_percent", 51);
+                }),
+                Arguments.of("an experience market without a reserve", (Consumer<JsonObject>) b -> {
+                    useMarket(b);
+                    market(b).remove("reserve");
+                }),
+                Arguments.of("an experience market without a restock", (Consumer<JsonObject>) b -> {
+                    useMarket(b);
+                    market(b).remove("restock_percent");
+                }),
+                Arguments.of("an experience market with an unknown key", (Consumer<JsonObject>) b -> {
+                    useMarket(b);
+                    market(b).addProperty("only_if", true);
+                }),
+                Arguments.of("an experience market that is not an object", (Consumer<JsonObject>) b ->
+                        tradeSection(b).addProperty("experience_market", "x")));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("allowedTradeShapes")
+    void tradeSchemaAndReadersBothAllow(String name, Consumer<JsonObject> change) {
+        JsonObject bundle = bundle();
+        change.accept(bundle);
+        assertAll(
+                () -> assertEquals(List.of(), readerProblems(bundle), "the readers refuse it"),
+                () -> assertEquals(List.of(), errors(bundle), "the schema refuses it"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("refusedTradeShapes")
+    void tradeSchemaAndReadersBothRefuse(String name, Consumer<JsonObject> change) {
+        JsonObject bundle = bundle();
+        change.accept(bundle);
+        assertAll(
+                () -> assertFalse(readerProblems(bundle).isEmpty(), "the readers accept it"),
+                () -> assertFalse(errors(bundle).isEmpty(), "the schema accepts it"));
     }
 }

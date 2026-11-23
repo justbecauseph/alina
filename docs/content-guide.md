@@ -1,24 +1,26 @@
 # Content guide
 
-This guide is for writers of Guild commissions, notice boards and achievements. Alina's content lives in a Haruhi
-content bundle, in two sections of its top-level `extensions` object:
+This guide is for writers of Guild commissions, notice boards, achievements and shops. Alina's content lives in a Haruhi
+content bundle, in three sections of its top-level `extensions` object:
 
 - `alina:guild`: Guild settings, commissions, world volumes and notice boards;
-- `alina:achievements`: achievement tabs and achievements.
+- `alina:achievements`: achievement tabs and achievements;
+- `alina:trade`: the currency, price lists and shops.
 
 Everything else in the bundle (NPC profiles, dialogue graphs, flags, conditions and actions) is Haruhi's format, in
 Haruhi's [content guide](https://github.com/justbecauseph/haruhi/blob/main/docs/content-guide.md). Players reach the
 Guild through Haruhi conversations, so a Guild needs at least one graph that uses Alina's [dialogue types](#dialogue-types).
 
-- [Rules for both sections](#rules-for-both-sections)
+- [Rules for every section](#rules-for-every-section)
 - [The alina:guild section](#the-alinaguild-section)
 - [Dialogue types](#dialogue-types)
 - [Alina's criterion triggers](#alinas-criterion-triggers)
 - [The alina:achievements section](#the-alinaachievements-section)
+- [The alina:trade section](#the-alinatrade-section)
 - [Validation](#validation)
 - [Worked example](#worked-example)
 
-## Rules for both sections
+## Rules for every section
 
 Alina follows Haruhi's bundle rules:
 
@@ -276,9 +278,13 @@ A node whose only entries come from `alina:guild/status` has no enabled choice, 
 | `alina:guild/reputation` | `op` (`eq`, `ne`, `gt`, `gte`, `lt`, `lte`), `value` | the player's reputation compares true |
 | `alina:guild/commission` | `commission`, `state` (`available`, `active`, `cooldown`, `completed`) | the commission is in that standing; a commission being settled matches none |
 | `alina:achievement` | `achievement`, `tier` (optional) | the player has earned the achievement (or that tier) in any cycle |
+| `alina:trade/can_afford` | `value` (0 or more) | the player holds at least `value` Aur in the main inventory |
+| `alina:trade/budget_left` | `shop`, `op` (`eq`, `ne`, `gt`, `gte`, `lt`, `lte`), `value` | the Aur the shop can still pay the player today compares true; false for a shop without `sell` |
 
 Every condition is false while the player's record loads. `alina:achievement` needs the bundle to have an
 `alina:achievements` section, and `tier` is allowed only for a tiered achievement, from 1 to its number of tiers.
+`alina:trade/can_afford` reads the inventory, so it does not wait for a record. A `shop` argument must name a shop of
+the bundle's `alina:trade` section.
 
 ### Actions
 
@@ -288,6 +294,7 @@ Every condition is false while the player's record loads. `alina:achievement` ne
 | `alina:guild/turn_in` | `commission` | Turns it in. |
 | `alina:guild/abandon` | `commission` | Abandons it. |
 | `alina:achievement/trigger` | `key` | Fires `alina:manual` with the key, for achievements and commissions that count conversations. |
+| `alina:trade/open` | `shop`, `then` (optional) | Ends the conversation and opens the shop's trade screen. When the player closes the screen, the graph `then` opens with the same NPC; without `then` nothing follows. A refusal is sent to the player's chat. |
 
 ### What the player is told
 
@@ -309,7 +316,7 @@ The messages are translatable, with their English text in `assets/alina/lang/en_
 
 ## Alina's criterion triggers
 
-Alina registers six criterion triggers. Commission proofs and achievement criteria can use them, and so can a vanilla
+Alina registers seven criterion triggers. Commission proofs and achievement criteria can use them, and so can a vanilla
 advancement in a data pack. Every condition is optional, so `{}` matches every event, and each also takes vanilla's
 `player` condition.
 
@@ -321,6 +328,7 @@ advancement in a data pack. Every condition is optional, so `{}` matches every e
 | `alina:volume_entered` | `volume` (id) | the player enters a volume of the `alina:guild` section. The volumes a player stands in at join do not fire. |
 | `alina:achievement_earned` | `achievement` (id), `tier` (bounds, 1-based) | an achievement earn is durable |
 | `alina:manual` | `key` (string) | the `alina:achievement/trigger` action runs with that key |
+| `alina:trade_completed` | `shop` (id), `aur_earned` and `aur_spent` (bounds) | a trade has settled: `aur_earned` is the Aur the shop paid the player, `aur_spent` the Aur the player paid the shop |
 
 Ids in these conditions are checked: a commission proof's `commission` and `volume` must be in the `alina:guild`
 section, and an achievement criterion's `achievement` must be in the `alina:achievements` section. A `commission` or
@@ -408,6 +416,188 @@ in any cycle.
 
 An achievement's own earns never count towards its own criteria.
 
+## The alina:trade section
+
+Shops buy items from players for Aur, sell items to players, and trade experience points. The section is read in the
+same way as the others: a misspelt key is an error, and every problem is listed in one pass.
+
+```json
+"alina:trade": {
+  "currency": [
+    { "item": "minecraft:gold_nugget", "value": 1 },
+    { "item": "minecraft:gold_ingot", "value": 9 }
+  ],
+  "price_lists": {
+    "lampas:common_drops": {
+      "rules": [
+        { "match": { "items": "minecraft:rotten_flesh" }, "price": { "aur": 1, "per": 4 }, "junk": true },
+        { "match": { "items": "#minecraft:planks" }, "price": { "aur": 1, "per": 8 }, "junk": true },
+        { "namespace": "farmersdelight", "price": { "aur": 1, "per": 2 }, "junk": true },
+        { "match": { "items": "minecraft:nether_star" }, "refuse": true }
+      ]
+    }
+  },
+  "shops": {
+    "lampas:mira": {
+      "name": "Mira's stall",
+      "sell": { "daily_budget": 200, "lists": ["lampas:common_drops"], "rules": [] },
+      "buy": [
+        { "id": "xp_flask", "item": { "id": "minecraft:experience_bottle" }, "price": 10 },
+        { "id": "hat", "item": { "id": "minecraft:leather_helmet" }, "price": 250,
+          "limit": { "count": 1, "per": "character" }, "requires": { "reputation": 50 } }
+      ],
+      "experience": { "sell": { "points": 50, "aur": 1 }, "buy": { "points": 50, "aur": 2 } },
+      "lines": { "greeting": "Welcome.", "sold": "A fair price.", "bought": "Use it well." }
+    }
+  }
+}
+```
+
+The example sits inside the bundle's `extensions` object. `sell` is what a player sells to the shop; `buy` is what a
+player buys from the shop.
+
+### Currency
+
+`currency` is a non-empty list of denominations, which the shops pay in. Each entry is an item and the Aur it stands for:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `item` | required | A registered item id. No two entries may name the same item. |
+| `value` | required | The Aur the item stands for. At least 1. No two entries may share a value. |
+
+One denomination must have value 1, so any amount of Aur can be paid out. The server keeps the denominations largest
+value first.
+
+### Price lists
+
+`price_lists` are named lists of sell rules. A shop's `sell` names them with `lists`. A price list has one key,
+`rules`.
+
+### Sell rules
+
+A rule has exactly one of `match` and `namespace`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `match` | none | A vanilla item predicate: `items`, `components`, `predicates`. It must not have `count`. |
+| `namespace` | none | An id namespace, such as `farmersdelight`. Every item of that namespace matches. The server checks that the namespace has registered items. |
+| `price` | required, unless `refuse` | `aur` and `per`: the shop pays `aur` Aur for every `per` items. `aur` is at least 1; `per` is from 1 to 64. |
+| `junk` | `false` | `true` marks the matching items as junk. |
+| `refuse` | `false` | `true` makes the shop take none of the matching items. A refuse rule has no `price` and no `junk`. |
+
+A rule matches a stack when its `namespace` is the item's namespace, or its `match` accepts the stack. A stack is
+modified when it has component changes, such as an enchantment, a custom name or damage. A modified stack is matched
+only by a rule whose `match` has `components` or `predicates`. A `namespace` rule and a `match` without those keys never
+take a modified stack.
+
+A shop tries its rules in order and uses the first one that matches. The shop's own `rules` come first, then the rules
+of each list it names, in the order it names them. A refuse rule that matches ends the search, so a later price cannot
+apply to that item. A `match` may name a tag, such as `"#minecraft:planks"`; tags are resolved on the server only.
+
+### Shops
+
+A shop needs a `name` (text) and at least one of these:
+
+| Key | Meaning |
+|---|---|
+| `sell` | What players sell to the shop. Needs `daily_budget`: the most Aur the shop pays players in one day, at least 1. Its rules come from `rules` and `lists`, and at least one rule must result, unless the shop's `experience` has a `sell` entry: then `sell` may have no rules, and its budget pays out the experience sales. |
+| `buy` | What players buy from the shop: a non-empty list of offers. |
+| `experience` | The experience the shop trades: rates, or fees in a bundle with an `experience_market`. See [Experience](#experience) and [Experience market](#experience-market). |
+| `lines` | Optional text for the shop's messages. The keys are `greeting`, `sold`, `bought`, `cannot_afford`, `budget_spent`, `no_room`, `nothing_to_sell`, `limit_reached`, `locked` and `busy`. Each is a text component. |
+
+The server checks the keys and the text of `lines`. The trade screen shows `greeting` when the shop opens, `sold` after a
+sale of items or experience, and `bought` after a purchase of an offer or of experience. The others answer a refused
+trade: `cannot_afford`, `budget_spent` (the day's budget is used up), `no_room` (the main inventory cannot hold what the
+player would receive), `nothing_to_sell` ("Sell junk" with no junk), `limit_reached`, `locked` (a `requires` the player
+does not meet) and `busy` (the player's last trade is still being recorded). A shop without a line uses Alina's default.
+
+### Offers
+
+Each entry of `buy` is an offer:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `id` | required | Lower-case letters, digits and underscores (`[a-z0-9_]+`), at most 64 characters. Unique within the shop. |
+| `item` | required | An item stack: `{ "id": "minecraft:paper", "count": 4 }`. The count is from 2 to 99 and at most the item's stack size. Leave out a count of 1, the default. |
+| `price` | required | The Aur the stack's count of the item costs. At least 1. |
+| `limit` | none | `{ "count", "per" }`: at most `count` of this offer to one player per `per`. `per` is `day` or `character`. `count` is at least 1. |
+| `requires` | none | `reputation` (a whole number) and/or `achievement` (an id). At least one is needed. The achievement is not checked against `alina:achievements`. |
+
+An offer's item may not be a currency item, and may not be a container that holds items.
+
+### Experience
+
+`experience` sets fixed rates for points of experience, in a bundle without an `experience_market`. Give `sell`, `buy` or
+both. Each is `{ "points", "aur" }`: the points the rate covers and the Aur for them, both at least 1. `sell` is what a
+player sells to the shop. `buy` is what a player buys from the shop. A trade moves whole steps of the rate: the Aur
+amount must be a multiple of `aur`, and it moves `points` for each step.
+
+In a bundle with an `experience_market`, each of `sell` and `buy` is `{ "fee_percent" }` instead. See
+[Experience market](#experience-market).
+
+### Experience market
+
+A bundle with an `experience_market` section trades experience against one pool, and every shop's `experience` gives
+fees instead of rates:
+
+```json
+"alina:trade": {
+  "currency": [
+    { "item": "minecraft:gold_nugget", "value": 1 },
+    { "item": "minecraft:gold_ingot", "value": 9 }
+  ],
+  "experience_market": {
+    "reserve": { "points": 500000, "aur": 10000 },
+    "restock_percent": 10,
+    "max_trade_percent": 10
+  },
+  "shops": {
+    "lampas:mira": {
+      "name": "Mira's stall",
+      "sell": { "daily_budget": 200 },
+      "experience": { "sell": { "fee_percent": 5 }, "buy": { "fee_percent": 5 } }
+    }
+  }
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `reserve.points` | required | The points of the seed reserve, from 1000 to 1000000000. |
+| `reserve.aur` | required | The Aur of the seed reserve, from 1000 to 1000000000. |
+| `restock_percent` | required | From 0 to 100: how far each reserve moves back to the seed once per Guild board day, in percent. |
+| `max_trade_percent` | 10 | From 1 to 50: the most of the reserve one trade may take from it, in percent. |
+| `fee_percent` | none | In a shop's `sell` or `buy`: from 0 to 50, the shop's fee in that direction, in percent. A direction with no entry is not traded. |
+
+Every experience broker trades against the same pool. At the seed, the rate is `reserve.points / reserve.aur` points
+per Aur. The rate moves as players trade: selling experience makes it worth less at every broker, and buying makes it
+worth more. A trade is priced along the pool's curve and rounded against the player, so selling and buying straight
+back always loses.
+
+The fee is taken in points. A fee of n percent takes n percent of the points the curve gives for the trade: a sale costs
+the player that many more points, and a purchase gives the player that many fewer.
+
+Once per Guild board day, each reserve moves `restock_percent` of the way back to the seed. One trade may take at most
+`max_trade_percent` of the reserve it draws from.
+
+The live reserves are kept in the database. Changing the seed in a new revision changes where the pool heads, not where
+it is.
+
+A bundle uses either rates in every shop or the market in every shop, never both. With an `experience_market`, each
+`sell` and `buy` is `{ "fee_percent" }`; without one, each is `{ "points", "aur" }`.
+
+A shop whose `experience` has a `sell` entry, in either form, needs a `sell` block with a `daily_budget`: the shop pays
+the experience out of that budget, and the entry is refused without the block. Its `sell` may have no rules, since it
+takes no items. A shop that only buys experience needs no `sell` block.
+
+### Aur must not be minted
+
+Content may not let a player make Aur by trading. The server refuses a bundle when:
+
+- a shop's experience `buy` costs less per point than any shop's experience `sell` pays, the same shop included (equal
+  rates are allowed; fees in an experience market are not compared); or
+- a shop buys back an offer, by a sell rule that is not `refuse`, for more per item than the offer costs.
+
 ## Validation
 
 Besides the shapes the schema checks, the server refuses a bundle when:
@@ -420,6 +610,12 @@ Besides the shapes the schema checks, the server refuses a bundle when:
   checks (a missing predicate reference, a wrong loot context);
 - a count above 1 uses a state trigger;
 - a loot table, instrument tag, effect or dimension does not exist on the server;
+- a trade rule's `namespace` has no registered item on the server;
+- the currency has no denomination of value 1;
+- a shop's `sell` names a price list the section lacks;
+- a shop's `experience` has a rate in a bundle with an `experience_market`, or a fee in a bundle without one;
+- an `experience_market` lacks `reserve` or `restock_percent`, or a value in it or a `fee_percent` is outside its range;
+- a trade rule would let a player mint Aur, as described under [Aur must not be minted](#aur-must-not-be-minted);
 - an achievement names a tab or parent the section lacks, a parent in another tab, a hidden parent, or a parent chain
   that loops;
 - tier counts do not rise, an achievement with tiers has more than one criterion or a criterion `count`, or

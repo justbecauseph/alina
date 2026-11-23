@@ -22,8 +22,8 @@ javadoc (§7, §8.2 and so on) refer to it.
 |---|---|
 | `storage` | the `AlinaStorage` port, `InMemoryStorage` and `PostgresStorage` (HikariCP, migrations under `alina/migrations/`), `StorageModule` and `config/alina.json` |
 | `api` | `AlinaServices`, which holds the storage |
-| `criteria` | Alina's six criterion triggers (`AlinaTriggers`), and `CriterionWatchers`, which watches one player's trigger events by trigger and player |
-| `content` | the `alina:guild` and `alina:achievements` extensions: records, readers, validation, `AlinaContent` |
+| `criteria` | Alina's seven criterion triggers (`AlinaTriggers`), and `CriterionWatchers`, which watches one player's trigger events by trigger and player |
+| `content` | the `alina:guild`, `alina:achievements` and `alina:trade` extensions: records, readers, validation, `AlinaContent` |
 | `settlement` | `SettlementService` (escrow, verified saves, recovery, world id, reconciliation), `SettlementModule`, `SettlementTriggers` |
 | `guild` | `GuildService` (records, boards, accept, abandon, turn-in, proof tracking), `GuildModule`, `GuildText`; `guild.board` (board days and the draw), `guild.proof` (the item proof planner), `guild.dialogue` (Haruhi types), `guild.block` (the Notice Board), `guild.command` (`/alina guild`) |
 | `achievement` | `AchievementService` (records, counting, tiers, repeats, earns), `AdvancementSync` (the vanilla screen), `AchievementModule`, the `alina:achievement` condition and `/alina achievement` |
@@ -61,7 +61,7 @@ language file.
 
 Alina uses Haruhi's extension API:
 
-- `ContentExtensions.register` for `alina:guild` and `alina:achievements` (`AlinaContent.init()`). Haruhi parses
+- `ContentExtensions.register` for `alina:guild`, `alina:achievements` and `alina:trade` (`AlinaContent.init()`). Haruhi parses
   them after flags, NPCs and graphs, so the readers check graph ids through `ExtensionContext.graphIds()`, which
   includes graphs that failed to parse.
 - `DialogueRegistries` for the providers, conditions and actions in `guild.dialogue` and `AchievementConditions`.
@@ -223,7 +223,7 @@ and the Gateways and Lampas bundle GameTests skip there. Before tagging, run loc
 |---|---|
 | `src/main/java/town/lampas/alina/` | the mod, by package as above |
 | `src/main/resources/fabric.mod.json`, `alina.mixins.json` | mod metadata and the mixin config |
-| `src/main/resources/alina/migrations/` | `V1__init.sql`, `V2__boards.sql` |
+| `src/main/resources/alina/migrations/` | `V1__init.sql`, `V2__boards.sql`, `V3__trade.sql`, `V4__experience_market.sql` |
 | `src/main/resources/assets/alina/` | the Notice Board's blockstate, item and model, and `lang/en_us.json` |
 | `src/main/resources/data/alina/loot_table/rewards/` | the Lampas reward tables, `guild/<code>.json`, and `placeholder.json` |
 | `src/main/resources/data/minecraft/tags/block/` | `wither_immune` and `dragon_immune`, which add the Notice Board |

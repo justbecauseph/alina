@@ -6,7 +6,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import town.lampas.alina.Alina;
 
 /**
- * Alina's six criterion triggers (ALINA-PLAN §6.3). {@link #init} registers them in
+ * Alina's seven criterion triggers (ALINA-PLAN §6.3). {@link #init} registers them in
  * {@code BuiltInRegistries.TRIGGER_TYPES}, where datapack advancements and Alina's content find them by id.
  */
 public final class AlinaTriggers {
@@ -16,6 +16,7 @@ public final class AlinaTriggers {
     public static final VolumeEnteredTrigger VOLUME_ENTERED = new VolumeEnteredTrigger();
     public static final AchievementEarnedTrigger ACHIEVEMENT_EARNED = new AchievementEarnedTrigger();
     public static final ManualTrigger MANUAL = new ManualTrigger();
+    public static final TradeCompletedTrigger TRADE_COMPLETED = new TradeCompletedTrigger();
 
     private static boolean registered;
 
@@ -35,6 +36,7 @@ public final class AlinaTriggers {
         register("volume_entered", VOLUME_ENTERED);
         register("achievement_earned", ACHIEVEMENT_EARNED);
         register("manual", MANUAL);
+        register("trade_completed", TRADE_COMPLETED);
         registered = true;
     }
 

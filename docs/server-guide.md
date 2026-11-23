@@ -114,7 +114,7 @@ If the schema does not exist, the migration step creates it, which needs `CREATE
 
 ### Migrations
 
-The SQL migrations ship in the jar under `alina/migrations/`: `V1__init.sql` and `V2__boards.sql`. They run when the
+The SQL migrations ship in the jar under `alina/migrations/`: `V1__init.sql`, `V2__boards.sql`, `V3__trade.sql` and `V4__experience_market.sql`. They run when the
 server starts, before Alina's other modules read the database, and the start waits for them. Each runs in its own
 transaction with its row in `alina_schema_version`, under an advisory lock, so two servers starting on one database
 apply each once. A failure stops the start with `Alina storage could not migrate schema <schema>: <reason>`. A schema
@@ -128,6 +128,10 @@ that a newer Alina build migrated is refused with `Schema <schema> is at version
 | `board` | `board_date`, `board_id` | one stored draw per board and day: `revision_id`, `seed`, `commission_ids` in board order |
 | `achievement` | `character_id`, `achievement_id` | the highest `tier` earned (0 without tiers), `earn_count`, `last_earned_at`, `available_at` |
 | `criterion_progress` | `character_id`, `achievement_id`, `criterion` | `count`; a count of 0 deletes the row |
+| `trade_budget` | `character_id`, `shop_id`, `trade_day` | `aur_paid`: the Aur a shop has paid a character on a board day |
+| `trade_purchase` | `character_id`, `shop_id`, `offer_id`, `period` | `count` of a limited offer bought; `period` is the day's date or `character` |
+| `experience_market` | `id` (one row) | the experience market's live reserves, `points` and `aur`, and `restocked_day` |
+| `experience_market_tick` | `id` (bigserial) | the market's reserves after each of the last 64 changes, `points`, `aur` and `at`, for the rate chart |
 | `alina_schema_version` | `version` | the applied migrations |
 
 Only one server may use an Alina database at a time. Nothing enforces this yet; see
@@ -135,7 +139,7 @@ Only one server may use an Alina database at a time. Nothing enforces this yet; 
 
 ## Deploying content
 
-Alina's content is two sections of a Haruhi content bundle, `alina:guild` and `alina:achievements`, under the
+Alina's content is three sections of a Haruhi content bundle, `alina:guild`, `alina:achievements` and `alina:trade`, under the
 bundle's `extensions` object. The [content guide](content-guide.md) describes them. Haruhi activates one revision for
 the whole server, so the bundle that holds Alina's sections must also hold every NPC and graph the server uses.
 
@@ -232,6 +236,23 @@ cap, proof not met, and so on) is the reply.
 | `/alina achievement revoke <player> <achievement> [tier]` | Takes it away and lowers the counts. Rewards already paid stay with the player. |
 
 `grant` and `revoke` are refused while the player's record loads.
+
+### /alina trade
+
+| Command | What it does |
+|---|---|
+| `/alina trade open <player> <shop>` | Opens the shop's trade screen for the player, with no NPC. |
+| `/alina trade quote <shop>` | Prices the item in your main hand at the shop and names the sell rule that matched. |
+| `/alina trade budget <player> [<shop>]` | The Aur the shop, or every shop, has paid the player today against its daily budget. |
+| `/alina trade budget <player> reset [<shop>]` | Deletes today's budget rows of the player. Refused while a trade of the player is settling. |
+| `/alina trade market` | The experience market's live reserves and rate, its seed and base rate, and the last restock day. |
+| `/alina trade market reset` | Sets the market's reserves to the seed of the active content. |
+| `/alina trade market set <points> <aur>` | Sets both reserves, each from 1 to 4000000000. |
+
+`market reset` and `market set` are written to storage as the difference from the live reserves, so no trade is refused
+for them, and storage ends at the new reserves once the trades in flight settle. Each is written to the log with who ran
+it and the reserves before and after. The market exists only when the active content has an `experience_market`
+section; its reserves stay in the database when the content changes.
 
 ### /alina settlement
 

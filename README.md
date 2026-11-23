@@ -2,7 +2,7 @@
 
 Alina is a Fabric mod for Minecraft 26.2 that runs the Maraha Guild and an achievement system on the Lampas server.
 It is built on [Haruhi](https://github.com/justbecauseph/haruhi): the Guild's commissions, boards and achievements are
-two extension sections of Haruhi's content bundle, and players reach the Guild through Haruhi conversations with an
+extension sections of Haruhi's content bundle, and players reach the Guild through Haruhi conversations with an
 NPC or a Notice Board block.
 
 Players accept commissions from a daily board, prove them with items in their inventory, a vanilla criterion event or
@@ -134,7 +134,7 @@ Switch to PostgreSQL before players depend on their records: see
 | Guide | For | Covers |
 |---|---|---|
 | [Server guide](docs/server-guide.md) | server operators | installing, `config/alina.json`, PostgreSQL, deploying content, Notice Boards, every `/alina` command, settlement and reconciliation, log messages |
-| [Content guide](docs/content-guide.md) | content writers | the `alina:guild` and `alina:achievements` sections, boards, commissions, proofs, dialogue types, triggers, achievements, validation |
+| [Content guide](docs/content-guide.md) | content writers | the `alina:guild`, `alina:achievements` and `alina:trade` sections, boards, commissions, proofs, dialogue types, triggers, achievements, validation |
 | [Alina JSON Schema](docs/alina.schema.json) | content writers | a JSON Schema of a Haruhi bundle with Alina's sections, for editors |
 | [Developer guide](docs/developer-guide.md) | mod developers | packages, initialisation, settlement, threading, building and testing, the Lampas pack jars, releasing |
 

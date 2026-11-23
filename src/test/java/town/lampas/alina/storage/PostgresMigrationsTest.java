@@ -95,7 +95,7 @@ class PostgresMigrationsTest {
             }
 
             try (Connection connection = connect()) {
-                assertEquals(List.of("1", "2"), column(connection,
+                assertEquals(List.of("1", "2", "3", "4"), column(connection,
                         "SELECT version FROM " + schema + ".alina_schema_version ORDER BY version"));
                 // The primary key of board is the date and the board id, in that order.
                 assertEquals(List.of("board_date", "board_id"), column(connection,
@@ -112,17 +112,60 @@ class PostgresMigrationsTest {
             }
         }
 
+        /**
+         * A schema migrated to version 3 by the release before experience markets, then migrated by this one. The market
+         * tables are created, and no market row is created with them.
+         */
+        @Test
+        void aV3SchemaGainsTheExperienceMarketTablesWithNoMarket() throws SQLException {
+            String schema = "t" + UUID.randomUUID().toString().replace("-", "");
+            seedThroughVersion(schema, 3);
+
+            try (PostgresStorage storage = new PostgresStorage(postgres.getJdbcUrl(), postgres.getUsername(),
+                    postgres.getPassword(), schema, 2)) {
+                storage.migrate();
+
+                assertEquals(Optional.empty(), storage.loadMarket().join());
+                assertEquals(List.of(), storage.loadMarketTicks(10).join());
+            }
+
+            try (Connection connection = connect()) {
+                assertEquals(List.of("1", "2", "3", "4"), column(connection,
+                        "SELECT version FROM " + schema + ".alina_schema_version ORDER BY version"));
+                assertEquals(List.of("experience_market", "experience_market_tick"), column(connection,
+                        "SELECT table_name FROM information_schema.tables WHERE table_schema = ? "
+                                + "AND table_name LIKE 'experience_market%' ORDER BY table_name", schema));
+            }
+        }
+
         /** Creates the schema as version 1 left it: the version table, the V1 tables, and one board row. */
         private void seedVersionOne(String schema) throws SQLException {
+            seedThroughVersion(schema, 1);
+            try (Connection connection = connect()) {
+                execute(connection, "INSERT INTO " + schema + ".board (board_date, revision_id, seed, commission_ids) "
+                        + "VALUES ('2026-11-05', 3, 9, ARRAY['alina:guild/courier']::text[])");
+            }
+        }
+
+        /**
+         * Creates the schema with the migrations 1 to {@code version} applied and recorded, the way an earlier release left
+         * it. The SQL is the migrations this build ships, so the version rows match what it would write.
+         */
+        private void seedThroughVersion(String schema, int version) throws SQLException {
             try (Connection connection = connect()) {
                 execute(connection, "CREATE SCHEMA " + schema);
                 execute(connection, "SET search_path TO " + schema);
                 execute(connection, "CREATE TABLE alina_schema_version (version int PRIMARY KEY, "
                         + "description text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())");
-                execute(connection, PostgresMigrations.load().get(0).sql());
-                execute(connection, "INSERT INTO alina_schema_version (version, description) VALUES (1, 'init')");
-                execute(connection, "INSERT INTO board (board_date, revision_id, seed, commission_ids) "
-                        + "VALUES ('2026-11-05', 3, 9, ARRAY['alina:guild/courier']::text[])");
+                for (PostgresMigrations.Migration migration : PostgresMigrations.load().subList(0, version)) {
+                    execute(connection, migration.sql());
+                    try (PreparedStatement record = connection.prepareStatement(
+                            "INSERT INTO alina_schema_version (version, description) VALUES (?, ?)")) {
+                        record.setInt(1, migration.version());
+                        record.setString(2, migration.description());
+                        record.executeUpdate();
+                    }
+                }
             }
         }
 

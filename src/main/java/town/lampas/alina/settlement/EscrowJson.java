@@ -8,6 +8,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -75,6 +76,9 @@ final class EscrowJson {
         json.add("rolled", stackTexts(operation.rolled(), ops));
         json.add("remaining", remainingCounts(operation.reward()));
         json.add("removed", stackTexts(operation.removed(), ops));
+        if (operation.experience() > 0) {
+            json.addProperty("experience", operation.experience());
+        }
         operation.commissionCategory().ifPresent(category -> json.addProperty("commission_category",
                 String.valueOf(category)));
         operation.commissionKind().ifPresent(kind -> json.addProperty("commission_kind", kind));
@@ -109,7 +113,8 @@ final class EscrowJson {
                 json.has("commission_category")
                         ? Optional.of(text(json, "commission_category").charAt(0))
                         : Optional.empty(),
-                json.has("commission_kind") ? Optional.of(text(json, "commission_kind")) : Optional.empty());
+                json.has("commission_kind") ? Optional.of(text(json, "commission_kind")) : Optional.empty(),
+                json.has("experience") ? json.get("experience").getAsInt() : 0);
     }
 
     private static JsonObject effectJson(OperationEffect effect) {
@@ -127,6 +132,28 @@ final class EscrowJson {
                 json.addProperty("tier", earned.tier());
                 earned.availableAt().ifPresent(at -> json.addProperty("available_at", at.toString()));
             }
+            case OperationEffect.TradeSettled trade -> {
+                json.addProperty("type", "trade_settled");
+                json.addProperty("shop_id", trade.shopId().toString());
+                json.addProperty("trade_day", trade.tradeDay().toString());
+                json.addProperty("aur_paid", trade.aurPaid());
+                JsonArray purchases = new JsonArray();
+                for (OperationEffect.TradeSettled.Purchase purchase : trade.purchases()) {
+                    JsonObject bought = new JsonObject();
+                    bought.addProperty("offer_id", purchase.offerId());
+                    bought.addProperty("period", purchase.period());
+                    bought.addProperty("count", purchase.count());
+                    purchases.add(bought);
+                }
+                json.add("purchases", purchases);
+                json.add("detail", JsonParser.parseString(trade.detailJson()));
+                if (trade.marketPoints() != 0) {
+                    json.addProperty("market_points", trade.marketPoints());
+                }
+                if (trade.marketAur() != 0) {
+                    json.addProperty("market_aur", trade.marketAur());
+                }
+            }
         }
         return json;
     }
@@ -142,8 +169,26 @@ final class EscrowJson {
                     Identifier.parse(text(json, "achievement_id")),
                     json.get("tier").getAsInt(),
                     optionalInstant(json, "available_at"));
+            case "trade_settled" -> new OperationEffect.TradeSettled(
+                    Identifier.parse(text(json, "shop_id")),
+                    LocalDate.parse(text(json, "trade_day")),
+                    json.get("aur_paid").getAsInt(),
+                    purchasesFrom(json.getAsJsonArray("purchases")),
+                    GSON.toJson(json.get("detail")),
+                    optionalLong(json, "market_points"),
+                    optionalLong(json, "market_aur"));
             default -> throw new IllegalStateException("unknown effect type " + type + " in the escrow");
         };
+    }
+
+    private static List<OperationEffect.TradeSettled.Purchase> purchasesFrom(JsonArray array) {
+        List<OperationEffect.TradeSettled.Purchase> purchases = new ArrayList<>();
+        for (JsonElement element : array) {
+            JsonObject bought = element.getAsJsonObject();
+            purchases.add(new OperationEffect.TradeSettled.Purchase(
+                    text(bought, "offer_id"), text(bought, "period"), bought.get("count").getAsInt()));
+        }
+        return purchases;
     }
 
     private static ApplyResult resultFrom(JsonObject json) {
@@ -208,5 +253,10 @@ final class EscrowJson {
 
     private static Optional<Instant> optionalInstant(JsonObject json, String key) {
         return json.has(key) ? Optional.of(Instant.parse(text(json, key))) : Optional.empty();
+    }
+
+    /** The number under the key, or 0 when the key is absent. */
+    private static long optionalLong(JsonObject json, String key) {
+        return json.has(key) ? json.get(key).getAsLong() : 0;
     }
 }

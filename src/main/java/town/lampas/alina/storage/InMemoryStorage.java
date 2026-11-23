@@ -2,6 +2,7 @@ package town.lampas.alina.storage;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -39,6 +40,12 @@ public final class InMemoryStorage implements AlinaStorage {
     private final Map<UUID, Map<CriterionKey, Integer>> criteria = new HashMap<>();
     private final Map<UUID, StoredOperation> operations = new HashMap<>();
     private final Map<BoardKey, StoredBoard> boards = new HashMap<>();
+    private final Map<UUID, Map<TradeBudgetKey, Integer>> tradeBudgets = new HashMap<>();
+    private final Map<UUID, Map<TradePurchaseKey, Integer>> tradePurchases = new HashMap<>();
+    /** The experience market's row, or null until it is created. */
+    private MarketState market;
+    /** The newest market ticks, oldest first, at most {@link StorageSupport#MARKET_TICKS_KEPT}. */
+    private final List<MarketTick> marketTicks = new ArrayList<>();
 
     @Override
     public CompletableFuture<CharacterState> loadCharacter(UUID characterId) {
@@ -185,12 +192,57 @@ public final class InMemoryStorage implements AlinaStorage {
                     AchievementState row = earnedRow(stored, earned);
                     yield () -> achievementsOf(character).put(row.achievementId(), row);
                 }
+                case OperationEffect.TradeSettled trade -> {
+                    Map<TradeBudgetKey, Integer> budgets = budgetsAfter(character, trade);
+                    Map<TradePurchaseKey, Integer> purchases = purchasesAfter(character, trade);
+                    Optional<MarketState> reserves = marketAfter(trade);
+                    yield () -> {
+                        tradeBudgetsOf(character).putAll(budgets);
+                        tradePurchasesOf(character).putAll(purchases);
+                        reserves.ifPresent(moved -> {
+                            market = moved;
+                            recordTick(moved, stored.createdAt());
+                        });
+                    };
+                }
             };
             operations.put(stored.operationId(),
                     new StoredOperation(stored, OperationStep.RECORDED, stored.createdAt(), Optional.empty()));
             reputation.put(character, next);
             change.run();
             return new ApplyResult(true, next);
+        });
+    }
+
+    @Override
+    public CompletableFuture<TradeState> loadTradeState(UUID characterId, LocalDate fromDay) {
+        return locked(() -> {
+            Map<TradeBudgetKey, Integer> budgets = new HashMap<>();
+            for (Map.Entry<TradeBudgetKey, Integer> entry : tradeBudgets.getOrDefault(characterId, Map.of()).entrySet()) {
+                if (!entry.getKey().tradeDay().isBefore(fromDay)) {
+                    budgets.put(entry.getKey(), entry.getValue());
+                }
+            }
+            Map<TradePurchaseKey, Integer> purchases = new HashMap<>();
+            for (Map.Entry<TradePurchaseKey, Integer> entry
+                    : tradePurchases.getOrDefault(characterId, Map.of()).entrySet()) {
+                if (purchaseCounts(entry.getKey().period(), fromDay)) {
+                    purchases.put(entry.getKey(), entry.getValue());
+                }
+            }
+            return new TradeState(characterId, budgets, purchases);
+        });
+    }
+
+    @Override
+    public CompletableFuture<Void> resetTradeBudget(UUID characterId, Optional<Identifier> shopId, LocalDate tradeDay) {
+        return locked(() -> {
+            Map<TradeBudgetKey, Integer> budgets = tradeBudgets.get(characterId);
+            if (budgets != null) {
+                budgets.keySet().removeIf(key -> key.tradeDay().equals(tradeDay)
+                        && (shopId.isEmpty() || shopId.get().equals(key.shopId())));
+            }
+            return null;
         });
     }
 
@@ -237,6 +289,78 @@ public final class InMemoryStorage implements AlinaStorage {
     }
 
     @Override
+    public CompletableFuture<MarketState> loadOrCreateMarket(long seedPoints, long seedAur, LocalDate day, Instant at) {
+        if (seedPoints < 1 || seedAur < 1) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException(
+                    "the seed reserves are at least 1, were " + seedPoints + " points and " + seedAur + " Aur"));
+        }
+        return locked(() -> {
+            if (market == null) {
+                market = new MarketState(seedPoints, seedAur, day);
+            }
+            return market;
+        });
+    }
+
+    @Override
+    public CompletableFuture<Boolean> restockMarket(LocalDate day, long deltaPoints, long deltaAur, Instant at) {
+        return locked(() -> {
+            if (market == null || !market.restockedDay().isBefore(day)) {
+                return false;
+            }
+            // Every value that can fail is computed before the first change. The live reserves are the exact sum.
+            MarketState restocked = new MarketState(
+                    Math.addExact(market.points(), deltaPoints),
+                    Math.addExact(market.aur(), deltaAur),
+                    day);
+            market = restocked;
+            recordTick(restocked, at);
+            return true;
+        });
+    }
+
+    @Override
+    public CompletableFuture<Boolean> adjustMarket(long deltaPoints, long deltaAur, Instant at) {
+        return locked(() -> {
+            if (market == null) {
+                return false;
+            }
+            MarketState adjusted = new MarketState(Math.addExact(market.points(), deltaPoints),
+                    Math.addExact(market.aur(), deltaAur), market.restockedDay());
+            market = adjusted;
+            recordTick(adjusted, at);
+            return true;
+        });
+    }
+
+    @Override
+    public CompletableFuture<List<MarketTick>> loadMarketTicks(int limit) {
+        if (limit < 1) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("limit must be positive, was " + limit));
+        }
+        return locked(() -> {
+            List<MarketTick> newest = new ArrayList<>();
+            for (int index = marketTicks.size() - 1; index >= 0 && newest.size() < limit; index--) {
+                newest.add(marketTicks.get(index));
+            }
+            return List.copyOf(newest);
+        });
+    }
+
+    /** Records the reserves after a change, and drops the oldest ticks beyond {@link StorageSupport#MARKET_TICKS_KEPT}. */
+    private void recordTick(MarketState state, Instant at) {
+        marketTicks.add(new MarketTick(state.points(), state.aur(), at));
+        while (marketTicks.size() > StorageSupport.MARKET_TICKS_KEPT) {
+            marketTicks.remove(0);
+        }
+    }
+
+    @Override
+    public CompletableFuture<Optional<MarketState>> loadMarket() {
+        return locked(() -> Optional.ofNullable(market));
+    }
+
+    @Override
     public void close() {
         executor.close();
     }
@@ -260,6 +384,62 @@ public final class InMemoryStorage implements AlinaStorage {
 
     private Map<CriterionKey, Integer> criteriaOf(UUID characterId) {
         return criteria.computeIfAbsent(characterId, id -> new HashMap<>());
+    }
+
+    private Map<TradeBudgetKey, Integer> tradeBudgetsOf(UUID characterId) {
+        return tradeBudgets.computeIfAbsent(characterId, id -> new HashMap<>());
+    }
+
+    private Map<TradePurchaseKey, Integer> tradePurchasesOf(UUID characterId) {
+        return tradePurchases.computeIfAbsent(characterId, id -> new HashMap<>());
+    }
+
+    /**
+     * The budget row a trade leaves: its shop and day's row at the value after the trade, when the trade paid anything. Reads
+     * only, so an overflowing sum throws before any change.
+     */
+    private Map<TradeBudgetKey, Integer> budgetsAfter(UUID character, OperationEffect.TradeSettled trade) {
+        Map<TradeBudgetKey, Integer> rows = new HashMap<>();
+        if (trade.aurPaid() > 0) {
+            TradeBudgetKey key = new TradeBudgetKey(trade.shopId(), trade.tradeDay());
+            int stored = tradeBudgets.getOrDefault(character, Map.of()).getOrDefault(key, 0);
+            rows.put(key, Math.addExact(stored, trade.aurPaid()));
+        }
+        return rows;
+    }
+
+    /**
+     * The purchase rows a trade leaves, at their values after the trade. A trade that buys the same offer twice adds both
+     * counts. Reads only, so an overflowing sum throws before any change.
+     */
+    private Map<TradePurchaseKey, Integer> purchasesAfter(UUID character, OperationEffect.TradeSettled trade) {
+        Map<TradePurchaseKey, Integer> stored = tradePurchases.getOrDefault(character, Map.of());
+        Map<TradePurchaseKey, Integer> rows = new HashMap<>();
+        for (OperationEffect.TradeSettled.Purchase purchase : trade.purchases()) {
+            TradePurchaseKey key = new TradePurchaseKey(trade.shopId(), purchase.offerId(), purchase.period());
+            int current = rows.getOrDefault(key, stored.getOrDefault(key, 0));
+            rows.put(key, Math.addExact(current, purchase.count()));
+        }
+        return rows;
+    }
+
+    /**
+     * The market row a trade leaves, when the trade moves a reserve and the market exists. Without a market the deltas
+     * are dropped. The reserves are the exact sum. Reads only, so an overflowing sum throws before any change.
+     */
+    private Optional<MarketState> marketAfter(OperationEffect.TradeSettled trade) {
+        if (market == null || (trade.marketPoints() == 0 && trade.marketAur() == 0)) {
+            return Optional.empty();
+        }
+        return Optional.of(new MarketState(
+                Math.addExact(market.points(), trade.marketPoints()),
+                Math.addExact(market.aur(), trade.marketAur()),
+                market.restockedDay()));
+    }
+
+    /** Whether a purchase row counts from {@code fromDay}: a per-character row always does, a per-day row when its day is not before it. */
+    private static boolean purchaseCounts(String period, LocalDate fromDay) {
+        return period.equals(StorageSupport.CHARACTER_PERIOD) || !LocalDate.parse(period).isBefore(fromDay);
     }
 
     private void removeCriteria(UUID characterId, Identifier achievementId) {

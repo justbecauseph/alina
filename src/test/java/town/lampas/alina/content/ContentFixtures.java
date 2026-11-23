@@ -12,6 +12,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.BiFunction;
 import net.minecraft.core.HolderLookup;
+import net.minecraft.core.component.DataComponentInitializers;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.data.registries.VanillaRegistries;
 import net.minecraft.resources.Identifier;
@@ -39,9 +40,22 @@ final class ContentFixtures {
         if (ops == null) {
             // Registers Alina's triggers (AlinaTriggers.init) before Bootstrap freezes the registries.
             TestBootstrap.boot();
-            ops = RegistryOps.create(JsonOps.INSTANCE, lookup());
+            HolderLookup.Provider lookup = lookup();
+            ops = RegistryOps.create(JsonOps.INSTANCE, lookup);
+            bindItemComponents(lookup);
         }
         return ops;
+    }
+
+    /**
+     * A server binds each item's components when it loads its data. Until then ItemStack.CODEC refuses every item with
+     * "does not have components yet", so a unit test cannot parse a stack without this.
+     */
+    private static void bindItemComponents(HolderLookup.Provider lookup) {
+        for (DataComponentInitializers.PendingComponents<?> pending
+                : BuiltInRegistries.DATA_COMPONENT_INITIALIZERS.build(lookup)) {
+            pending.apply();
+        }
     }
 
     /**
@@ -123,6 +137,10 @@ final class ContentFixtures {
 
     static Parsed<AchievementsContent> achievements(String json) {
         return parse("alina:achievements", json, AchievementsReader::read);
+    }
+
+    static Parsed<TradeContent> trade(String json) {
+        return parse("alina:trade", json, TradeReader::read);
     }
 
     static JsonObject object(String json) {

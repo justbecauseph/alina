@@ -1,5 +1,6 @@
 package town.lampas.alina.settlement;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.List;
@@ -42,5 +43,21 @@ class SettlementRequestTest {
                 COMMISSION, 1, 1, Optional.empty(), 0,
                 new OperationEffect.AchievementEarned(COMMISSION, 1, Optional.empty()), player -> List.of(),
                 Optional.of('C'), Optional.of("repeatable")));
+    }
+
+    @Test
+    void aRequestWithTheOriginalComponentsHasNoGrantAndNoExperience() {
+        SettlementRequest request = turnIn(Optional.of('C'), Optional.of("repeatable"));
+
+        assertEquals(List.of(), request.grant());
+        assertEquals(0, request.experience());
+    }
+
+    @Test
+    void experienceIsNeverNegative() {
+        assertThrows(IllegalArgumentException.class, () -> new SettlementRequest(OperationKind.TURN_IN, COMMISSION, 0,
+                1, Optional.empty(), 1,
+                new OperationEffect.CommissionSettled(COMMISSION, CommissionStatus.COMPLETED, Optional.empty()),
+                player -> List.of(), Optional.empty(), Optional.empty(), List.of(), -1));
     }
 }

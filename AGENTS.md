@@ -74,17 +74,18 @@ this build.
 
 | Package under `town.lampas.alina` | Delivers |
 |---|---|
-| `storage` | `AlinaStorage` port, in-memory and PostgreSQL (HikariCP, migrations under `alina/migrations/`), config `config/alina.json` |
+| `storage` | `AlinaStorage` port, in-memory and PostgreSQL (HikariCP, migrations under `alina/migrations/`, trade budgets and purchases), config `config/alina.json` |
 | `api` | `AlinaServices`: the storage getter |
-| `content` | the `alina:guild` and `alina:achievements` bundle extensions: records, readers, validation, `AlinaContent` |
+| `content` | the `alina:guild`, `alina:achievements` and `alina:trade` bundle extensions: records, readers, validation, `AlinaContent` |
 | `criteria` | `CriterionWatchers`: watches one player's criterion trigger events, indexed by trigger and then player; `CriteriaModule` closes a player's watches on leave |
 | `settlement` | `SettlementService` (escrow attachment, verified player-data saves, recovery, world id, reconciliation), `SettlementModule` (the attachment, the service's lifecycle and tick), `SettlementTriggers` (the reputation and commission triggers, attached to the service's listeners by `SettlementModule`) |
 | `guild` | `GuildService` (each online character's record, the daily board, accept, abandon, turn-in, criterion and descent proof tracking), `GuildModule` (its lifecycle and events), `GuildText` (player-facing text); `guild.board` (board days and the draw), `guild.proof` (the item proof planner), `guild.dialogue` (Haruhi conditions, actions and providers), `guild.block` (the Notice Board), `guild.command` (`/alina guild`) |
 | `achievement` | `AchievementService` (each online character's achievement record, counting, tiers, repeat cycles, earns), `AdvancementSync` (Alina achievements in the vanilla advancement screen), `AchievementModule` (their lifecycle and events), the `alina:achievement` condition and `/alina achievement` |
+| `trade` | `TradeService` (each online character's trade record, the shop sessions, and the sell, sell junk, buy and experience requests), `TradeModule` (its lifecycle, receivers and the tick), `TradeMessenger` and `NetworkMessenger` (the payloads), `TradeText` (player-facing text), `TradeRefusal` and `TradeOutcome` (what a request came to); `trade.pricing` (wallet, sell planner, inventory fit, experience points), `trade.network` (payloads and views), `trade.dialogue` (`alina:trade/open` and two conditions), `trade.command` (`/alina trade`) |
 | `mixin` | `SimpleCriterionTriggerMixin`: hands every simple criterion trigger event to the watchers, before vanilla's early return for players with no unfinished advancement on it; `PlayerStorageAccess`: the server's `playerDataStorage`, for settlement's saves; `PlayerAdvancementsMixin`: holds a join's first advancement packet for the achievement record and adds Alina's holders to every reset packet |
 | `client` | `AlinaClient` entrypoint |
 
-Initialisation, in `Alina.onInitialize`: storage, criteria, content, settlement, guild, achievement (§5). Criterion
+Initialisation, in `Alina.onInitialize`: storage, criteria, content, settlement, guild, achievement, trade (§5). Criterion
 trigger types register before content, because content parses criteria through `BuiltInRegistries.TRIGGER_TYPES`.
 Haruhi's services are read from server events onward, never during init.
 
@@ -108,19 +109,20 @@ Haruhi's services are read from server events onward, never during init.
 
 ## Alina's triggers
 
-`criteria` registers six criterion triggers in `BuiltInRegistries.TRIGGER_TYPES` (`AlinaTriggers.init()`, called right
+`criteria` registers seven criterion triggers in `BuiltInRegistries.TRIGGER_TYPES` (`AlinaTriggers.init()`, called right
 after storage and before content). Each is a `SimpleCriterionTrigger` with a public fire method, and every condition is
 optional, so `{}` matches every event. `alina:commission_accepted` and `alina:commission_completed` take `commission`
 (an id), `category` (A to F) and `kind` (`repeatable` or `feat`), fired as `trigger(player, commission, category, kind)`.
 `alina:reputation_changed` takes `reputation` (int bounds), fired as `trigger(player, reputation)`. `alina:volume_entered`
 takes `volume` (an id), fired as `trigger(player, volume)`. `alina:achievement_earned` takes `achievement` (an id) and
 `tier` (int bounds), fired as `trigger(player, achievement, tier)`. `alina:manual` takes `key` (a string), fired as
-`trigger(player, key)`. A misspelt condition key fails content validation.
+`trigger(player, key)`. `alina:trade_completed` takes `shop` (an id), `aur_earned` and `aur_spent` (int bounds), fired as
+`trigger(player, shop, aurEarned, aurSpent)` when a trade settles. A misspelt condition key fails content validation.
 
 ## Content
 
-Two sections under the Haruhi bundle's `extensions` object. The format, with examples, is in the plan's §6;
-`GuildReaderTest.EXAMPLE` and `AchievementsReaderTest.EXAMPLE` hold the examples the tests check.
+Three sections under the Haruhi bundle's `extensions` object. The format, with examples, is in the plan's §6;
+`GuildReaderTest.EXAMPLE`, `AchievementsReaderTest.EXAMPLE` and `TradeReaderTest.EXAMPLE` hold the examples the tests check.
 
 - `alina:guild`: `settings` (required; `board_graph` required and must be a graph in the bundle), `commissions`,
   `volumes`. Proof types `item` (`all_of` or `any_of` entries of an item predicate without `count`, Alina item checks
@@ -128,6 +130,13 @@ Two sections under the Haruhi bundle's `extensions` object. The format, with exa
   `conditions`, `count`) and `descent` (`start` and `finish` volumes).
 - `alina:achievements`: `tabs` and `achievements`. Tab `background` is a texture id without `textures/` and `.png`, as
   in vanilla (`minecraft:gui/advancements/backgrounds/stone`).
+- `alina:trade`: `currency` (required, with one denomination of value 1), `price_lists` and `shops`. A shop's `sell`
+  takes items through rules (`match` or `namespace`, with `price` or `refuse`), `buy` lists offers and `experience`
+  trades points. The reader refuses content that would mint Aur: an experience buy cheaper per point than an experience
+  sell, or an offer bought back for more per item than it costs, for the offer's stack and for its plain item once the
+  modification is stripped. It also refuses an offer whose item is a currency item (whatever its components) or holds
+  other items (a non-empty container or bundle), and an offer id over 64 characters, the network's limit
+  (`OfferRow.MAX_ID_LENGTH`). A `#tag` in a rule resolves only on a server, so the unit tests name items instead.
 - Durations (`cooldown`, `default_cooldown`, an achievement's `repeat.cooldown`) are ISO-8601, positive and at most
   3650 days, so adding one to the current time cannot overflow.
 - A counted criterion (count above 1, or tiers above 1) needs an event trigger: the vanilla ones in
@@ -147,13 +156,14 @@ Two sections under the Haruhi bundle's `extensions` object. The format, with exa
 
 ## Settlement
 
-Turn-ins and achievement rewards go through `SettlementService` (ALINA-PLAN §7). `begin` runs on the server thread;
-`tick` runs every server tick.
+Turn-ins, achievement rewards and shop trades go through `SettlementService` (ALINA-PLAN §7). `begin` runs on the server
+thread; `tick` runs every server tick.
 
 - **Escrow.** The attachment `alina:settlement` (persistent, copied on death) holds a JSON array of the player's pending
   operations. An operation keeps its id, kind, subject, tier, revision, world id, reputation delta, effect, the rolled
-  reward, the part of it still to deliver, the removed proof stacks (audit), the commission's category and kind when
-  the turn-in's request named them, and, once storage has applied it, the `ApplyResult`.
+  reward and grant, the part of it still to deliver, the experience still to give, the removed proof stacks (audit), the
+  commission's category and kind when the turn-in's request named them, and, once storage has applied it, the
+  `ApplyResult`.
 - **Stack encoding.** Each stack is written with `ItemStack.CODEC` through the server's registries, as NBT, and the NBT
   is stored as its SNBT text, so each number keeps its type (a `long` stays a `long`). The rolled stacks are stored
   once. The part still to deliver is one count per rolled stack. Stacks are cut to their max stack size, and to at most
@@ -165,8 +175,8 @@ Turn-ins and achievement rewards go through `SettlementService` (ALINA-PLAN §7)
   later, so the 5535-byte margin covers about 100 operations pending at once.
 - **Refused and failed begins.** `begin` changes nothing when it refuses: the player already has an operation of the
   same kind, subject and tier; the escrow would be over the limit; or the removal or the encoding throws (logged). The
-  proof goes back into the inventory, nothing is saved, and the caller keeps its own state and tries again later. A
-  loot table that is not on the server throws before anything changes.
+  proof goes back into the inventory, the experience is put back as it was, nothing is saved, and the caller keeps its
+  own state and tries again later. A loot table that is not on the server throws before anything changes.
 - **Dead players and respawn.** A player who is dead, or whose entity was removed, is not served. A storage completion
   is applied only to the entity that made the call, and only while that entity is alive and is still the player's online
   entity. The comparison is `==`, never `equals`: `Entity.equals` compares ids, and a respawn gives the new entity the
@@ -182,13 +192,20 @@ Turn-ins and achievement rewards go through `SettlementService` (ALINA-PLAN §7)
   file. It does not catch a copied or restored world: that keeps its id file, so a copy that shares the database with
   the original has the original's id. Only the one-writer rule (ALINA-PLAN §7, not enforced yet) prevents that.
 - **Steps.** `begin` rolls the reward (seed: the operation id's most and least significant bits XOR), takes the proof
-  with the request's removal, encodes the escrow, checks its size, and saves. `tick` calls
+  with the request's removal, appends the grant, encodes the escrow, checks its size, and saves. `tick` calls
   `AlinaStorage.applyOperation` for the first due operation, off the server thread, after its escrow is on disk. The
   completion puts the stacks into the main inventory (matching stacks first, then empty slots; never the offhand or the
-  armour), then saves the escrow with the storage result recorded. A failed save restores the main inventory slots and
-  the previous escrow, so the next attempt calls storage again and gets `fresh` false. When the reward is fully delivered
-  the operation leaves the escrow, `markOperation` marks it settled (write-behind), and the settled listeners run. One
-  storage call is in flight per player; a failed step waits 100 ticks.
+  armour) and gives the experience, then saves the escrow with the storage result recorded. A failed save restores the
+  main inventory slots, the experience and the previous escrow, so the next attempt calls storage again and gets `fresh`
+  false. When the reward and the experience are fully delivered, the operation leaves the escrow, `markOperation` marks
+  it settled (write-behind), and the settled listeners run. One storage call is in flight per player; a failed step
+  waits 100 ticks.
+- **Grants, experience and trades.** A request may carry fixed stacks (`grant`), delivered after the rolled reward, and
+  experience points (`experience`), given once with the delivery. A removal may take experience too; a refused `begin`
+  puts it back. `OperationKind.TRADE` carries a `TradeSettled` effect: the Aur the shop paid, the offers bought, and a
+  JSON detail for the log. Storage adds the Aur to the shop's budget for the trade day, and each purchase's count to its
+  offer's row, in the same transaction as the operation. A `begin` is refused while a pending operation has the same kind,
+  subject and tier, so a second trade with one shop waits until the first is settled.
 - **Triggers.** `SettlementTriggers.register(service)` is the one entry point. `alina:reputation_changed` fires when a
   verified save first records the storage result, for an operation whose reputation delta is not zero, with the
   reputation after the change. The reward may still be pending then. `alina:commission_completed` fires when the reward
@@ -316,6 +333,109 @@ The achievement service (ALINA-PLAN §9) is `AchievementModule.service()` on a r
   the normal earn path, reward included) and `revoke <player> <achievement> [tier]` (no reward taken back).
 - **Seeing it in a client** (the tabs, the `x/y` text and the toasts) needs `./gradlew runClient`; GameTests check
   the packets the server sends.
+
+## Trade
+
+The NPC shop trade is `TradeModule.service()` on a running server; the class javadoc of `TradeService` is the contract.
+
+- **Records.** Each online character's trade record loads on a tick when the character has no trade pending in the
+  settlement escrow, so its rows are complete. Until then every request is refused with `LOADING` and no session opens.
+  The record holds the Aur paid per shop and trade day, the purchases per offer and period (`character` or the day's
+  ISO date), and the trades begun and not yet reported settled. A trade enters the record when `SettlementService.begin`
+  accepts it, and leaves it when settlement's settled listener reports it. Nothing else changes it.
+- **Trade day** is the Guild's board day: its reset time and zone. Budgets and daily limits count per trade day.
+- **Sessions.** `open` closes the player's previous session. It refuses a shop not in the content, a record that has not
+  loaded, a trade still settling (`BUSY`), and a client without the Alina mod (`TradeMessenger.canOpen`). A session closes
+  when the player dies or leaves, when the shop is gone or the content revision changed, when its interlocutor dies,
+  leaves the player's level or is more than 8 blocks away, or when its anchor stops holding the player. `open` and every
+  request refuse a dead or removed player with `CLOSED`, and close the player's session, since a lethal hit can land
+  between two ticks. Every 10 ticks the view is rebuilt and sent if it differs (stacks compared with `ItemStack.matches`).
+  `dismiss` ends a session the player closed and reopens its `then` graph.
+- **Requests** `sell`, `sellJunk`, `buy` and `experience` are planned by `TradePlanner` against the live inventory and
+  refused, changing nothing, in the order the planner checks them. Each accepted one is a `TRADE` operation with a
+  `TradeSettled` effect, begun with a removal that takes the proof or the experience:
+  - sell: the stack's count from one slot, paid in coins; the effect's `aurPaid` counts against the budget.
+  - sell junk: the junk plan's takes, paid in coins.
+  - buy: the payment's takes; the offer's stack times the count, then the change in coins. A limited offer adds one
+    `Purchase` of its count; a limit counts purchases, not items.
+  - experience: the Aur must be a positive multiple of the rate's `aur`. Points are `(aur / rate.aur) * rate.points`, in
+    both directions. Selling takes the points with `giveExperiencePoints(-points)` and pays coins, against the budget;
+    buying takes the payment and gives the points when the operation is delivered.
+  - The effect's `detailJson` is `{"sold", "bought", "experience_sold", "experience_bought", "aur_spent"}`. The
+    `alina:trade_completed` trigger reads `aur_spent` from it.
+- **Views and the client.** The view's experience maximums are whole steps of the rate's `aur`, rounded down. The client
+  sends `expectedPoints = aur / rateAur * ratePoints`, and a request that differs from the server's figure is `STALE`.
+- **Requirements.** An offer's `requires` reads the player's reputation from `GuildModule` and an achievement from
+  `AchievementModule`. A lookup that is still loading locks the offer.
+- **Lines.** A shop's own `lines` entry replaces Alina's default for its key. The defaults are `alina.trade.*` keys in
+  `en_us.json`.
+
+### Experience market
+
+A bundle with `experience_market` trades experience against one server-wide pool instead of fixed rates; its shops
+carry `experienceFees`, never `experience`. The design is EXPERIENCE-MARKET-PLAN in the knowledgebase.
+
+- **Arithmetic** is `trade/pricing/ReserveCurve`, used by the server and the screen. The pool is two reserves, points
+  and Aur. Selling for `a` Aur takes `ceil(X * a / (A - a))` points and buying with `a` Aur gives
+  `floor(X * a / (A + a))`; the shop's fee is then taken in points. Every figure rounds against the player, the
+  reserves move by exactly what the player gives and gets, and so `points * aur` never falls through a trade.
+- **Authority.** `ExperienceMarket`, owned by `TradeService`, holds the live reserves, the last restock day, the rate
+  after each of the last 32 changes of the pool (`history`, which the view shows as the chart), the trades this run
+  began that storage has not reported (`begun`), and the write and reconcile flags, all on the server thread. It loads
+  on a tick with `loadOrCreateMarket`; until then a market shop has no experience view and its requests are refused with
+  `LOADING`.
+- **Writes are deltas.** A market trade's `TradePlan` carries `marketPoints` and `marketAur`, which go into the
+  `TradeSettled` effect. Storage adds them to the `experience_market` row in the operation's transaction, once per
+  operation id, as exact sums: a reserve may pass below 1 in storage, and the server clamps what it reads into 1 to the
+  cap. The memory reserves move when `SettlementService.begin` accepts the trade, and the trade stays in `begun` until
+  its applied listener reports it. A trade reported applied fresh that this run did not begin is added to memory then
+  and marks a reconcile due. Each change that adds to the row also records a tick of the reserves after it in
+  `experience_market_tick`, in the same transaction, and storage keeps the newest 64. An effect with deltas and no
+  market row still applies; the deltas are dropped, and no tick is recorded.
+- **Restock.** On the first tick of a new trade day each reserve moves `restock_percent` of the way to the content's
+  seed, once per day elapsed and at most 60 times. Memory moves at once; `restockMarket` writes the same delta, guarded
+  by the stored day, and records a tick of the reserves after it; a restock of several days is one change. Memory
+  appends one rate to `history` for each restock call. A restock whose write fails or is not applied marks a reconcile
+  due.
+- **Reconcile.** A reconcile is due after a foreign fresh apply, a failed or unapplied restock, a failed staff write, or
+  a move that clamps. Once no trade is in `begun`, no load, restock or staff write is in flight, the server reads the
+  row and its last 32 ticks. It installs them only if no trade began, no foreign apply arrived, and no write started
+  while the read ran (`epoch`); otherwise the reconcile stays due and a later tick tries again. A failed read is tried 5
+  seconds later.
+- **Limits.** One trade may take at most `max_trade_percent` of the reserve it draws from: Aur for a sale, points for a
+  purchase. The view's `maxSellAur` and `maxBuyAur` are found by binary search over the same quotes the planner uses.
+- **Staff.** `setMarket` writes the difference between the target and the live reserves through `adjustMarket`. It is a
+  delta like a trade: the live reserves move at once, storage adds the difference and records a tick, and no request is
+  refused for a trade in flight, or for another write. It is refused only while the market has not loaded. A failed
+  write marks a reconcile due and fails the future.
+- **Seed changes.** The live reserves stay in the database across content revisions. A new seed changes the restock
+  target only.
+
+### Dialogue types
+
+Registered by `TradeDialogue`. Every type refuses unknown argument keys.
+
+| Kind | Id | Arguments | Does |
+|---|---|---|---|
+| action | `alina:trade/open` | `shop` (required, a shop of `alina:trade`), `then` (optional, a graph of the bundle) | Ends the conversation and opens the shop on the next tick, with the same interlocutor and anchor. A refusal is sent as a chat message. |
+| condition | `alina:trade/can_afford` | `value` (at least 0) | The player holds at least `value` Aur in the main inventory. |
+| condition | `alina:trade/budget_left` | `shop`, `op` (`eq`, `ne`, `gt`, `gte`, `lt`, `lte`), `value` | Compares the Aur the shop can still pay the player today. False while the record loads and for a shop that does not buy. |
+
+### Commands
+
+For gamemasters: `/alina trade open <player> <shop>` (no interlocutor, no anchor), `quote <shop>` (prices the held item
+and names its rule's index in the shop's sell rules), `budget <player> [<shop>]`, and `budget <player> reset [<shop>]`,
+which deletes today's budget rows in storage and clears them from the record. The reset is refused while a trade of the
+player is settling. `market` prints the live reserves, the rate, the seed and the last restock day; `market reset`
+sets the pool to the seed and `market set <points> <aur>` to the given reserves, each written as the difference from the
+live reserves (so no trade is refused for it) and logged with who ran it and the reserves before and after. Feedback is
+`Component.literal`.
+
+### Trade tests
+
+`TradeGameTests` builds a `TradeService` per test (`TradeRig`): in-memory storage, its own settlement, a test clock, the
+content parsed from `alina/fixtures/trade/`, a recording messenger and players outside the server list. The content
+revision is a number the test sets, so the revision path is covered as well as the shop-gone path.
 
 ## Lampas content
 
