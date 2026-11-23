@@ -19,11 +19,16 @@ import town.lampas.haruhi.content.model.ContentBundle;
  */
 public final class ContentGameTests {
     private static final String FIXTURES = "/alina/fixtures/content/";
+    private static final String TRADE_FIXTURES = "/alina/fixtures/trade/";
 
     private static String fixture(String name) {
-        try (InputStream in = ContentGameTests.class.getResourceAsStream(FIXTURES + name)) {
+        return resource(FIXTURES + name);
+    }
+
+    private static String resource(String path) {
+        try (InputStream in = ContentGameTests.class.getResourceAsStream(path)) {
             if (in == null) {
-                throw new IllegalStateException("missing fixture " + name);
+                throw new IllegalStateException("missing fixture " + path);
             }
             return new String(in.readAllBytes(), StandardCharsets.UTF_8);
         } catch (IOException e) {
@@ -66,6 +71,35 @@ public final class ContentGameTests {
                     "no criterion validation problem in:\n" + message);
             helper.assertTrue(message.contains("'entity[0].predicate.minecraft:distance.horizontl' has no effect"),
                     "no misspelt-key problem in:\n" + message);
+        });
+    }
+
+    @GameTest(maxTicks = 400)
+    public void brokenTradeBundleListsEveryProblem(GameTestHelper helper) {
+        helper.succeedWhen(() -> {
+            helper.assertTrue(HaruhiServices.content().isStartupComplete(), "startup activation has not finished");
+            DataResult<ContentBundle> result = HaruhiServices.content().parseAndValidate(resource(TRADE_FIXTURES + "broken.json"));
+            String message = result.error().map(error -> error.message()).orElse("");
+            String[] expected = {
+                    "currency entry 2: item 'minecraft:gold_ingot' is already the item of entry 1",
+                    "currency entry 3: value 9 is already the value of entry 1",
+                    "currency entry 4: item 'minecraft:not_a_real_item' is not a registered item",
+                    "currency needs a denomination of value 1",
+                    "price list alina:trade_broken/list, rule 1: namespace 'no_such_mod_xyz' has no registered items on this server",
+                    "shop alina:trade_broken/mint_shop: experience buy costs 2 aur for 50 points",
+                    "shop alina:trade_broken/mint_shop, offer paper_offer: shop alina:trade_broken/mint_shop pays 10 aur for 1 item",
+                    "shop alina:trade_broken/bad_shop, sell: lists entry 1 names price list 'alina:trade_broken/missing_list'",
+                    "shop alina:trade_broken/bad_shop, buy entry 2: id 'dup' is already the id of buy entry 1",
+                    "shop alina:trade_broken/bad_shop, offer coin_offer: item is a currency item, so the offer would sell Aur",
+                    "shop alina:trade_broken/no_rules, sell: has no rules",
+                    "shop alina:trade_broken/xp_no_sell: experience sell needs sell with a daily_budget",
+                    "alina:trade_broken/talk#ask: alina:trade/open: 'shop' names 'alina:trade_broken/ghost'",
+                    "alina:trade_broken/talk#ask: alina:trade/open: 'then' names 'alina:trade_broken/nowhere'",
+                    "alina:trade_broken/talk#ask: alina:trade/budget_left: 'shop' names 'alina:trade_broken/ghost'"
+            };
+            for (String needle : expected) {
+                helper.assertTrue(message.contains(needle), "missing '" + needle + "' in:\n" + message);
+            }
         });
     }
 }

@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "dialogues": {
+    "alina:trade_broken/talk": {
+      "start": "ask",
+      "nodes": {
+        "ask": {
+          "text": "What would you like?",
+          "choices": [
+            {
+              "text": "Missing shop.",
+              "next": "bye",
+              "actions": [
+                { "type": "alina:trade/open", "shop": "alina:trade_broken/ghost" }
+              ]
+            },
+            {
+              "text": "Missing follow-up.",
+              "next": "bye",
+              "actions": [
+                { "type": "alina:trade/open", "shop": "alina:trade_broken/mint_shop", "then": "alina:trade_broken/nowhere" }
+              ]
+            },
+            {
+              "text": "Missing shop budget.",
+              "next": "bye",
+              "only_if": [
+                { "type": "alina:trade/budget_left", "shop": "alina:trade_broken/ghost", "op": "gt", "value": 0 }
+              ]
+            }
+          ]
+        },
+        "bye": {
+          "text": "Farewell."
+        }
+      }
+    }
+  },
+  "extensions": {
+    "alina:trade": {
+      "currency": [
+        { "item": "minecraft:gold_ingot", "value": 9 },
+        { "item": "minecraft:gold_ingot", "value": 18 },
+        { "item": "minecraft:emerald", "value": 9 },
+        { "item": "minecraft:not_a_real_item", "value": 2 }
+      ],
+      "price_lists": {
+        "alina:trade_broken/list": {
+          "rules": [
+            { "namespace": "no_such_mod_xyz", "price": { "aur": 1, "per": 1 } }
+          ]
+        }
+      },
+      "shops": {
+        "alina:trade_broken/mint_shop": {
+          "name": "Mint stall",
+          "sell": {
+            "daily_budget": 100,
+            "rules": [
+              { "match": { "items": "minecraft:paper" }, "price": { "aur": 10, "per": 1 } }
+            ]
+          },
+          "buy": [
+            { "id": "paper_offer", "item": { "id": "minecraft:paper" }, "price": 5 }
+          ],
+          "experience": {
+            "sell": { "points": 50, "aur": 4 },
+            "buy": { "points": 50, "aur": 2 }
+          }
+        },
+        "alina:trade_broken/bad_shop": {
+          "name": "Broken stall",
+          "sell": {
+            "daily_budget": 100,
+            "lists": ["alina:trade_broken/missing_list"],
+            "rules": [
+              { "match": { "items": "minecraft:stick" }, "price": { "aur": 1, "per": 1 } }
+            ]
+          },
+          "buy": [
+            { "id": "dup", "item": { "id": "minecraft:paper" }, "price": 20 },
+            { "id": "dup", "item": { "id": "minecraft:stick" }, "price": 20 },
+            { "id": "coin_offer", "item": { "id": "minecraft:gold_ingot" }, "price": 20 }
+          ]
+        },
+        "alina:trade_broken/no_rules": {
+          "name": "No rules",
+          "sell": {
+            "daily_budget": 50
+          }
+        },
+        "alina:trade_broken/xp_no_sell": {
+          "name": "XP no sell",
+          "experience": {
+            "sell": { "points": 50, "aur": 1 }
+          }
+        }
+      }
+    }
+  }
+}
