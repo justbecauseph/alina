@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.EnumSet;
@@ -15,6 +16,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -38,6 +40,7 @@ import town.lampas.alina.storage.OperationEffect;
 import town.lampas.alina.storage.OperationStep;
 import town.lampas.alina.storage.StoredOperation;
 import town.lampas.alina.storage.TradeSummary;
+import town.lampas.alina.storage.TradeSummary.BucketTotals;
 import town.lampas.alina.storage.TradeSummary.Concentration;
 import town.lampas.alina.storage.TradeSummary.DailyTotals;
 import town.lampas.alina.storage.TradeSummary.ItemFlow;
@@ -57,6 +60,11 @@ public final class TradeMethods {
     public static final int MARKET_TICKS_MAX = 64;
     public static final int SUMMARY_DEFAULT_OFFSET_DAYS = 13;
     public static final long SUMMARY_MAX_SPAN_DAYS = 89;
+    public static final Duration SUMMARY_INSTANT_MAX_SPAN = Duration.ofDays(7);
+    public static final int SUMMARY_BUCKET_MIN_MINUTES = 5;
+    public static final int SUMMARY_BUCKET_MAX_MINUTES = 1440;
+    public static final int SUMMARY_BUCKET_DEFAULT_MINUTES = 60;
+    public static final int SUMMARY_MAX_BUCKETS = 360;
     public static final int SUMMARY_TOP_DEFAULT = 20;
     public static final int SUMMARY_TOP_MAX = 50;
     public static final int OPERATIONS_DEFAULT = 30;
@@ -154,18 +162,59 @@ public final class TradeMethods {
         return answer;
     }
 
-    /** {@code alina:trade/summary}: read-only trade economy summary over a window of board days. */
+    /** {@code alina:trade/summary}: read-only trade economy summary over a window of board days or instants. */
     public JsonObject summary(@Nullable JsonElement param) {
         Optional<LocalDate> fromParam;
         Optional<LocalDate> toParam;
+        Optional<Instant> sinceParam;
+        Optional<Instant> untilParam;
+        OptionalLong bucketParam;
         int topLimit;
         try {
             TradeParams params = TradeParams.of(param);
             fromParam = params.optionalDate("from_day");
             toParam = params.optionalDate("to_day");
+            sinceParam = params.optionalInstant("since");
+            untilParam = params.optionalInstant("until");
+            bucketParam = params.optionalWhole("bucket_minutes", 1);
             topLimit = (int) Math.min(SUMMARY_TOP_MAX, params.optionalWhole("top_limit", 1).orElse(SUMMARY_TOP_DEFAULT));
         } catch (TradeParams.Invalid e) {
             return invalid(e);
+        }
+
+        if ((fromParam.isPresent() || toParam.isPresent())
+                && (sinceParam.isPresent() || untilParam.isPresent() || bucketParam.isPresent())) {
+            String field = sinceParam.isPresent() ? "since" : untilParam.isPresent() ? "until" : "bucket_minutes";
+            return invalid(field, "cannot mix since/until/bucket_minutes with from_day/to_day");
+        }
+        if (sinceParam.isEmpty() && (untilParam.isPresent() || bucketParam.isPresent())) {
+            String field = untilParam.isPresent() ? "until" : "bucket_minutes";
+            return invalid(field, "since is required when until or bucket_minutes is set");
+        }
+        int bucketMinutes = SUMMARY_BUCKET_DEFAULT_MINUTES;
+        if (bucketParam.isPresent()) {
+            long raw = bucketParam.getAsLong();
+            if (raw < SUMMARY_BUCKET_MIN_MINUTES || raw > SUMMARY_BUCKET_MAX_MINUTES) {
+                return invalid("bucket_minutes", "bucket_minutes must be between 5 and 1440");
+            }
+            bucketMinutes = (int) raw;
+        }
+
+        Instant untilInstant = untilParam.orElseGet(clock::instant);
+        if (sinceParam.isPresent()) {
+            Instant since = sinceParam.get();
+            if (since.isAfter(untilInstant)) {
+                return invalid("since", "since must not be after until");
+            }
+            if (Duration.between(since, untilInstant).compareTo(SUMMARY_INSTANT_MAX_SPAN) > 0) {
+                return invalid("since", "instant range must be at most 7 days");
+            }
+            long bucketSeconds = bucketMinutes * 60L;
+            long bucketCount = Math.floorDiv(untilInstant.getEpochSecond(), bucketSeconds)
+                    - Math.floorDiv(since.getEpochSecond(), bucketSeconds) + 1;
+            if (bucketCount > SUMMARY_MAX_BUCKETS) {
+                return invalid("bucket_minutes", "bucket_minutes produces too many buckets (max 360)");
+            }
         }
 
         SummarySnapshot snapshot;
@@ -177,32 +226,55 @@ public final class TradeMethods {
                 for (TradeContent.Shop shop : content.get().shops().values()) {
                     shopBudgets.put(shop.id(), shop.selling().map(TradeContent.Selling::dailyBudget).orElse(0));
                 }
-                return new SummarySnapshot(boardDay, Map.copyOf(shopBudgets));
+                LocalDate sinceBoardDay = sinceParam.map(s -> BoardDay.dateOf(s, guildSettings.resetTime(), guildSettings.zone()))
+                        .orElse(null);
+                LocalDate untilBoardDay = sinceParam.isPresent()
+                        ? BoardDay.dateOf(untilInstant, guildSettings.resetTime(), guildSettings.zone())
+                        : null;
+                return new SummarySnapshot(boardDay, sinceBoardDay, untilBoardDay, Map.copyOf(shopBudgets));
             });
         } catch (Unavailable e) {
             return unavailable(e.getMessage());
         }
 
-        LocalDate toDay = toParam.orElse(snapshot.boardDay());
-        LocalDate fromDay = fromParam.orElseGet(() -> toDay.minusDays(SUMMARY_DEFAULT_OFFSET_DAYS));
-        if (fromDay.isAfter(toDay)) {
-            return invalid("from_day", "from_day must not be after to_day");
-        }
-        if (ChronoUnit.DAYS.between(fromDay, toDay) > SUMMARY_MAX_SPAN_DAYS) {
-            return invalid("from_day", "date range must be at most 90 days");
-        }
-
+        LocalDate fromDay;
+        LocalDate toDay;
         TradeSummary summary;
-        try {
-            summary = read(storage.loadTradeSummary(fromDay, toDay, snapshot.shopBudgets(), topLimit));
-        } catch (Unavailable e) {
-            return unavailable(e.getMessage());
+        if (sinceParam.isPresent()) {
+            fromDay = Objects.requireNonNull(snapshot.sinceBoardDay());
+            toDay = Objects.requireNonNull(snapshot.untilBoardDay());
+            try {
+                summary = read(storage.loadTradeSummaryBetween(
+                        sinceParam.get(), untilInstant, bucketMinutes, fromDay, toDay, snapshot.shopBudgets(), topLimit));
+            } catch (Unavailable e) {
+                return unavailable(e.getMessage());
+            }
+        } else {
+            toDay = toParam.orElse(snapshot.boardDay());
+            fromDay = fromParam.orElseGet(() -> toDay.minusDays(SUMMARY_DEFAULT_OFFSET_DAYS));
+            if (fromDay.isAfter(toDay)) {
+                return invalid("from_day", "from_day must not be after to_day");
+            }
+            if (ChronoUnit.DAYS.between(fromDay, toDay) > SUMMARY_MAX_SPAN_DAYS) {
+                return invalid("from_day", "date range must be at most 90 days");
+            }
+            try {
+                summary = read(storage.loadTradeSummary(fromDay, toDay, snapshot.shopBudgets(), topLimit));
+            } catch (Unavailable e) {
+                return unavailable(e.getMessage());
+            }
         }
 
         JsonObject answer = ok();
         answer.addProperty("board_day", snapshot.boardDay().toString());
         answer.addProperty("from_day", fromDay.toString());
         answer.addProperty("to_day", toDay.toString());
+        if (sinceParam.isPresent()) {
+            answer.addProperty("since", sinceParam.get().toString());
+            answer.addProperty("until", untilInstant.toString());
+            answer.addProperty("bucket_minutes", bucketMinutes);
+            answer.add("buckets", bucketsArray(summary.buckets()));
+        }
         answer.add("daily", dailyArray(summary.daily()));
         answer.add("shops", shopsArray(summary.shops()));
         answer.add("top_sold_items", soldArray(summary.topSoldItems()));
@@ -293,24 +365,66 @@ public final class TradeMethods {
     private static JsonArray dailyArray(List<DailyTotals> daily) {
         JsonArray array = new JsonArray();
         for (DailyTotals row : daily) {
-            JsonObject json = new JsonObject();
+            JsonObject json = periodTotalsObject(
+                    row.tradeCount(),
+                    row.uniqueTraders(),
+                    row.aurMintedItems(),
+                    row.aurMintedXp(),
+                    row.aurSunkOffers(),
+                    row.aurSunkXp(),
+                    row.xpPointsSold(),
+                    row.xpPointsBought(),
+                    row.revisionIds());
             json.addProperty("trade_day", row.tradeDay().toString());
-            json.addProperty("trade_count", row.tradeCount());
-            json.addProperty("unique_traders", row.uniqueTraders());
-            json.addProperty("aur_minted_items", row.aurMintedItems());
-            json.addProperty("aur_minted_xp", row.aurMintedXp());
-            json.addProperty("aur_sunk_offers", row.aurSunkOffers());
-            json.addProperty("aur_sunk_xp", row.aurSunkXp());
-            json.addProperty("xp_points_sold", row.xpPointsSold());
-            json.addProperty("xp_points_bought", row.xpPointsBought());
-            JsonArray revisions = new JsonArray();
-            for (long revisionId : row.revisionIds()) {
-                revisions.add(revisionId);
-            }
-            json.add("revision_ids", revisions);
             array.add(json);
         }
         return array;
+    }
+
+    private static JsonArray bucketsArray(List<BucketTotals> buckets) {
+        JsonArray array = new JsonArray();
+        for (BucketTotals row : buckets) {
+            JsonObject json = periodTotalsObject(
+                    row.tradeCount(),
+                    row.uniqueTraders(),
+                    row.aurMintedItems(),
+                    row.aurMintedXp(),
+                    row.aurSunkOffers(),
+                    row.aurSunkXp(),
+                    row.xpPointsSold(),
+                    row.xpPointsBought(),
+                    row.revisionIds());
+            json.addProperty("bucket_start", row.bucketStart().toString());
+            array.add(json);
+        }
+        return array;
+    }
+
+    private static JsonObject periodTotalsObject(
+            int tradeCount,
+            int uniqueTraders,
+            long aurMintedItems,
+            long aurMintedXp,
+            long aurSunkOffers,
+            long aurSunkXp,
+            long xpPointsSold,
+            long xpPointsBought,
+            List<Long> revisionIds) {
+        JsonObject json = new JsonObject();
+        json.addProperty("trade_count", tradeCount);
+        json.addProperty("unique_traders", uniqueTraders);
+        json.addProperty("aur_minted_items", aurMintedItems);
+        json.addProperty("aur_minted_xp", aurMintedXp);
+        json.addProperty("aur_sunk_offers", aurSunkOffers);
+        json.addProperty("aur_sunk_xp", aurSunkXp);
+        json.addProperty("xp_points_sold", xpPointsSold);
+        json.addProperty("xp_points_bought", xpPointsBought);
+        JsonArray revisions = new JsonArray();
+        for (long revisionId : revisionIds) {
+            revisions.add(revisionId);
+        }
+        json.add("revision_ids", revisions);
+        return json;
     }
 
     private static JsonArray shopsArray(List<ShopTotals> shops) {
@@ -473,7 +587,11 @@ public final class TradeMethods {
             Optional<TradeContent.ExperienceMarket> terms,
             Optional<TradeService.MarketStatus> status) {}
 
-    private record SummarySnapshot(LocalDate boardDay, Map<Identifier, Integer> shopBudgets) {}
+    private record SummarySnapshot(
+            LocalDate boardDay,
+            @Nullable LocalDate sinceBoardDay,
+            @Nullable LocalDate untilBoardDay,
+            Map<Identifier, Integer> shopBudgets) {}
 
     static final class Unavailable extends Exception {
         Unavailable(String message) {

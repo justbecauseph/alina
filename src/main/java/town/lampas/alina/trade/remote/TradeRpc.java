@@ -62,6 +62,17 @@ public final class TradeRpc {
             .withField("xp_points_sold", LONG_SCHEMA)
             .withField("xp_points_bought", LONG_SCHEMA)
             .withField("revision_ids", LONG_SCHEMA.asArray());
+    private static final Schema<JsonElement> BUCKET_SCHEMA = object()
+            .withField("bucket_start", Schema.STRING_SCHEMA)
+            .withField("trade_count", Schema.INT_SCHEMA)
+            .withField("unique_traders", Schema.INT_SCHEMA)
+            .withField("aur_minted_items", LONG_SCHEMA)
+            .withField("aur_minted_xp", LONG_SCHEMA)
+            .withField("aur_sunk_offers", LONG_SCHEMA)
+            .withField("aur_sunk_xp", LONG_SCHEMA)
+            .withField("xp_points_sold", LONG_SCHEMA)
+            .withField("xp_points_bought", LONG_SCHEMA)
+            .withField("revision_ids", LONG_SCHEMA.asArray());
     private static final Schema<JsonElement> SHOP_SCHEMA = object()
             .withField("shop_id", Schema.STRING_SCHEMA)
             .withField("daily_budget", Schema.INT_SCHEMA)
@@ -136,15 +147,22 @@ public final class TradeRpc {
                         .withField("loaded", Schema.BOOL_SCHEMA)
                         .withField("market", MARKET_SCHEMA)
                         .withField("ticks", TICK_SCHEMA.asArray()));
-        register(SUMMARY, "Alina: read-only trade economy summary over a window of board days",
+        register(SUMMARY, "Alina: read-only trade economy summary over a window of board days or instants",
                 methods, TradeMethods::summary,
                 object().withField("from_day", Schema.STRING_SCHEMA)
                         .withField("to_day", Schema.STRING_SCHEMA)
+                        .withField("since", Schema.STRING_SCHEMA)
+                        .withField("until", Schema.STRING_SCHEMA)
+                        .withField("bucket_minutes", Schema.INT_SCHEMA)
                         .withField("top_limit", Schema.INT_SCHEMA),
                 ANSWER.withField("board_day", Schema.STRING_SCHEMA)
                         .withField("from_day", Schema.STRING_SCHEMA)
                         .withField("to_day", Schema.STRING_SCHEMA)
+                        .withField("since", Schema.STRING_SCHEMA)
+                        .withField("until", Schema.STRING_SCHEMA)
+                        .withField("bucket_minutes", Schema.INT_SCHEMA)
                         .withField("daily", DAILY_SCHEMA.asArray())
+                        .withField("buckets", BUCKET_SCHEMA.asArray())
                         .withField("shops", SHOP_SCHEMA.asArray())
                         .withField("top_sold_items", ITEM_FLOW_SCHEMA.asArray())
                         .withField("top_bought_offers", OFFER_FLOW_SCHEMA.asArray())

@@ -397,42 +397,89 @@ public final class InMemoryStorage implements AlinaStorage {
             return CompletableFuture.failedFuture(new IllegalArgumentException("topLimit must be positive, was " + topLimit));
         }
         Map<Identifier, Integer> budgetsCopy = Map.copyOf(shopBudgets);
-        return locked(() -> {
-            List<TradeSummaryAggregator.TradeRow> trades = new ArrayList<>();
-            int recordedCount = 0;
-            int reconcileCount = 0;
-            for (StoredOperation stored : operations.values()) {
-                Operation op = stored.operation();
-                if (op.kind() != OperationKind.TRADE) {
-                    continue;
-                }
-                if (stored.step() == OperationStep.RECORDED) {
-                    recordedCount++;
-                } else if (stored.step() == OperationStep.RECONCILE) {
-                    reconcileCount++;
-                }
-                if (stored.step() != OperationStep.RECORDED && stored.step() != OperationStep.SETTLED) {
-                    continue;
-                }
-                if (op.effect() instanceof OperationEffect.TradeSettled trade) {
-                    LocalDate day = trade.tradeDay();
-                    if (!day.isBefore(fromDay) && !day.isAfter(toDay)) {
-                        trades.add(new TradeSummaryAggregator.TradeRow(op.characterId(), op.revisionId(), trade));
-                    }
+        return locked(() -> summarizeInWindow(budgetsCopy, topLimit, fromDay, toDay, null, null, 0));
+    }
+
+    @Override
+    public CompletableFuture<TradeSummary> loadTradeSummaryBetween(
+            Instant since,
+            Instant until,
+            int bucketMinutes,
+            LocalDate fromBudgetDay,
+            LocalDate toBudgetDay,
+            Map<Identifier, Integer> shopBudgets,
+            int topLimit) {
+        Objects.requireNonNull(since, "since");
+        Objects.requireNonNull(until, "until");
+        Objects.requireNonNull(fromBudgetDay, "fromBudgetDay");
+        Objects.requireNonNull(toBudgetDay, "toBudgetDay");
+        Objects.requireNonNull(shopBudgets, "shopBudgets");
+        if (since.isAfter(until)) {
+            return CompletableFuture.failedFuture(
+                    new IllegalArgumentException("since " + since + " must not be after until " + until));
+        }
+        if (bucketMinutes < 5 || bucketMinutes > 1440) {
+            return CompletableFuture.failedFuture(
+                    new IllegalArgumentException("bucketMinutes must be in [5, 1440], was " + bucketMinutes));
+        }
+        if (fromBudgetDay.isAfter(toBudgetDay)) {
+            return CompletableFuture.failedFuture(
+                    new IllegalArgumentException(
+                            "fromBudgetDay " + fromBudgetDay + " must not be after toBudgetDay " + toBudgetDay));
+        }
+        if (topLimit < 1) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("topLimit must be positive, was " + topLimit));
+        }
+        Map<Identifier, Integer> budgetsCopy = Map.copyOf(shopBudgets);
+        return locked(() -> summarizeInWindow(
+                budgetsCopy, topLimit, fromBudgetDay, toBudgetDay, since, until, bucketMinutes));
+    }
+
+    private TradeSummary summarizeInWindow(
+            Map<Identifier, Integer> shopBudgets,
+            int topLimit,
+            LocalDate fromBudgetDay,
+            LocalDate toBudgetDay,
+            Instant since,
+            Instant until,
+            int bucketMinutes) {
+        List<TradeSummaryAggregator.TradeRow> trades = new ArrayList<>();
+        int recordedCount = 0;
+        int reconcileCount = 0;
+        for (StoredOperation stored : operations.values()) {
+            Operation op = stored.operation();
+            if (op.kind() != OperationKind.TRADE) {
+                continue;
+            }
+            if (stored.step() == OperationStep.RECORDED) {
+                recordedCount++;
+            } else if (stored.step() == OperationStep.RECONCILE) {
+                reconcileCount++;
+            }
+            if (stored.step() != OperationStep.RECORDED && stored.step() != OperationStep.SETTLED) {
+                continue;
+            }
+            if (op.effect() instanceof OperationEffect.TradeSettled trade) {
+                boolean matches = since != null
+                        ? !op.createdAt().isBefore(since) && !op.createdAt().isAfter(until)
+                        : !trade.tradeDay().isBefore(fromBudgetDay) && !trade.tradeDay().isAfter(toBudgetDay);
+                if (matches) {
+                    trades.add(new TradeSummaryAggregator.TradeRow(
+                            op.characterId(), op.revisionId(), op.createdAt(), trade));
                 }
             }
-            List<TradeSummaryAggregator.BudgetRow> budgets = new ArrayList<>();
-            for (Map<TradeBudgetKey, Integer> perChar : tradeBudgets.values()) {
-                for (Map.Entry<TradeBudgetKey, Integer> entry : perChar.entrySet()) {
-                    LocalDate day = entry.getKey().tradeDay();
-                    if (!day.isBefore(fromDay) && !day.isAfter(toDay)) {
-                        budgets.add(new TradeSummaryAggregator.BudgetRow(entry.getKey().shopId(), entry.getValue()));
-                    }
+        }
+        List<TradeSummaryAggregator.BudgetRow> budgets = new ArrayList<>();
+        for (Map<TradeBudgetKey, Integer> perChar : tradeBudgets.values()) {
+            for (Map.Entry<TradeBudgetKey, Integer> entry : perChar.entrySet()) {
+                LocalDate day = entry.getKey().tradeDay();
+                if (!day.isBefore(fromBudgetDay) && !day.isAfter(toBudgetDay)) {
+                    budgets.add(new TradeSummaryAggregator.BudgetRow(entry.getKey().shopId(), entry.getValue()));
                 }
             }
-            return TradeSummaryAggregator.aggregate(budgetsCopy, topLimit, trades, budgets,
-                    new TradeSummary.OperationHealth(recordedCount, reconcileCount));
-        });
+        }
+        return TradeSummaryAggregator.aggregate(shopBudgets, topLimit, trades, budgets,
+                new TradeSummary.OperationHealth(recordedCount, reconcileCount), bucketMinutes);
     }
 
     @Override

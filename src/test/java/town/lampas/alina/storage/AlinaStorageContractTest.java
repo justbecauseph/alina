@@ -978,6 +978,61 @@ abstract class AlinaStorageContractTest {
     }
 
     @Test
+    void loadTradeSummaryBetweenFiltersInstantsAndGroupsAlignedBuckets() {
+        UUID charlie = UUID.fromString("33333333-3333-4333-8333-333333333333");
+        Instant b0Start = Instant.parse("2026-11-24T10:00:00Z");
+        Instant inB0A = Instant.parse("2026-11-24T10:02:10Z");
+        Instant inB0B = Instant.parse("2026-11-24T10:04:59Z");
+        Instant inB1 = Instant.parse("2026-11-24T10:05:00Z");
+        Instant beforeRange = Instant.parse("2026-11-24T09:59:59Z");
+        Instant afterRange = Instant.parse("2026-11-24T10:15:01Z");
+        UUID op5 = UUID.fromString("55555555-5555-4555-8555-555555555555");
+
+        await(storage.applyOperation(tradeWithDetail(OP1, ALICE, STALL, DAY, 15,
+                "{\"sold\":[{\"item\":\"minecraft:dirt\",\"count\":3,\"aur\":15}],\"bought\":[],\"experience_sold\":0,\"experience_bought\":0,\"aur_spent\":0}",
+                beforeRange, 1L)));
+        await(storage.applyOperation(tradeWithDetail(OP2, ALICE, STALL, NEXT_DAY, 40,
+                "{\"sold\":[{\"item\":\"minecraft:wheat\",\"count\":8,\"aur\":40}],\"bought\":[],\"experience_sold\":0,\"experience_bought\":0,\"aur_spent\":0}",
+                inB0A, 2L)));
+        await(storage.applyOperation(tradeWithDetail(OP3, BOB, STALL, NEXT_DAY, 60,
+                "{\"sold\":[],\"bought\":[],\"experience_sold\":300,\"experience_bought\":0,\"aur_spent\":0}",
+                inB0B, 3L)));
+        await(storage.applyOperation(tradeWithDetail(OP4, charlie, BAZAAR, NEXT_DAY, 0,
+                "{\"sold\":[],\"bought\":[{\"offer\":\"scroll\",\"item\":\"minecraft:paper\",\"count\":1,\"aur\":25}],\"experience_sold\":0,\"experience_bought\":0,\"aur_spent\":25}",
+                inB1, 3L)));
+        await(storage.applyOperation(tradeWithDetail(op5, ALICE, STALL, THIRD_DAY, 99,
+                "{\"sold\":[{\"item\":\"minecraft:stone\",\"count\":9,\"aur\":99}],\"bought\":[],\"experience_sold\":0,\"experience_bought\":0,\"aur_spent\":0}",
+                afterRange, 4L)));
+        await(storage.markOperation(op5, OperationStep.RECONCILE, Optional.of("later"), afterRange.plusSeconds(1)));
+
+        Map<Identifier, Integer> budgets = Map.of(STALL, 100, BAZAAR, 0);
+        TradeSummary fiveMin = await(storage.loadTradeSummaryBetween(
+                b0Start, Instant.parse("2026-11-24T10:15:00Z"), 5, NEXT_DAY, NEXT_DAY, budgets, 10));
+
+        assertEquals(List.of(
+                new TradeSummary.BucketTotals(b0Start, 2, 2, 40, 60, 0, 0, 300, 0, List.of(2L, 3L)),
+                new TradeSummary.BucketTotals(inB1, 1, 1, 0, 0, 25, 0, 0, 0, List.of(3L))),
+                fiveMin.buckets());
+        assertEquals(new TradeSummary.Concentration(100, 2, 100, 60), fiveMin.concentration());
+        assertEquals(new TradeSummary.OperationHealth(4, 1), fiveMin.health());
+        assertEquals(List.of(
+                new TradeSummary.ShopTotals(STALL, 100, 2, 2, 100, 0, 300, 0, 2, 0, 0, 5000, 60),
+                new TradeSummary.ShopTotals(BAZAAR, 0, 1, 1, 0, 25, 0, 0, 0, 0, 0, 0, 0)),
+                fiveMin.shops());
+
+        TradeSummary hourly = await(storage.loadTradeSummaryBetween(
+                b0Start, Instant.parse("2026-11-24T10:15:00Z"), 60, NEXT_DAY, NEXT_DAY, budgets, 10));
+        assertEquals(List.of(
+                new TradeSummary.BucketTotals(b0Start, 3, 3, 40, 60, 25, 0, 300, 0, List.of(2L, 3L))),
+                hourly.buckets());
+
+        assertInstanceOf(IllegalArgumentException.class,
+                failure(storage.loadTradeSummaryBetween(inB1, b0Start, 5, NEXT_DAY, NEXT_DAY, budgets, 10)));
+        assertInstanceOf(IllegalArgumentException.class,
+                failure(storage.loadTradeSummaryBetween(b0Start, inB1, 4, NEXT_DAY, NEXT_DAY, budgets, 10)));
+    }
+
+    @Test
     void listRecentTradeOperationsFiltersByShopPlayerStepsAndPaginatesByCursor() {
         // Non-trade op must not appear.
         await(storage.applyOperation(turnIn(OP4, ALICE, COURIER, 1, T4, CommissionStatus.COOLDOWN, Optional.of(T6))));

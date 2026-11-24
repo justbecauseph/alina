@@ -158,6 +158,66 @@ class TradeMethodsTest {
     }
 
     @Test
+    void summarySupportsInstantWindowsWithBucketsAndRejectsInvalidParams() throws Exception {
+        Shop stall = new Shop(STALL, Component.literal("Stall"), Optional.of(new Selling(100, List.of())),
+                List.of(), Optional.empty(), Optional.empty(), Map.of());
+        TradeContent content = new TradeContent(List.of(), Map.of(), Map.of(STALL, stall), Optional.empty());
+        UUID op1 = UUID.fromString("11111111-1111-4111-8111-111111111111");
+        UUID op2 = UUID.fromString("22222222-2222-4222-8222-222222222222");
+        Instant t1 = Instant.parse("2026-11-24T01:05:00Z"); // 09:05 Manila -> board_day 2026-11-24
+        Instant t2 = Instant.parse("2026-11-24T01:45:00Z"); // 09:45 Manila
+        storage.applyOperation(new Operation(op1, ALICE, OperationKind.TRADE, STALL, 0, 5, "minecraft:overworld",
+                "{}", 0, new OperationEffect.TradeSettled(STALL, BOARD_DAY, 40, List.of(),
+                "{\"sold\":[{\"item\":\"minecraft:bone\",\"count\":4,\"aur\":40}],\"bought\":[],\"experience_sold\":0,\"experience_bought\":0,\"aur_spent\":0}"),
+                t1)).get(5, TimeUnit.SECONDS);
+        storage.applyOperation(new Operation(op2, BOB, OperationKind.TRADE, STALL, 0, 5, "minecraft:overworld",
+                "{}", 0, new OperationEffect.TradeSettled(STALL, BOARD_DAY, 60, List.of(),
+                "{\"sold\":[],\"bought\":[],\"experience_sold\":300,\"experience_bought\":0,\"aur_spent\":0}"),
+                t2)).get(5, TimeUnit.SECONDS);
+
+        TradeMethods methods = new TradeMethods(
+                Runnable::run, Optional::empty, storage, () -> content, () -> SETTINGS,
+                Clock.fixed(NOW, ZoneId.of("UTC")));
+
+        JsonObject ok = methods.summary(JsonParser.parseString(
+                "{\"since\":\"2026-11-24T01:00:00Z\",\"bucket_minutes\":30}"));
+        assertEquals("ok", ok.get("status").getAsString());
+        assertEquals("2026-11-24T01:00:00Z", ok.get("since").getAsString());
+        assertEquals(NOW.toString(), ok.get("until").getAsString());
+        assertEquals(30, ok.get("bucket_minutes").getAsInt());
+        assertEquals("2026-11-24", ok.get("from_day").getAsString());
+        assertEquals("2026-11-24", ok.get("to_day").getAsString());
+
+        JsonArray buckets = ok.getAsJsonArray("buckets");
+        assertEquals(2, buckets.size());
+        assertEquals("2026-11-24T01:00:00Z", buckets.get(0).getAsJsonObject().get("bucket_start").getAsString());
+        assertEquals(40L, buckets.get(0).getAsJsonObject().get("aur_minted_items").getAsLong());
+        assertEquals("2026-11-24T01:30:00Z", buckets.get(1).getAsJsonObject().get("bucket_start").getAsString());
+        assertEquals(60L, buckets.get(1).getAsJsonObject().get("aur_minted_xp").getAsLong());
+        assertEquals(100L, ok.getAsJsonObject("concentration").get("total_aur_minted").getAsLong());
+
+        // Invalid combinations
+        assertInvalid(methods.summary(JsonParser.parseString(
+                "{\"from_day\":\"2026-11-23\",\"since\":\"2026-11-24T01:00:00Z\"}")), "since", null);
+        assertInvalid(methods.summary(JsonParser.parseString(
+                "{\"until\":\"2026-11-24T02:00:00Z\"}")), "until", null);
+        assertInvalid(methods.summary(JsonParser.parseString(
+                "{\"bucket_minutes\":30}")), "bucket_minutes", null);
+        assertInvalid(methods.summary(JsonParser.parseString(
+                "{\"since\":\"not-an-instant\"}")), "since", "not-an-instant");
+        assertInvalid(methods.summary(JsonParser.parseString(
+                "{\"since\":\"2026-11-24T03:00:00Z\",\"until\":\"2026-11-24T02:00:00Z\"}")), "since", null);
+        assertInvalid(methods.summary(JsonParser.parseString(
+                "{\"since\":\"2026-11-16T00:00:00Z\",\"until\":\"2026-11-24T02:00:00Z\"}")), "since", null);
+        assertInvalid(methods.summary(JsonParser.parseString(
+                "{\"since\":\"2026-11-24T00:00:00Z\",\"until\":\"2026-11-24T02:00:00Z\",\"bucket_minutes\":4}")),
+                "bucket_minutes", null);
+        assertInvalid(methods.summary(JsonParser.parseString(
+                "{\"since\":\"2026-11-22T00:00:00Z\",\"until\":\"2026-11-24T02:00:00Z\",\"bucket_minutes\":5}")),
+                "bucket_minutes", null);
+    }
+
+    @Test
     void operationsPaginatesWithCursorAndFiltersByShopPlayerAndSteps() throws Exception {
         UUID op1 = UUID.fromString("11111111-1111-4111-8111-111111111111");
         UUID op2 = UUID.fromString("22222222-2222-4222-8222-222222222222");

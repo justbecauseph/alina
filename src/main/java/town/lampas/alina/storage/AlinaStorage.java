@@ -143,6 +143,19 @@ public interface AlinaStorage extends AutoCloseable {
             LocalDate fromDay, LocalDate toDay, Map<Identifier, Integer> shopBudgets, int topLimit);
 
     /**
+     * Computes a read-only economy summary for trade operations in {@code [since, until]} (by {@code createdAt}) grouped
+     * into aligned buckets of {@code bucketMinutes}, reading shop budgets across {@code [fromBudgetDay, toBudgetDay]}.
+     */
+    CompletableFuture<TradeSummary> loadTradeSummaryBetween(
+            Instant since,
+            Instant until,
+            int bucketMinutes,
+            LocalDate fromBudgetDay,
+            LocalDate toBudgetDay,
+            Map<Identifier, Integer> shopBudgets,
+            int topLimit);
+
+    /**
      * Lists recent trade operations matching the filters, ordered {@code createdAt DESC, operationId DESC}, using
      * keyset pagination before {@code before}.
      */

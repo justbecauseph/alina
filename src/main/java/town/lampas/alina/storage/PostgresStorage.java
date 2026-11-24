@@ -195,6 +195,14 @@ final class PostgresStorage implements AlinaStorage {
               AND (effect->>'trade_day')::date >= ?
               AND (effect->>'trade_day')::date <= ?
             """;
+    private static final String SELECT_TRADE_SUMMARY_OPERATIONS_BETWEEN = """
+            SELECT character_id, revision_id, created_at, effect
+            FROM operation
+            WHERE kind = 'trade'
+              AND step IN ('recorded', 'settled')
+              AND created_at >= ?
+              AND created_at <= ?
+            """;
     private static final String SELECT_TRADE_SUMMARY_BUDGETS =
             "SELECT shop_id, aur_paid FROM trade_budget WHERE trade_day >= ? AND trade_day <= ?";
     private static final String SELECT_TRADE_HEALTH =
@@ -746,34 +754,95 @@ final class PostgresStorage implements AlinaStorage {
                     }
                 }
             }
-            List<TradeSummaryAggregator.BudgetRow> budgets = new ArrayList<>();
-            try (PreparedStatement statement = connection.prepareStatement(SELECT_TRADE_SUMMARY_BUDGETS)) {
-                statement.setObject(1, fromDay);
-                statement.setObject(2, toDay);
+            return TradeSummaryAggregator.aggregate(budgetsCopy, topLimit, trades,
+                    selectTradeBudgets(connection, fromDay, toDay), selectTradeHealth(connection));
+        });
+    }
+
+    @Override
+    public CompletableFuture<TradeSummary> loadTradeSummaryBetween(
+            Instant since,
+            Instant until,
+            int bucketMinutes,
+            LocalDate fromBudgetDay,
+            LocalDate toBudgetDay,
+            Map<Identifier, Integer> shopBudgets,
+            int topLimit) {
+        Objects.requireNonNull(since, "since");
+        Objects.requireNonNull(until, "until");
+        Objects.requireNonNull(fromBudgetDay, "fromBudgetDay");
+        Objects.requireNonNull(toBudgetDay, "toBudgetDay");
+        Objects.requireNonNull(shopBudgets, "shopBudgets");
+        if (since.isAfter(until)) {
+            return CompletableFuture.failedFuture(
+                    new IllegalArgumentException("since " + since + " must not be after until " + until));
+        }
+        if (bucketMinutes < 5 || bucketMinutes > 1440) {
+            return CompletableFuture.failedFuture(
+                    new IllegalArgumentException("bucketMinutes must be in [5, 1440], was " + bucketMinutes));
+        }
+        if (fromBudgetDay.isAfter(toBudgetDay)) {
+            return CompletableFuture.failedFuture(
+                    new IllegalArgumentException(
+                            "fromBudgetDay " + fromBudgetDay + " must not be after toBudgetDay " + toBudgetDay));
+        }
+        if (topLimit < 1) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("topLimit must be positive, was " + topLimit));
+        }
+        Map<Identifier, Integer> budgetsCopy = Map.copyOf(shopBudgets);
+        return inSnapshot(connection -> {
+            List<TradeSummaryAggregator.TradeRow> trades = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement(SELECT_TRADE_SUMMARY_OPERATIONS_BETWEEN)) {
+                statement.setObject(1, utc(since));
+                statement.setObject(2, utc(until));
                 try (ResultSet rows = statement.executeQuery()) {
                     while (rows.next()) {
-                        budgets.add(new TradeSummaryAggregator.BudgetRow(
-                                Identifier.parse(rows.getString(1)), rows.getInt(2)));
+                        OperationEffect effect = OperationEffectCodec.fromJson(rows.getString(4));
+                        if (effect instanceof OperationEffect.TradeSettled trade) {
+                            trades.add(new TradeSummaryAggregator.TradeRow(
+                                    UUID.fromString(rows.getString(1)), rows.getLong(2), instant(rows, 3), trade));
+                        }
                     }
                 }
             }
-            int recordedCount = 0;
-            int reconcileCount = 0;
-            try (PreparedStatement statement = connection.prepareStatement(SELECT_TRADE_HEALTH);
-                    ResultSet rows = statement.executeQuery()) {
-                while (rows.next()) {
-                    String step = rows.getString(1);
-                    int count = Math.toIntExact(rows.getLong(2));
-                    if ("recorded".equals(step)) {
-                        recordedCount = count;
-                    } else if ("reconcile".equals(step)) {
-                        reconcileCount = count;
-                    }
-                }
-            }
-            return TradeSummaryAggregator.aggregate(budgetsCopy, topLimit, trades, budgets,
-                    new TradeSummary.OperationHealth(recordedCount, reconcileCount));
+            return TradeSummaryAggregator.aggregate(budgetsCopy, topLimit, trades,
+                    selectTradeBudgets(connection, fromBudgetDay, toBudgetDay),
+                    selectTradeHealth(connection), bucketMinutes);
         });
+    }
+
+    private static List<TradeSummaryAggregator.BudgetRow> selectTradeBudgets(
+            Connection connection, LocalDate fromDay, LocalDate toDay) throws SQLException {
+        List<TradeSummaryAggregator.BudgetRow> budgets = new ArrayList<>();
+        try (PreparedStatement statement = connection.prepareStatement(SELECT_TRADE_SUMMARY_BUDGETS)) {
+            statement.setObject(1, fromDay);
+            statement.setObject(2, toDay);
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    budgets.add(new TradeSummaryAggregator.BudgetRow(
+                            Identifier.parse(rows.getString(1)), rows.getInt(2)));
+                }
+            }
+        }
+        return budgets;
+    }
+
+    private static TradeSummary.OperationHealth selectTradeHealth(Connection connection) throws SQLException {
+        int recordedCount = 0;
+        int reconcileCount = 0;
+        try (PreparedStatement statement = connection.prepareStatement(SELECT_TRADE_HEALTH);
+                ResultSet rows = statement.executeQuery()) {
+            while (rows.next()) {
+                String step = rows.getString(1);
+                int count = Math.toIntExact(rows.getLong(2));
+                if ("recorded".equals(step)) {
+                    recordedCount = count;
+                } else if ("reconcile".equals(step)) {
+                    reconcileCount = count;
+                }
+            }
+        }
+        return new TradeSummary.OperationHealth(recordedCount, reconcileCount);
     }
 
     @Override

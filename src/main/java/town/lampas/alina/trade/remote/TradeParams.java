@@ -128,6 +128,19 @@ final class TradeParams {
         return Optional.of(UUID.fromString(text.get()));
     }
 
+    /** An optional strict ISO-8601 instant ({@code YYYY-MM-DDTHH:MM:SSZ}). */
+    Optional<Instant> optionalInstant(String field) throws Invalid {
+        Optional<String> text = optionalString(field);
+        if (text.isEmpty()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(Instant.parse(text.get()));
+        } catch (DateTimeException e) {
+            throw new Invalid(field, field + " must be an ISO instant such as 2026-11-24T12:00:00Z");
+        }
+    }
+
     /** An optional JSON array of strings. */
     Optional<List<String>> optionalStringList(String field) throws Invalid {
         JsonElement element = object.get(field);

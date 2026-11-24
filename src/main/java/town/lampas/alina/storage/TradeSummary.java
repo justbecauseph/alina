@@ -1,5 +1,6 @@
 package town.lampas.alina.storage;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Objects;
@@ -7,7 +8,7 @@ import java.util.Optional;
 import net.minecraft.resources.Identifier;
 
 /**
- * Read-only trade economy summary over a window of trade days, plus global trade operation health counts.
+ * Read-only trade economy summary over a window of trade days or instants, plus global trade operation health counts.
  *
  * @param daily per-day totals, ordered by {@code tradeDay} ascending, for days with trades
  * @param shops per-shop totals and budget pressure, sorted by {@code aurMinted + aurSunk} descending, then {@code shopId}
@@ -15,6 +16,7 @@ import net.minecraft.resources.Identifier;
  * @param topBoughtOffers top offers bought from shops, sorted by {@code aur} descending, {@code count} descending, {@code item} ascending
  * @param concentration Aur minting concentration across earners in the window
  * @param health counts of all trade operations at {@code RECORDED} and {@code RECONCILE} across all dates
+ * @param buckets sub-day or day-aligned bucket totals, ordered by {@code bucketStart} ascending, when queried by instant
  */
 public record TradeSummary(
         List<DailyTotals> daily,
@@ -22,7 +24,8 @@ public record TradeSummary(
         List<ItemFlow> topSoldItems,
         List<OfferFlow> topBoughtOffers,
         Concentration concentration,
-        OperationHealth health) {
+        OperationHealth health,
+        List<BucketTotals> buckets) {
 
     public TradeSummary {
         daily = List.copyOf(daily);
@@ -31,6 +34,17 @@ public record TradeSummary(
         topBoughtOffers = List.copyOf(topBoughtOffers);
         Objects.requireNonNull(concentration, "concentration");
         Objects.requireNonNull(health, "health");
+        buckets = List.copyOf(buckets);
+    }
+
+    public TradeSummary(
+            List<DailyTotals> daily,
+            List<ShopTotals> shops,
+            List<ItemFlow> topSoldItems,
+            List<OfferFlow> topBoughtOffers,
+            Concentration concentration,
+            OperationHealth health) {
+        this(daily, shops, topSoldItems, topBoughtOffers, concentration, health, List.of());
     }
 
     /** Per-day economy totals for one trade day with at least one recorded or settled trade. */
@@ -48,6 +62,25 @@ public record TradeSummary(
 
         public DailyTotals {
             Objects.requireNonNull(tradeDay, "tradeDay");
+            revisionIds = List.copyOf(revisionIds);
+        }
+    }
+
+    /** Per-bucket economy totals for one time interval with at least one recorded or settled trade. */
+    public record BucketTotals(
+            Instant bucketStart,
+            int tradeCount,
+            int uniqueTraders,
+            long aurMintedItems,
+            long aurMintedXp,
+            long aurSunkOffers,
+            long aurSunkXp,
+            long xpPointsSold,
+            long xpPointsBought,
+            List<Long> revisionIds) {
+
+        public BucketTotals {
+            Objects.requireNonNull(bucketStart, "bucketStart");
             revisionIds = List.copyOf(revisionIds);
         }
     }

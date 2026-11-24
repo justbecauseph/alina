@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -17,6 +18,7 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
 import net.minecraft.resources.Identifier;
+import town.lampas.alina.storage.TradeSummary.BucketTotals;
 import town.lampas.alina.storage.TradeSummary.Concentration;
 import town.lampas.alina.storage.TradeSummary.DailyTotals;
 import town.lampas.alina.storage.TradeSummary.ItemFlow;
@@ -30,7 +32,11 @@ import town.lampas.alina.storage.TradeSummary.ShopTotals;
  */
 final class TradeSummaryAggregator {
 
-    record TradeRow(UUID characterId, long revisionId, OperationEffect.TradeSettled effect) {}
+    record TradeRow(UUID characterId, long revisionId, Instant createdAt, OperationEffect.TradeSettled effect) {
+        TradeRow(UUID characterId, long revisionId, OperationEffect.TradeSettled effect) {
+            this(characterId, revisionId, Instant.EPOCH, effect);
+        }
+    }
 
     record BudgetRow(Identifier shopId, int aurPaid) {}
 
@@ -42,7 +48,19 @@ final class TradeSummaryAggregator {
             List<TradeRow> trades,
             List<BudgetRow> budgets,
             OperationHealth health) {
-        Map<LocalDate, DayAcc> days = new TreeMap<>();
+        return aggregate(shopBudgets, topLimit, trades, budgets, health, 0);
+    }
+
+    static TradeSummary aggregate(
+            Map<Identifier, Integer> shopBudgets,
+            int topLimit,
+            List<TradeRow> trades,
+            List<BudgetRow> budgets,
+            OperationHealth health,
+            int bucketMinutes) {
+        Map<LocalDate, PeriodAcc> days = new TreeMap<>();
+        Map<Instant, PeriodAcc> buckets = bucketMinutes > 0 ? new TreeMap<>() : null;
+        long bucketSeconds = bucketMinutes > 0 ? bucketMinutes * 60L : 0L;
         Map<Identifier, ShopAcc> shops = new HashMap<>();
         for (Map.Entry<Identifier, Integer> entry : shopBudgets.entrySet()) {
             shops.computeIfAbsent(entry.getKey(), id -> new ShopAcc(id, entry.getValue()));
@@ -67,16 +85,16 @@ final class TradeSummaryAggregator {
             long sunkOffers = (xpBought == 0) ? aurSpent : 0;
             long sunkXp = (xpBought > 0) ? aurSpent : 0;
 
-            DayAcc day = days.computeIfAbsent(tradeDay, ignored -> new DayAcc());
-            day.tradeCount++;
-            day.traders.add(row.characterId());
-            day.aurMintedItems += mintedItems;
-            day.aurMintedXp += mintedXp;
-            day.aurSunkOffers += sunkOffers;
-            day.aurSunkXp += sunkXp;
-            day.xpPointsSold += xpSold;
-            day.xpPointsBought += xpBought;
-            day.revisionIds.add(row.revisionId());
+            days.computeIfAbsent(tradeDay, ignored -> new PeriodAcc())
+                    .record(row.characterId(), row.revisionId(), mintedItems, mintedXp, sunkOffers, sunkXp,
+                            xpSold, xpBought);
+            if (buckets != null) {
+                Instant bucketStart = Instant.ofEpochSecond(
+                        Math.floorDiv(row.createdAt().getEpochSecond(), bucketSeconds) * bucketSeconds);
+                buckets.computeIfAbsent(bucketStart, ignored -> new PeriodAcc())
+                        .record(row.characterId(), row.revisionId(), mintedItems, mintedXp, sunkOffers, sunkXp,
+                                xpSold, xpBought);
+            }
 
             ShopAcc shop = shops.computeIfAbsent(shopId, id -> new ShopAcc(id, shopBudgets.getOrDefault(id, 0)));
             shop.tradeCount++;
@@ -115,19 +133,15 @@ final class TradeSummaryAggregator {
         }
 
         List<DailyTotals> dailyList = new ArrayList<>(days.size());
-        for (Map.Entry<LocalDate, DayAcc> entry : days.entrySet()) {
-            DayAcc d = entry.getValue();
-            dailyList.add(new DailyTotals(
-                    entry.getKey(),
-                    d.tradeCount,
-                    d.traders.size(),
-                    d.aurMintedItems,
-                    d.aurMintedXp,
-                    d.aurSunkOffers,
-                    d.aurSunkXp,
-                    d.xpPointsSold,
-                    d.xpPointsBought,
-                    List.copyOf(d.revisionIds)));
+        for (Map.Entry<LocalDate, PeriodAcc> entry : days.entrySet()) {
+            dailyList.add(entry.getValue().toDailyTotals(entry.getKey()));
+        }
+
+        List<BucketTotals> bucketList = new ArrayList<>(buckets == null ? 0 : buckets.size());
+        if (buckets != null) {
+            for (Map.Entry<Instant, PeriodAcc> entry : buckets.entrySet()) {
+                bucketList.add(entry.getValue().toBucketTotals(entry.getKey()));
+            }
         }
 
         List<ShopTotals> shopList = shops.values().stream()
@@ -158,7 +172,7 @@ final class TradeSummaryAggregator {
                 .toList();
 
         Concentration concentration = concentrationOf(earnerAur);
-        return new TradeSummary(dailyList, shopList, topSold, topBought, concentration, health);
+        return new TradeSummary(dailyList, shopList, topSold, topBought, concentration, health, bucketList);
     }
 
     private static void collectSold(JsonObject detail, Map<String, ItemAcc> soldItems) {
@@ -255,7 +269,7 @@ final class TradeSummaryAggregator {
         return element.getAsString();
     }
 
-    private static final class DayAcc {
+    private static final class PeriodAcc {
         int tradeCount;
         final Set<UUID> traders = new HashSet<>();
         long aurMintedItems;
@@ -265,6 +279,54 @@ final class TradeSummaryAggregator {
         long xpPointsSold;
         long xpPointsBought;
         final Set<Long> revisionIds = new TreeSet<>();
+
+        void record(
+                UUID characterId,
+                long revisionId,
+                long mintedItems,
+                long mintedXp,
+                long sunkOffers,
+                long sunkXp,
+                long xpSold,
+                long xpBought) {
+            tradeCount++;
+            traders.add(characterId);
+            aurMintedItems += mintedItems;
+            aurMintedXp += mintedXp;
+            aurSunkOffers += sunkOffers;
+            aurSunkXp += sunkXp;
+            xpPointsSold += xpSold;
+            xpPointsBought += xpBought;
+            revisionIds.add(revisionId);
+        }
+
+        DailyTotals toDailyTotals(LocalDate tradeDay) {
+            return new DailyTotals(
+                    tradeDay,
+                    tradeCount,
+                    traders.size(),
+                    aurMintedItems,
+                    aurMintedXp,
+                    aurSunkOffers,
+                    aurSunkXp,
+                    xpPointsSold,
+                    xpPointsBought,
+                    List.copyOf(revisionIds));
+        }
+
+        BucketTotals toBucketTotals(Instant bucketStart) {
+            return new BucketTotals(
+                    bucketStart,
+                    tradeCount,
+                    traders.size(),
+                    aurMintedItems,
+                    aurMintedXp,
+                    aurSunkOffers,
+                    aurSunkXp,
+                    xpPointsSold,
+                    xpPointsBought,
+                    List.copyOf(revisionIds));
+        }
     }
 
     private static final class ShopAcc {
