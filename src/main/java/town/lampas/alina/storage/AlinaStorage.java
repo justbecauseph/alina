@@ -127,8 +127,31 @@ public interface AlinaStorage extends AutoCloseable {
      */
     CompletableFuture<List<MarketTick>> loadMarketTicks(int limit);
 
+    /**
+     * Up to {@code limit} ticks of the market with id greater than {@code afterId}, ordered by {@code id} ascending.
+     */
+    CompletableFuture<List<IndexedMarketTick>> loadMarketTicksSince(long afterId, int limit);
+
     /** The market row, or empty when it was never created. Its reserves are the exact sums, whatever their value. */
     CompletableFuture<Optional<MarketState>> loadMarket();
+
+    /**
+     * Computes a read-only economy summary for {@code [fromDay, toDay]} (by {@code effect.tradeDay}) using
+     * {@code shopBudgets} for budget-pressure metrics, plus global trade operation health counts across all dates.
+     */
+    CompletableFuture<TradeSummary> loadTradeSummary(
+            LocalDate fromDay, LocalDate toDay, Map<Identifier, Integer> shopBudgets, int topLimit);
+
+    /**
+     * Lists recent trade operations matching the filters, ordered {@code createdAt DESC, operationId DESC}, using
+     * keyset pagination before {@code before}.
+     */
+    CompletableFuture<List<StoredOperation>> listRecentTradeOperations(
+            Optional<Identifier> shopId,
+            Optional<UUID> characterId,
+            Set<OperationStep> steps,
+            Optional<OperationCursor> before,
+            int limit);
 
     @Override
     void close();

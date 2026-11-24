@@ -18,6 +18,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -184,6 +185,20 @@ final class PostgresStorage implements AlinaStorage {
             """;
     private static final String SELECT_MARKET_TICKS =
             "SELECT points, aur, at FROM experience_market_tick ORDER BY id DESC LIMIT ?";
+    private static final String SELECT_MARKET_TICKS_SINCE =
+            "SELECT id, points, aur, at FROM experience_market_tick WHERE id > ? ORDER BY id ASC LIMIT ?";
+    private static final String SELECT_TRADE_SUMMARY_OPERATIONS = """
+            SELECT character_id, revision_id, effect
+            FROM operation
+            WHERE kind = 'trade'
+              AND step IN ('recorded', 'settled')
+              AND (effect->>'trade_day')::date >= ?
+              AND (effect->>'trade_day')::date <= ?
+            """;
+    private static final String SELECT_TRADE_SUMMARY_BUDGETS =
+            "SELECT shop_id, aur_paid FROM trade_budget WHERE trade_day >= ? AND trade_day <= ?";
+    private static final String SELECT_TRADE_HEALTH =
+            "SELECT step, COUNT(*) FROM operation WHERE kind = 'trade' AND step IN ('recorded', 'reconcile') GROUP BY step";
 
     private static final String OPERATION_COLUMNS = "operation_id, character_id, kind, subject_id, tier, revision_id, "
             + "world_id, reward, reputation, effect, step, created_at, updated_at, note";
@@ -673,8 +688,150 @@ final class PostgresStorage implements AlinaStorage {
     }
 
     @Override
+    public CompletableFuture<List<IndexedMarketTick>> loadMarketTicksSince(long afterId, int limit) {
+        if (afterId < 0) {
+            return CompletableFuture.failedFuture(
+                    new IllegalArgumentException("afterId must not be negative, was " + afterId));
+        }
+        if (limit < 1) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("limit must be positive, was " + limit));
+        }
+        return query(connection -> {
+            List<IndexedMarketTick> ticks = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement(SELECT_MARKET_TICKS_SINCE)) {
+                statement.setLong(1, afterId);
+                statement.setInt(2, limit);
+                try (ResultSet rows = statement.executeQuery()) {
+                    while (rows.next()) {
+                        ticks.add(new IndexedMarketTick(rows.getLong(1), rows.getLong(2), rows.getLong(3),
+                                rows.getObject(4, OffsetDateTime.class).toInstant()));
+                    }
+                }
+            }
+            return List.copyOf(ticks);
+        });
+    }
+
+    @Override
     public CompletableFuture<Optional<MarketState>> loadMarket() {
         return query(PostgresStorage::selectMarket);
+    }
+
+    @Override
+    public CompletableFuture<TradeSummary> loadTradeSummary(
+            LocalDate fromDay, LocalDate toDay, Map<Identifier, Integer> shopBudgets, int topLimit) {
+        Objects.requireNonNull(fromDay, "fromDay");
+        Objects.requireNonNull(toDay, "toDay");
+        Objects.requireNonNull(shopBudgets, "shopBudgets");
+        if (fromDay.isAfter(toDay)) {
+            return CompletableFuture.failedFuture(
+                    new IllegalArgumentException("fromDay " + fromDay + " must not be after toDay " + toDay));
+        }
+        if (topLimit < 1) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("topLimit must be positive, was " + topLimit));
+        }
+        Map<Identifier, Integer> budgetsCopy = Map.copyOf(shopBudgets);
+        return inSnapshot(connection -> {
+            List<TradeSummaryAggregator.TradeRow> trades = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement(SELECT_TRADE_SUMMARY_OPERATIONS)) {
+                statement.setObject(1, fromDay);
+                statement.setObject(2, toDay);
+                try (ResultSet rows = statement.executeQuery()) {
+                    while (rows.next()) {
+                        OperationEffect effect = OperationEffectCodec.fromJson(rows.getString(3));
+                        if (effect instanceof OperationEffect.TradeSettled trade) {
+                            trades.add(new TradeSummaryAggregator.TradeRow(
+                                    UUID.fromString(rows.getString(1)), rows.getLong(2), trade));
+                        }
+                    }
+                }
+            }
+            List<TradeSummaryAggregator.BudgetRow> budgets = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement(SELECT_TRADE_SUMMARY_BUDGETS)) {
+                statement.setObject(1, fromDay);
+                statement.setObject(2, toDay);
+                try (ResultSet rows = statement.executeQuery()) {
+                    while (rows.next()) {
+                        budgets.add(new TradeSummaryAggregator.BudgetRow(
+                                Identifier.parse(rows.getString(1)), rows.getInt(2)));
+                    }
+                }
+            }
+            int recordedCount = 0;
+            int reconcileCount = 0;
+            try (PreparedStatement statement = connection.prepareStatement(SELECT_TRADE_HEALTH);
+                    ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    String step = rows.getString(1);
+                    int count = Math.toIntExact(rows.getLong(2));
+                    if ("recorded".equals(step)) {
+                        recordedCount = count;
+                    } else if ("reconcile".equals(step)) {
+                        reconcileCount = count;
+                    }
+                }
+            }
+            return TradeSummaryAggregator.aggregate(budgetsCopy, topLimit, trades, budgets,
+                    new TradeSummary.OperationHealth(recordedCount, reconcileCount));
+        });
+    }
+
+    @Override
+    public CompletableFuture<List<StoredOperation>> listRecentTradeOperations(
+            Optional<Identifier> shopId,
+            Optional<UUID> characterId,
+            Set<OperationStep> steps,
+            Optional<OperationCursor> before,
+            int limit) {
+        Objects.requireNonNull(shopId, "shopId");
+        Objects.requireNonNull(characterId, "characterId");
+        Objects.requireNonNull(steps, "steps");
+        Objects.requireNonNull(before, "before");
+        if (limit < 1) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("limit must be positive, was " + limit));
+        }
+        String[] names = steps.stream().map(StorageSupport::stored).toArray(String[]::new);
+        Optional<OperationCursor> cursor = before.map(
+                c -> new OperationCursor(StorageSupport.micros(c.createdAt()), c.operationId()));
+        StringBuilder sql = new StringBuilder("SELECT ").append(OPERATION_COLUMNS)
+                .append(" FROM operation WHERE kind = 'trade' AND step = ANY(?)");
+        if (shopId.isPresent()) {
+            sql.append(" AND subject_id = ?");
+        }
+        if (characterId.isPresent()) {
+            sql.append(" AND character_id = ?");
+        }
+        if (cursor.isPresent()) {
+            sql.append(" AND (created_at < ? OR (created_at = ? AND operation_id < ?))");
+        }
+        sql.append(" ORDER BY created_at DESC, operation_id DESC LIMIT ?");
+        String querySql = sql.toString();
+        return query(connection -> {
+            List<StoredOperation> listing = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement(querySql)) {
+                int idx = 1;
+                statement.setArray(idx++, connection.createArrayOf("text", names));
+                if (shopId.isPresent()) {
+                    statement.setString(idx++, shopId.get().toString());
+                }
+                if (characterId.isPresent()) {
+                    statement.setObject(idx++, characterId.get());
+                }
+                if (cursor.isPresent()) {
+                    OffsetDateTime beforeAt = utc(cursor.get().createdAt());
+                    statement.setObject(idx++, beforeAt);
+                    statement.setObject(idx++, beforeAt);
+                    statement.setObject(idx++, cursor.get().operationId());
+                }
+                statement.setInt(idx, limit);
+                try (ResultSet rows = statement.executeQuery()) {
+                    while (rows.next()) {
+                        listing.add(storedOperation(rows));
+                    }
+                }
+            }
+            return List.copyOf(listing);
+        });
     }
 
     @Override

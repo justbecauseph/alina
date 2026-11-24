@@ -7,6 +7,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -27,6 +28,10 @@ public final class InMemoryStorage implements AlinaStorage {
     private static final Comparator<StoredOperation> OLDEST_FIRST = Comparator
             .comparing((StoredOperation stored) -> stored.operation().createdAt())
             .thenComparing(stored -> stored.operation().operationId().toString());
+    /** Descending order matching PostgreSQL {@code ORDER BY created_at DESC, operation_id DESC}. */
+    private static final Comparator<StoredOperation> NEWEST_FIRST = Comparator
+            .comparing((StoredOperation stored) -> stored.operation().createdAt()).reversed()
+            .thenComparing(stored -> stored.operation().operationId().toString(), Comparator.reverseOrder());
 
     /** A board's key: one board per date and board id. */
     private record BoardKey(LocalDate date, Identifier boardId) {}
@@ -45,7 +50,8 @@ public final class InMemoryStorage implements AlinaStorage {
     /** The experience market's row, or null until it is created. */
     private MarketState market;
     /** The newest market ticks, oldest first, at most {@link StorageSupport#MARKET_TICKS_KEPT}. */
-    private final List<MarketTick> marketTicks = new ArrayList<>();
+    private final List<IndexedMarketTick> marketTicks = new ArrayList<>();
+    private long nextMarketTickId = 1;
 
     @Override
     public CompletableFuture<CharacterState> loadCharacter(UUID characterId) {
@@ -341,15 +347,32 @@ public final class InMemoryStorage implements AlinaStorage {
         return locked(() -> {
             List<MarketTick> newest = new ArrayList<>();
             for (int index = marketTicks.size() - 1; index >= 0 && newest.size() < limit; index--) {
-                newest.add(marketTicks.get(index));
+                IndexedMarketTick tick = marketTicks.get(index);
+                newest.add(new MarketTick(tick.points(), tick.aur(), tick.at()));
             }
             return List.copyOf(newest);
         });
     }
 
+    @Override
+    public CompletableFuture<List<IndexedMarketTick>> loadMarketTicksSince(long afterId, int limit) {
+        if (afterId < 0) {
+            return CompletableFuture.failedFuture(
+                    new IllegalArgumentException("afterId must not be negative, was " + afterId));
+        }
+        if (limit < 1) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("limit must be positive, was " + limit));
+        }
+        return locked(() -> marketTicks.stream()
+                .filter(tick -> tick.id() > afterId)
+                .limit(limit)
+                .toList());
+    }
+
     /** Records the reserves after a change, and drops the oldest ticks beyond {@link StorageSupport#MARKET_TICKS_KEPT}. */
     private void recordTick(MarketState state, Instant at) {
-        marketTicks.add(new MarketTick(state.points(), state.aur(), at));
+        marketTicks.add(new IndexedMarketTick(
+                nextMarketTickId++, state.points(), state.aur(), StorageSupport.micros(at)));
         while (marketTicks.size() > StorageSupport.MARKET_TICKS_KEPT) {
             marketTicks.remove(0);
         }
@@ -358,6 +381,96 @@ public final class InMemoryStorage implements AlinaStorage {
     @Override
     public CompletableFuture<Optional<MarketState>> loadMarket() {
         return locked(() -> Optional.ofNullable(market));
+    }
+
+    @Override
+    public CompletableFuture<TradeSummary> loadTradeSummary(
+            LocalDate fromDay, LocalDate toDay, Map<Identifier, Integer> shopBudgets, int topLimit) {
+        Objects.requireNonNull(fromDay, "fromDay");
+        Objects.requireNonNull(toDay, "toDay");
+        Objects.requireNonNull(shopBudgets, "shopBudgets");
+        if (fromDay.isAfter(toDay)) {
+            return CompletableFuture.failedFuture(
+                    new IllegalArgumentException("fromDay " + fromDay + " must not be after toDay " + toDay));
+        }
+        if (topLimit < 1) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("topLimit must be positive, was " + topLimit));
+        }
+        Map<Identifier, Integer> budgetsCopy = Map.copyOf(shopBudgets);
+        return locked(() -> {
+            List<TradeSummaryAggregator.TradeRow> trades = new ArrayList<>();
+            int recordedCount = 0;
+            int reconcileCount = 0;
+            for (StoredOperation stored : operations.values()) {
+                Operation op = stored.operation();
+                if (op.kind() != OperationKind.TRADE) {
+                    continue;
+                }
+                if (stored.step() == OperationStep.RECORDED) {
+                    recordedCount++;
+                } else if (stored.step() == OperationStep.RECONCILE) {
+                    reconcileCount++;
+                }
+                if (stored.step() != OperationStep.RECORDED && stored.step() != OperationStep.SETTLED) {
+                    continue;
+                }
+                if (op.effect() instanceof OperationEffect.TradeSettled trade) {
+                    LocalDate day = trade.tradeDay();
+                    if (!day.isBefore(fromDay) && !day.isAfter(toDay)) {
+                        trades.add(new TradeSummaryAggregator.TradeRow(op.characterId(), op.revisionId(), trade));
+                    }
+                }
+            }
+            List<TradeSummaryAggregator.BudgetRow> budgets = new ArrayList<>();
+            for (Map<TradeBudgetKey, Integer> perChar : tradeBudgets.values()) {
+                for (Map.Entry<TradeBudgetKey, Integer> entry : perChar.entrySet()) {
+                    LocalDate day = entry.getKey().tradeDay();
+                    if (!day.isBefore(fromDay) && !day.isAfter(toDay)) {
+                        budgets.add(new TradeSummaryAggregator.BudgetRow(entry.getKey().shopId(), entry.getValue()));
+                    }
+                }
+            }
+            return TradeSummaryAggregator.aggregate(budgetsCopy, topLimit, trades, budgets,
+                    new TradeSummary.OperationHealth(recordedCount, reconcileCount));
+        });
+    }
+
+    @Override
+    public CompletableFuture<List<StoredOperation>> listRecentTradeOperations(
+            Optional<Identifier> shopId,
+            Optional<UUID> characterId,
+            Set<OperationStep> steps,
+            Optional<OperationCursor> before,
+            int limit) {
+        Objects.requireNonNull(shopId, "shopId");
+        Objects.requireNonNull(characterId, "characterId");
+        Objects.requireNonNull(steps, "steps");
+        Objects.requireNonNull(before, "before");
+        if (limit < 1) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("limit must be positive, was " + limit));
+        }
+        Set<OperationStep> wanted = Set.copyOf(steps);
+        Optional<OperationCursor> cursor = before.map(
+                c -> new OperationCursor(StorageSupport.micros(c.createdAt()), c.operationId()));
+        return locked(() -> {
+            if (wanted.isEmpty()) {
+                return List.of();
+            }
+            return operations.values().stream()
+                    .filter(stored -> stored.operation().kind() == OperationKind.TRADE)
+                    .filter(stored -> wanted.contains(stored.step()))
+                    .filter(stored -> shopId.isEmpty() || stored.operation().subjectId().equals(shopId.get()))
+                    .filter(stored -> characterId.isEmpty() || stored.operation().characterId().equals(characterId.get()))
+                    .filter(stored -> cursor.isEmpty() || isBeforeCursor(stored.operation(), cursor.get()))
+                    .sorted(NEWEST_FIRST)
+                    .limit(limit)
+                    .toList();
+        });
+    }
+
+    private static boolean isBeforeCursor(Operation op, OperationCursor cursor) {
+        int cmp = op.createdAt().compareTo(cursor.createdAt());
+        return cmp < 0 || (cmp == 0 && op.operationId().toString().compareTo(cursor.operationId().toString()) < 0);
     }
 
     @Override

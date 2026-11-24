@@ -95,7 +95,7 @@ class PostgresMigrationsTest {
             }
 
             try (Connection connection = connect()) {
-                assertEquals(List.of("1", "2", "3", "4"), column(connection,
+                assertEquals(List.of("1", "2", "3", "4", "5"), column(connection,
                         "SELECT version FROM " + schema + ".alina_schema_version ORDER BY version"));
                 // The primary key of board is the date and the board id, in that order.
                 assertEquals(List.of("board_date", "board_id"), column(connection,
@@ -130,7 +130,7 @@ class PostgresMigrationsTest {
             }
 
             try (Connection connection = connect()) {
-                assertEquals(List.of("1", "2", "3", "4"), column(connection,
+                assertEquals(List.of("1", "2", "3", "4", "5"), column(connection,
                         "SELECT version FROM " + schema + ".alina_schema_version ORDER BY version"));
                 assertEquals(List.of("experience_market", "experience_market_tick"), column(connection,
                         "SELECT table_name FROM information_schema.tables WHERE table_schema = ? "

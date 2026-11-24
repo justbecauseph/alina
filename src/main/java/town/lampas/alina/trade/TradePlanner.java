@@ -94,8 +94,8 @@ final class TradePlanner {
             return TradePlan.refuse(Reason.NO_ROOM);
         }
         JsonArray sold = new JsonArray();
-        for (Take take : junk.takes()) {
-            sold.add(itemEntry(inventory.getItem(take.slot()), take.count()));
+        for (SellPlanner.JunkSale sale : junk.sales()) {
+            sold.add(entry(inventory.getItem(sale.slot()), sale.count(), sale.aur()));
         }
         return new TradePlan(Optional.empty(), "sold", junk.takes(), 0, grant, 0, junk.aur(), Optional.empty(),
                 detail(sold, new JsonArray(), 0, 0, 0), 0, 0);
@@ -137,7 +137,9 @@ final class TradePlanner {
         }
         Optional<Purchase> purchase = state.period().map(period -> new Purchase(offer.id(), period, count));
         JsonArray bought = new JsonArray();
-        bought.add(entry(item, items, cost));
+        JsonObject boughtEntry = entry(item, items, cost);
+        boughtEntry.addProperty("offer", offer.id());
+        bought.add(boughtEntry);
         return new TradePlan(Optional.empty(), "bought", payment.get().takes(), 0, grant, 0, 0, purchase,
                 detail(new JsonArray(), bought, 0, 0, cost), 0, 0);
     }

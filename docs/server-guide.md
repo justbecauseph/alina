@@ -114,7 +114,7 @@ If the schema does not exist, the migration step creates it, which needs `CREATE
 
 ### Migrations
 
-The SQL migrations ship in the jar under `alina/migrations/`: `V1__init.sql`, `V2__boards.sql`, `V3__trade.sql` and `V4__experience_market.sql`. They run when the
+The SQL migrations ship in the jar under `alina/migrations/`: `V1__init.sql`, `V2__boards.sql`, `V3__trade.sql`, `V4__experience_market.sql` and `V5__trade_telemetry.sql`. They run when the
 server starts, before Alina's other modules read the database, and the start waits for them. Each runs in its own
 transaction with its row in `alina_schema_version`, under an advisory lock, so two servers starting on one database
 apply each once. A failure stops the start with `Alina storage could not migrate schema <schema>: <reason>`. A schema
@@ -253,6 +253,16 @@ cap, proof not met, and so on) is the reply.
 for them, and storage ends at the new reserves once the trades in flight settle. Each is written to the log with who ran
 it and the reserves before and after. The market exists only when the active content has an `experience_market`
 section; its reserves stay in the database when the content changes.
+
+### Management methods (read-only)
+
+Alina registers three read-only JSON-RPC methods on the Minecraft Management Protocol (running off the server thread):
+
+| Method | Params | Returns |
+|---|---|---|
+| `alina:trade/market` | `after_id` (whole number ≥ 0, default `0`), `limit` (1..64, default `64`) | `board_day`, `configured`, `loaded`, `market` (reserves, rates, seed, restock/cap/tolerance settings and request counters when loaded), and `ticks` with `id > after_id` ordered by `id` ascending. |
+| `alina:trade/summary` | `from_day`, `to_day` (ISO dates; defaults `to_day = board_day`, `from_day = to_day - 13`, span ≤ 90 days), `top_limit` (1..50, default `20`) | `board_day`, `from_day`, `to_day`, `daily` totals, `shops` totals and daily budget pressure, `top_sold_items`, `top_bought_offers`, `concentration`, and global trade operation `health` (`recorded_count`, `reconcile_count`). |
+| `alina:trade/operations` | `shop` (id), `player` (UUID), `steps` (array of `recorded`, `settled`, `reconcile`; default all three), `before` (`<iso>|<uuid>` cursor), `limit` (1..100, default `30`) | `operations` ordered newest first (`created_at DESC, operation_id DESC`) and `next` cursor when more follow. |
 
 ### /alina settlement
 

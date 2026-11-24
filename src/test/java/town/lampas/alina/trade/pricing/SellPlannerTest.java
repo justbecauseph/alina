@@ -16,6 +16,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import town.lampas.alina.content.TradeContent.Shop;
 import town.lampas.alina.trade.pricing.SellPlanner.JunkPlan;
+import town.lampas.alina.trade.pricing.SellPlanner.JunkSale;
 import town.lampas.alina.trade.pricing.SellPlanner.Quote;
 
 /**
@@ -109,7 +110,8 @@ class SellPlannerTest {
         inventory.setItem(0, new ItemStack(Items.ROTTEN_FLESH, 3));
         inventory.setItem(1, new ItemStack(Items.ROTTEN_FLESH, 5));
 
-        assertEquals(new JunkPlan(List.of(new Take(0, 3), new Take(1, 5)), 8, 2),
+        assertEquals(new JunkPlan(List.of(new Take(0, 3), new Take(1, 5)), 8, 2,
+                        List.of(new JunkSale(0, 3, 0), new JunkSale(1, 5, 2))),
                 SellPlanner.junk(shop, currency(), inventory, 100));
     }
 
@@ -121,7 +123,8 @@ class SellPlannerTest {
         inventory.setItem(0, new ItemStack(Items.ROTTEN_FLESH, 3));
         inventory.setItem(1, new ItemStack(Items.ROTTEN_FLESH, 2));
 
-        assertEquals(new JunkPlan(List.of(new Take(0, 3), new Take(1, 1)), 4, 1),
+        assertEquals(new JunkPlan(List.of(new Take(0, 3), new Take(1, 1)), 4, 1,
+                        List.of(new JunkSale(0, 3, 0), new JunkSale(1, 1, 1))),
                 SellPlanner.junk(shop, currency(), inventory, 100));
     }
 
@@ -133,7 +136,8 @@ class SellPlannerTest {
         inventory.setItem(0, new ItemStack(Items.ROTTEN_FLESH, 3));
         inventory.setItem(1, new ItemStack(Items.ROTTEN_FLESH, 5));
 
-        assertEquals(new JunkPlan(List.of(new Take(0, 3), new Take(1, 1)), 4, 1),
+        assertEquals(new JunkPlan(List.of(new Take(0, 3), new Take(1, 1)), 4, 1,
+                        List.of(new JunkSale(0, 3, 0), new JunkSale(1, 1, 1))),
                 SellPlanner.junk(shop, currency(), inventory, 1));
     }
 
@@ -146,7 +150,8 @@ class SellPlannerTest {
         inventory.setItem(0, new ItemStack(Items.ROTTEN_FLESH, 2));
         inventory.setItem(1, new ItemStack(Items.PAPER, 2));
 
-        assertEquals(new JunkPlan(List.of(new Take(0, 2), new Take(1, 1)), 3, 3),
+        assertEquals(new JunkPlan(List.of(new Take(0, 2), new Take(1, 1)), 3, 3,
+                        List.of(new JunkSale(0, 2, 2), new JunkSale(1, 1, 1))),
                 SellPlanner.junk(shop, currency(), inventory, 3));
     }
 
@@ -159,7 +164,8 @@ class SellPlannerTest {
         inventory.setItem(0, new ItemStack(Items.ROTTEN_FLESH, 5));
         inventory.setItem(1, new ItemStack(Items.PAPER, 3));
 
-        assertEquals(new JunkPlan(List.of(new Take(1, 3)), 3, 3), SellPlanner.junk(shop, currency(), inventory, 100));
+        assertEquals(new JunkPlan(List.of(new Take(1, 3)), 3, 3, List.of(new JunkSale(1, 3, 3))),
+                SellPlanner.junk(shop, currency(), inventory, 100));
     }
 
     @Test
@@ -169,7 +175,8 @@ class SellPlannerTest {
         inventory.setItem(0, new ItemStack(Items.GOLD_NUGGET, 2));
         inventory.setItem(1, new ItemStack(Items.PAPER, 1));
 
-        assertEquals(new JunkPlan(List.of(new Take(1, 1)), 1, 1), SellPlanner.junk(shop, currency(), inventory, 100));
+        assertEquals(new JunkPlan(List.of(new Take(1, 1)), 1, 1, List.of(new JunkSale(1, 1, 1))),
+                SellPlanner.junk(shop, currency(), inventory, 100));
     }
 
     @Test
@@ -181,5 +188,41 @@ class SellPlannerTest {
         assertEquals(SellPlanner.JunkPlan.EMPTY, SellPlanner.junk(shop, currency(), inventory, 100));
         assertEquals(SellPlanner.JunkPlan.EMPTY,
                 SellPlanner.junk(PricingFixtures.shopThatBuysNothing(), currency(), inventory, 100));
+    }
+
+    @Test
+    void junkSalesSplitAurProportionallyPerRuleWithExactSumAndSlotOrder() {
+        // Rule 0 (rotten flesh: 5 Aur per 4 items) spans slots 1, 3, 4: 1 + 2 + 5 = 8 items = 2 bundles = 10 Aur.
+        // Slot 1: 10 * 1 / 8 = 1 (remaining: 7 items, 9 Aur)
+        // Slot 3: 9 * 2 / 7 = 2 (remaining: 5 items, 7 Aur)
+        // Slot 4: 7 * 5 / 5 = 7
+        // Rule 1 (paper: 3 Aur per 2 items) takes slot 0: 4 items = 2 bundles = 6 Aur.
+        // Sales are sorted by slot: 0, 1, 3, 4.
+        Shop shop = PricingFixtures.shop(
+                PricingFixtures.itemRule(Items.ROTTEN_FLESH, 5, 4, true),
+                PricingFixtures.itemRule(Items.PAPER, 3, 2, true));
+        Inventory inventory = PricingFixtures.inventory();
+        inventory.setItem(0, new ItemStack(Items.PAPER, 4));
+        inventory.setItem(1, new ItemStack(Items.ROTTEN_FLESH, 1));
+        inventory.setItem(3, new ItemStack(Items.ROTTEN_FLESH, 2));
+        inventory.setItem(4, new ItemStack(Items.ROTTEN_FLESH, 5));
+
+        JunkPlan plan = SellPlanner.junk(shop, currency(), inventory, 100);
+
+        assertEquals(12, plan.items());
+        assertEquals(16, plan.aur());
+        assertEquals(List.of(
+                new JunkSale(0, 4, 6),
+                new JunkSale(1, 1, 1),
+                new JunkSale(3, 2, 2),
+                new JunkSale(4, 5, 7)),
+                plan.sales());
+        assertEquals(plan.aur(), plan.sales().stream().mapToInt(JunkSale::aur).sum());
+    }
+
+    @Test
+    void threeArgJunkPlanConstructorDefaultsSalesToEmpty() {
+        JunkPlan plan = new JunkPlan(List.of(new Take(0, 2)), 2, 4);
+        assertEquals(List.of(), plan.sales());
     }
 }

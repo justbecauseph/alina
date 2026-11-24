@@ -81,7 +81,7 @@ this build.
 | `settlement` | `SettlementService` (escrow attachment, verified player-data saves, recovery, world id, reconciliation), `SettlementModule` (the attachment, the service's lifecycle and tick), `SettlementTriggers` (the reputation and commission triggers, attached to the service's listeners by `SettlementModule`) |
 | `guild` | `GuildService` (each online character's record, the daily board, accept, abandon, turn-in, criterion and descent proof tracking), `GuildModule` (its lifecycle and events), `GuildText` (player-facing text); `guild.board` (board days and the draw), `guild.proof` (the item proof planner), `guild.dialogue` (Haruhi conditions, actions and providers), `guild.block` (the Notice Board), `guild.command` (`/alina guild`) |
 | `achievement` | `AchievementService` (each online character's achievement record, counting, tiers, repeat cycles, earns), `AdvancementSync` (Alina achievements in the vanilla advancement screen), `AchievementModule` (their lifecycle and events), the `alina:achievement` condition and `/alina achievement` |
-| `trade` | `TradeService` (each online character's trade record, the shop sessions, and the sell, sell junk, buy and experience requests), `TradeModule` (its lifecycle, receivers and the tick), `TradeMessenger` and `NetworkMessenger` (the payloads), `TradeText` (player-facing text), `TradeRefusal` and `TradeOutcome` (what a request came to); `trade.pricing` (wallet, sell planner, inventory fit, experience points), `trade.network` (payloads and views), `trade.dialogue` (`alina:trade/open` and two conditions), `trade.command` (`/alina trade`) |
+| `trade` | `TradeService` (each online character's trade record, the shop sessions, and the sell, sell junk, buy and experience requests), `TradeModule` (its lifecycle, receivers and the tick), `TradeMessenger` and `NetworkMessenger` (the payloads), `TradeText` (player-facing text), `TradeRefusal` and `TradeOutcome` (what a request came to); `trade.pricing` (wallet, sell planner, inventory fit, experience points), `trade.network` (payloads and views), `trade.dialogue` (`alina:trade/open` and two conditions), `trade.command` (`/alina trade`), `trade.remote` (read-only Management Protocol RPCs: `alina:trade/market`, `alina:trade/summary`, `alina:trade/operations`) |
 | `mixin` | `SimpleCriterionTriggerMixin`: hands every simple criterion trigger event to the watchers, before vanilla's early return for players with no unfinished advancement on it; `PlayerStorageAccess`: the server's `playerDataStorage`, for settlement's saves; `PlayerAdvancementsMixin`: holds a join's first advancement packet for the achievement record and adds Alina's holders to every reset packet |
 | `client` | `AlinaClient` entrypoint |
 
@@ -438,6 +438,14 @@ experience trades since the server started (asked, accepted at a moved price, re
 sets the pool to the seed and `market set <points> <aur>` to the given reserves, each written as the difference from the
 live reserves (so no trade is refused for it) and logged with who ran it and the reserves before and after. Feedback is
 `Component.literal`.
+
+### Management methods
+
+`TradeRpc` registers three read-only Management Protocol methods (`notOnMainThread()`, hopping to the server thread only
+for quick in-memory snapshot reads bounded by `READ_TIMEOUT`):
+- `alina:trade/market` (`after_id`, `limit` 1..64): returns `board_day`, `configured`, `loaded`, `market` when loaded, and `ticks` ordered `id ASC`.
+- `alina:trade/summary` (`from_day`, `to_day` up to 90 days, `top_limit` 1..50): returns `daily`, `shops`, `top_sold_items`, `top_bought_offers`, `concentration`, and global `health`.
+- `alina:trade/operations` (`shop`, `player`, `steps`, `before` cursor `<iso>|<uuid>`, `limit` 1..100): returns recent trade `operations` newest first with keyset `next` cursor.
 
 ### Trade tests
 

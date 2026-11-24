@@ -31,18 +31,35 @@ public final class SellPlanner {
     public record Quote(SellRule rule, int aur, int per) {}
 
     /**
-     * What "Sell all junk" sells: the items to take from the main inventory, how many, and the Aur paid.
+     * One slot consumed by "Sell all junk": how many items from {@code slot} and the Aur attributed to that slot.
+     *
+     * @param slot the inventory index, at least 0
+     * @param count the items taken, at least 1
+     * @param aur the Aur attributed to this slot
+     */
+    public record JunkSale(int slot, int count, int aur) {}
+
+    /**
+     * What "Sell all junk" sells: the items to take from the main inventory, how many, the Aur paid, and the per-slot
+     * breakdown.
      *
      * @param takes the takes, one per slot, in slot order
      * @param items the items sold
      * @param aur the Aur paid
+     * @param sales the per-slot sales, in slot order, whose Aur sum per rule equals that rule's Aur
      */
-    public record JunkPlan(List<Take> takes, int items, int aur) {
+    public record JunkPlan(List<Take> takes, int items, int aur, List<JunkSale> sales) {
         /** A plan that sells nothing. */
-        public static final JunkPlan EMPTY = new JunkPlan(List.of(), 0, 0);
+        public static final JunkPlan EMPTY = new JunkPlan(List.of(), 0, 0, List.of());
+
+        /** Compatibility constructor with an empty per-slot breakdown. */
+        public JunkPlan(List<Take> takes, int items, int aur) {
+            this(takes, items, aur, List.of());
+        }
 
         public JunkPlan {
             takes = List.copyOf(takes);
+            sales = List.copyOf(sales);
         }
     }
 
@@ -87,6 +104,7 @@ public final class SellPlanner {
         }
 
         List<Take> takes = new ArrayList<>();
+        List<JunkSale> sales = new ArrayList<>();
         long items = 0;
         long aur = 0;
         for (int index = 0; index < rules.size(); index++) {
@@ -113,20 +131,29 @@ public final class SellPlanner {
             if (bundles == 0) {
                 continue;
             }
-            long toTake = bundles * quote.per();
+            long ruleAur = bundles * quote.aur();
+            long ruleItems = bundles * quote.per();
+            long toTake = ruleItems;
+            long remainingItems = ruleItems;
+            long remainingAur = ruleAur;
             for (int slot : slots) {
                 if (toTake == 0) {
                     break;
                 }
                 int count = (int) Math.min(inventory.getItem(slot).getCount(), toTake);
                 takes.add(new Take(slot, count));
+                int slotAur = (int) (remainingAur * count / remainingItems);
+                remainingItems -= count;
+                remainingAur -= slotAur;
+                sales.add(new JunkSale(slot, count, slotAur));
                 toTake -= count;
             }
-            items += bundles * quote.per();
-            aur += bundles * quote.aur();
+            items += ruleItems;
+            aur += ruleAur;
         }
         takes.sort(Comparator.comparingInt(Take::slot));
-        return new JunkPlan(takes, clampToInt(items), clampToInt(aur));
+        sales.sort(Comparator.comparingInt(JunkSale::slot));
+        return new JunkPlan(takes, clampToInt(items), clampToInt(aur), sales);
     }
 
     /** The index of the first rule that matches the stack, the one {@link Shop#ruleFor} returns; -1 when none does. */

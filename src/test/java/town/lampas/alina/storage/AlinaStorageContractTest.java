@@ -864,6 +864,157 @@ abstract class AlinaStorageContractTest {
         assertEquals(List.of(), await(storage.loadMarketTicks(10)));
     }
 
+    @Test
+    void loadMarketTicksSinceReturnsTicksAfterIdAscendingAndRespectsLimit() {
+        await(storage.loadOrCreateMarket(500000, 10000, DAY, T0));
+        await(storage.adjustMarket(1000, 0, T1));
+        await(storage.adjustMarket(2000, 0, T2));
+        await(storage.adjustMarket(3000, 0, T3));
+
+        List<IndexedMarketTick> all = await(storage.loadMarketTicksSince(0, 10));
+        assertEquals(3, all.size());
+        assertTrue(all.get(0).id() < all.get(1).id() && all.get(1).id() < all.get(2).id());
+        assertEquals(501000L, all.get(0).points());
+        assertEquals(503000L, all.get(1).points());
+        assertEquals(506000L, all.get(2).points());
+        assertEquals(T1, all.get(0).at());
+
+        List<IndexedMarketTick> firstTwo = await(storage.loadMarketTicksSince(0, 2));
+        assertEquals(all.subList(0, 2), firstTwo);
+
+        List<IndexedMarketTick> tail = await(storage.loadMarketTicksSince(all.get(0).id(), 10));
+        assertEquals(all.subList(1, 3), tail);
+
+        assertEquals(List.of(), await(storage.loadMarketTicksSince(all.get(2).id(), 10)));
+        assertInstanceOf(IllegalArgumentException.class, failure(storage.loadMarketTicksSince(-1, 10)));
+        assertInstanceOf(IllegalArgumentException.class, failure(storage.loadMarketTicksSince(0, 0)));
+    }
+
+    @Test
+    void loadTradeSummaryComputesDailyShopItemOfferConcentrationAndGlobalHealth() {
+        UUID charlie = UUID.fromString("55555555-5555-4555-8555-555555555555");
+        UUID op5 = UUID.fromString("55555555-0000-4555-8555-555555555555");
+        UUID op6 = UUID.fromString("66666666-0000-4666-8666-666666666666");
+        UUID op7 = UUID.fromString("77777777-0000-4777-8777-777777777777");
+        Identifier thirdShop = Identifier.parse("alina:shop/idle");
+
+        // Non-trade ops are ignored by summary and trade health.
+        await(storage.applyOperation(turnIn(op7, ALICE, COURIER, 2, T0, CommissionStatus.COOLDOWN, Optional.of(T6))));
+
+        // Outside window [NEXT_DAY, THIRD_DAY]: a RECONCILE trade on DAY still counts in global health.reconcileCount,
+        // and is excluded from daily/shops/concentration.
+        await(storage.applyOperation(tradeWithDetail(OP1, ALICE, STALL, DAY, 999,
+                "{\"sold\":[{\"item\":\"minecraft:dirt\",\"count\":10,\"aur\":999}],\"bought\":[],\"experience_sold\":0,\"experience_bought\":0,\"aur_spent\":0}",
+                T0, 1L)));
+        await(storage.markOperation(OP1, OperationStep.RECONCILE, Optional.of("mismatch"), T1));
+
+        // NEXT_DAY (rev 2):
+        // OP2: ALICE sells junk (two stacks of rotten_flesh + legacy entry without aur) at STALL for 90 Aur (budget 100 -> 90% near cap).
+        await(storage.applyOperation(tradeWithDetail(OP2, ALICE, STALL, NEXT_DAY, 90,
+                "{\"sold\":[{\"item\":\"minecraft:rotten_flesh\",\"count\":4,\"aur\":40},{\"item\":\"minecraft:rotten_flesh\",\"count\":5,\"aur\":50},{\"item\":\"minecraft:stick\",\"count\":1}],\"bought\":[],\"experience_sold\":0,\"experience_bought\":0,\"aur_spent\":0}",
+                T1, 2L)));
+        await(storage.markOperation(OP2, OperationStep.SETTLED, Optional.empty(), T2));
+
+        // OP3: BOB sells XP at STALL for 100 Aur (budget 100 -> at cap).
+        await(storage.applyOperation(tradeWithDetail(OP3, BOB, STALL, NEXT_DAY, 100,
+                "{\"sold\":[],\"bought\":[],\"experience_sold\":500,\"experience_bought\":0,\"aur_spent\":0}",
+                T2, 2L)));
+        await(storage.markOperation(OP3, OperationStep.SETTLED, Optional.empty(), T3));
+
+        // THIRD_DAY (rev 3):
+        // OP4: ALICE buys offer "scroll" (20 Aur) at BAZAAR, left at RECORDED.
+        await(storage.applyOperation(tradeWithDetail(OP4, ALICE, BAZAAR, THIRD_DAY, 0,
+                "{\"sold\":[],\"bought\":[{\"offer\":\"scroll\",\"item\":\"minecraft:paper\",\"count\":2,\"aur\":20}],\"experience_sold\":0,\"experience_bought\":0,\"aur_spent\":20}",
+                T3, 3L)));
+        // OP5: CHARLIE buys XP at BAZAAR for 30 Aur, settled.
+        await(storage.applyOperation(tradeWithDetail(op5, charlie, BAZAAR, THIRD_DAY, 0,
+                "{\"sold\":[],\"bought\":[],\"experience_sold\":0,\"experience_bought\":150,\"aur_spent\":30}",
+                T4, 3L)));
+        await(storage.markOperation(op5, OperationStep.SETTLED, Optional.empty(), T5));
+        // OP6: CHARLIE sells items at STALL on THIRD_DAY for 50 Aur (50% budget used), settled.
+        await(storage.applyOperation(tradeWithDetail(op6, charlie, STALL, THIRD_DAY, 50,
+                "{\"sold\":[{\"item\":\"minecraft:bone\",\"count\":10,\"aur\":50}],\"bought\":[],\"experience_sold\":0,\"experience_bought\":0,\"aur_spent\":0}",
+                T5, 3L)));
+        await(storage.markOperation(op6, OperationStep.SETTLED, Optional.empty(), T6));
+
+        Map<Identifier, Integer> budgets = Map.of(STALL, 100, BAZAAR, 0, thirdShop, 50);
+        TradeSummary summary = await(storage.loadTradeSummary(NEXT_DAY, THIRD_DAY, budgets, 2));
+
+        assertEquals(List.of(
+                new TradeSummary.DailyTotals(NEXT_DAY, 2, 2, 90, 100, 0, 0, 500, 0, List.of(2L)),
+                new TradeSummary.DailyTotals(THIRD_DAY, 3, 2, 50, 0, 20, 30, 0, 150, List.of(3L))),
+                summary.daily());
+
+        // STALL: minted 240, sunk 0 -> total 240. Budget rows: (ALICE, NEXT_DAY)=90, (BOB, NEXT_DAY)=100, (CHARLIE, THIRD_DAY)=50.
+        // bps: 9000, 10000, 5000 -> avg 8000. nearCap=2 (90,100), atCap=1 (100), max=100.
+        // BAZAAR: minted 0, sunk 50 -> total 50.
+        // thirdShop: minted 0, sunk 0.
+        assertEquals(List.of(
+                new TradeSummary.ShopTotals(STALL, 100, 3, 3, 240, 0, 500, 0, 3, 2, 1, 8000, 100),
+                new TradeSummary.ShopTotals(BAZAAR, 0, 2, 2, 0, 50, 0, 150, 0, 0, 0, 0, 0),
+                new TradeSummary.ShopTotals(thirdShop, 50, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
+                summary.shops());
+
+        // Top 2 sold items: rotten_flesh (90 aur, count 9, 1 distinct trade), bone (50 aur, count 10, 1 trade).
+        assertEquals(List.of(
+                new TradeSummary.ItemFlow("minecraft:rotten_flesh", 9, 90, 1),
+                new TradeSummary.ItemFlow("minecraft:bone", 10, 50, 1)),
+                summary.topSoldItems());
+
+        assertEquals(List.of(
+                new TradeSummary.OfferFlow(BAZAAR, Optional.of("scroll"), "minecraft:paper", 2, 20, 1)),
+                summary.topBoughtOffers());
+
+        // Earners: BOB=100, ALICE=90, CHARLIE=50. Total=240, unique=3, top5=240, top10%=ceil(0.3)=1 -> 100.
+        assertEquals(new TradeSummary.Concentration(240, 3, 240, 100), summary.concentration());
+
+        // Global trade health across all dates: OP4 is RECORDED (1), OP1 is RECONCILE (1); op7 is TURN_IN (ignored).
+        assertEquals(new TradeSummary.OperationHealth(1, 1), summary.health());
+
+        assertInstanceOf(IllegalArgumentException.class,
+                failure(storage.loadTradeSummary(THIRD_DAY, NEXT_DAY, budgets, 10)));
+        assertInstanceOf(IllegalArgumentException.class,
+                failure(storage.loadTradeSummary(NEXT_DAY, THIRD_DAY, budgets, 0)));
+    }
+
+    @Test
+    void listRecentTradeOperationsFiltersByShopPlayerStepsAndPaginatesByCursor() {
+        // Non-trade op must not appear.
+        await(storage.applyOperation(turnIn(OP4, ALICE, COURIER, 1, T4, CommissionStatus.COOLDOWN, Optional.of(T6))));
+
+        // Tie-break at T2: OP3 > OP2 by UUID string DESC.
+        await(storage.applyOperation(trade(OP1, ALICE, STALL, DAY, 10, List.of(), T1)));
+        await(storage.applyOperation(trade(OP2, ALICE, STALL, DAY, 20, List.of(), T2)));
+        await(storage.applyOperation(trade(OP3, BOB, BAZAAR, DAY, 30, List.of(), T2)));
+        await(storage.markOperation(OP1, OperationStep.SETTLED, Optional.empty(), T5));
+        await(storage.markOperation(OP2, OperationStep.RECONCILE, Optional.of("check"), T5));
+
+        List<StoredOperation> page1 = await(storage.listRecentTradeOperations(
+                Optional.empty(), Optional.empty(), Set.of(OperationStep.RECORDED, OperationStep.SETTLED, OperationStep.RECONCILE),
+                Optional.empty(), 2));
+        assertEquals(List.of(OP3, OP2), ids(page1));
+
+        Operation last1 = page1.get(1).operation();
+        List<StoredOperation> page2 = await(storage.listRecentTradeOperations(
+                Optional.empty(), Optional.empty(), Set.of(OperationStep.RECORDED, OperationStep.SETTLED, OperationStep.RECONCILE),
+                Optional.of(new OperationCursor(last1.createdAt(), last1.operationId())), 2));
+        assertEquals(List.of(OP1), ids(page2));
+
+        // Cursor before OP3 (at T2) returns OP2 then OP1.
+        assertEquals(List.of(OP2, OP1), ids(await(storage.listRecentTradeOperations(
+                Optional.empty(), Optional.empty(), Set.of(OperationStep.RECORDED, OperationStep.SETTLED, OperationStep.RECONCILE),
+                Optional.of(new OperationCursor(T2, OP3)), 10))));
+
+        assertEquals(List.of(OP2, OP1), ids(await(storage.listRecentTradeOperations(
+                Optional.of(STALL), Optional.of(ALICE),
+                Set.of(OperationStep.SETTLED, OperationStep.RECONCILE), Optional.empty(), 10))));
+
+        assertEquals(List.of(), await(storage.listRecentTradeOperations(
+                Optional.empty(), Optional.empty(), Set.of(), Optional.empty(), 10)));
+        assertInstanceOf(IllegalArgumentException.class, failure(storage.listRecentTradeOperations(
+                Optional.empty(), Optional.empty(), Set.of(OperationStep.RECORDED), Optional.empty(), 0)));
+    }
+
     private static Operation turnIn(UUID operationId, UUID character, Identifier commission, int delta, Instant at,
             CommissionStatus status, Optional<Instant> cooldownUntil) {
         return new Operation(operationId, character, OperationKind.TURN_IN, commission, 0, REVISION, WORLD, REWARD,
@@ -879,6 +1030,12 @@ abstract class AlinaStorageContractTest {
             List<OperationEffect.TradeSettled.Purchase> purchases, Instant at) {
         return new Operation(operationId, character, OperationKind.TRADE, shop, 0, REVISION, WORLD, REWARD, 0,
                 new OperationEffect.TradeSettled(shop, day, aurPaid, purchases, "{}"), at);
+    }
+
+    private static Operation tradeWithDetail(UUID operationId, UUID character, Identifier shop, LocalDate day, int aurPaid,
+            String detailJson, Instant at, long revisionId) {
+        return new Operation(operationId, character, OperationKind.TRADE, shop, 0, revisionId, WORLD, REWARD, 0,
+                new OperationEffect.TradeSettled(shop, day, aurPaid, List.of(), detailJson), at);
     }
 
     private static OperationEffect.TradeSettled.Purchase purchase(String offer, String period, int count) {

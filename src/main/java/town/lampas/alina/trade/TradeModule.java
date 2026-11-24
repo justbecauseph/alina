@@ -27,6 +27,8 @@ import town.lampas.alina.trade.network.TradeExperiencePayload;
 import town.lampas.alina.trade.network.TradeNetworking;
 import town.lampas.alina.trade.network.TradeSellJunkPayload;
 import town.lampas.alina.trade.network.TradeSellPayload;
+import town.lampas.alina.trade.remote.TradeMethods;
+import town.lampas.alina.trade.remote.TradeRpc;
 import town.lampas.haruhi.api.HaruhiServices;
 
 /**
@@ -38,6 +40,7 @@ public final class TradeModule {
     /** Server ticks between two logged trade tick failures. */
     private static final long TICK_ERROR_LOG_TICKS = 100;
     private static volatile TradeService running;
+    private static volatile TradeMethods methods;
     /** haruhi's activation listener is added once per JVM, on the first server start. */
     private static final AtomicBoolean ACTIVATION_LISTENER = new AtomicBoolean();
     /** Server ticks counted by the tick handler. Read and written on the server thread only. */
@@ -52,12 +55,15 @@ public final class TradeModule {
         registerReceivers();
         TradeDialogue.init();
         TradeCommands.init();
+        TradeRpc.register(() -> methods);
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             running = new TradeService(server, AlinaServices.storage(), SettlementModule.service(),
                     AlinaContent::trade, () -> AlinaContent.guild().settings(),
                     () -> HaruhiServices.content().activeRevisionId().orElse(0L), Clock.systemUTC(),
                     () -> server.getPlayerList().getPlayers(), new NetworkMessenger(), TradeModule::reputationOf,
                     TradeModule::earned);
+            methods = new TradeMethods(server, running, AlinaServices.storage(), AlinaContent::trade,
+                    () -> AlinaContent.guild().settings(), Clock.systemUTC());
             if (ACTIVATION_LISTENER.compareAndSet(false, true)) {
                 HaruhiServices.content().addActivationListener(bundle -> {
                     TradeService service = running;
@@ -101,7 +107,10 @@ public final class TradeModule {
                 service.stop();
             }
         });
-        ServerLifecycleEvents.SERVER_STOPPED.register(server -> running = null);
+        ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
+            methods = null;
+            running = null;
+        });
     }
 
     /** The running server's trade service. Throws before the server has started. */
