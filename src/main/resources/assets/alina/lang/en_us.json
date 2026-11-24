@@ -47,6 +47,8 @@
   "alina.trade.greeting": "What will you have?",
   "alina.trade.sold": "Sold.",
   "alina.trade.bought": "Bought.",
+  "alina.trade.sold_moved": "Sold %s points for %s Aur (quoted %s).",
+  "alina.trade.bought_moved": "Bought %s points for %s Aur (quoted %s).",
   "alina.trade.cannot_afford": "You cannot afford that.",
   "alina.trade.budget_spent": "The shop has no more Aur to pay out today.",
   "alina.trade.no_room": "You have no room for that.",
@@ -91,5 +93,6 @@
   "alina.trade.screen.market_price": "100 points = %s Aur",
   "alina.trade.screen.price_change": "%s%%",
   "alina.trade.screen.market_fee": "Fee %s%%",
-  "alina.trade.screen.market_fees": "Fee %s%% selling, %s%% buying"
+  "alina.trade.screen.market_fees": "Fee %s%% selling, %s%% buying",
+  "alina.trade.screen.market_tolerance": "Quote tolerance %s%%"
 }

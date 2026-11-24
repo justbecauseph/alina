@@ -7,9 +7,10 @@ import net.minecraft.network.codec.StreamCodec;
 
 /**
  * The experience market as a shop that trades against it shows it: the pool's live reserves, its seed, the trade cap, the
- * fees of the shop, and the rate after each of the last changes of the pool. The wire order is the components in declaration order: points, aur,
- * seed points, seed aur (variable-length longs), then sell fee, buy fee and max trade percent (variable-length ints), then
- * the history as a count and its rates (variable-length ints).
+ * quote tolerance, the fees of the shop, and the rate after each of the last changes of the pool. The wire order is the
+ * components in declaration order: points, aur, seed points, seed aur (variable-length longs), then sell fee, buy fee, max
+ * trade percent and quote tolerance percent (variable-length ints), then the history as a count and its rates
+ * (variable-length ints).
  *
  * @param points the live points reserve
  * @param aur the live Aur reserve
@@ -18,6 +19,8 @@ import net.minecraft.network.codec.StreamCodec;
  * @param sellFee the shop's fee in percent when a player sells experience; -1 when the shop does not buy experience
  * @param buyFee the shop's fee in percent when a player buys experience; -1 when the shop does not sell experience
  * @param maxTradePercent the most of the live reserve one trade may take, in percent
+ * @param quoteTolerancePercent how far, in percent of the quoted points, a trade may have moved against the player since the
+ *     quote and still go through; 0 refuses any difference
  * @param history the rate in hundredths of a point per Aur, {@code ReserveCurve.rateHundredths}, after each of the last
  *     changes of the pool, oldest first; at most {@link #MAX_HISTORY}
  */
@@ -29,6 +32,7 @@ public record MarketView(
         int sellFee,
         int buyFee,
         int maxTradePercent,
+        int quoteTolerancePercent,
         List<Integer> history) {
 
     /** The most changes of the pool a view's rate history carries. */
@@ -42,6 +46,7 @@ public record MarketView(
             ByteBufCodecs.VAR_INT, MarketView::sellFee,
             ByteBufCodecs.VAR_INT, MarketView::buyFee,
             ByteBufCodecs.VAR_INT, MarketView::maxTradePercent,
+            ByteBufCodecs.VAR_INT, MarketView::quoteTolerancePercent,
             ByteBufCodecs.VAR_INT.apply(ByteBufCodecs.list(MAX_HISTORY)), MarketView::history,
             MarketView::new);
 

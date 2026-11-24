@@ -13,6 +13,8 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import net.minecraft.network.chat.Component;
@@ -82,7 +84,9 @@ import town.lampas.haruhi.api.HaruhiServices;
  * <p><b>Requests</b> are planned against the live inventory by {@link TradePlanner}, and settle through
  * {@link SettlementService#begin} as {@code TRADE} operations with a {@code TradeSettled} effect. The service never moves
  * items or experience itself: the removal of a request is the only change it makes, and settlement runs it inside
- * {@code begin}. The shop's line answers each accepted trade, and every request ends with a fresh view.
+ * {@code begin}. Each accepted trade is answered with the shop's line, except an experience trade at a market shop that is
+ * accepted at a moved price, which is answered with Alina's line that names the points traded and the points quoted. Every
+ * request ends with a fresh view.
  *
  * <p><b>The experience market</b> is one pool that every fee shop trades against. The server holds its live reserves in
  * {@link ExperienceMarket}: loaded from storage on a tick, and restocked toward the content's seed on the first tick of each
@@ -90,7 +94,9 @@ import town.lampas.haruhi.api.HaruhiServices;
  * storage gets the same delta in its settlement, a restock and a staff set do the same, and no request is refused for a
  * write in flight. A trade that storage applies which this run did not begin moves the reserves when it is reported fresh.
  * When the reserves may differ from storage for a reason the deltas do not repair, the reconcile reads the row back once
- * nothing is in flight.
+ * nothing is in flight. An experience request at a market shop carries the points the client quoted: it goes through when
+ * the market's quote tolerance allows the live points to differ from the quote, and it then settles at the live points, with
+ * a line that says what was quoted. The service counts those requests, which staff read with {@link #market()}.
  */
 public final class TradeService {
     /** Server ticks between two checks of an open session's view: half a second. */
@@ -128,13 +134,20 @@ public final class TradeService {
     }
 
     /**
-     * The experience market for staff: the live reserves, the seed the content gives, and the board day of the last restock.
+     * The experience market for staff: the live reserves, the seed the content gives, the board day of the last restock, the
+     * quote tolerance, and the experience requests at the market since the server started.
      *
      * @param live the reserves now
      * @param seed the seed reserves of the content
      * @param restockedDay the board day the live reserves were last restocked on
+     * @param quoteTolerancePercent how far, in percent of the quoted points, a trade may have moved against the player and still
+     *     go through; 0 refuses any difference
+     * @param requests the experience requests the planner has worked out at the market
+     * @param movedAccepted the ones accepted at a moved price, that is at points other than the quote
+     * @param staleRefused the ones refused as stale
      */
-    public record MarketStatus(Reserves live, Reserves seed, LocalDate restockedDay) {}
+    public record MarketStatus(Reserves live, Reserves seed, LocalDate restockedDay, int quoteTolerancePercent,
+            long requests, long movedAccepted, long staleRefused) {}
 
     private final MinecraftServer server;
     private final AlinaStorage storage;
@@ -318,14 +331,14 @@ public final class TradeService {
     public TradeOutcome sell(ServerPlayer player, int sessionId, int slot, int count, int expectedAur) {
         requireServerThread();
         return request(player, sessionId, (shop, ledger) -> TradePlanner.sell(shop, currency(), player.getInventory(),
-                budgetLeft(shop, ledger), slot, count, expectedAur));
+                budgetLeft(shop, ledger), slot, count, expectedAur), plan -> Optional.empty());
     }
 
     /** Sells what "Sell all junk" sells now, for {@code expectedAur}. */
     public TradeOutcome sellJunk(ServerPlayer player, int sessionId, int expectedAur) {
         requireServerThread();
         return request(player, sessionId, (shop, ledger) -> TradePlanner.junk(shop, currency(),
-                player.getInventory(), budgetLeft(shop, ledger), expectedAur));
+                player.getInventory(), budgetLeft(shop, ledger), expectedAur), plan -> Optional.empty());
     }
 
     /** Buys {@code count} purchases of the offer, for {@code expectedCost} Aur in all. */
@@ -338,18 +351,59 @@ public final class TradeService {
             }
             OfferState state = offerState(player, shop, ledger, day(), offer.get());
             return TradePlanner.buy(shop, currency(), player.getInventory(), state, count, expectedCost);
-        });
+        }, plan -> Optional.empty());
     }
 
     /**
      * Sells the player's experience for {@code aur} Aur when {@code selling}, or buys experience for {@code aur} Aur, for
-     * {@code expectedPoints} points.
+     * {@code expectedPoints} points. At a shop that trades against the market, {@code expectedPoints} is the quote, and the
+     * request counts toward the market's figures; an accepted one at points other than the quote says what was quoted.
      */
     public TradeOutcome experience(ServerPlayer player, int sessionId, boolean selling, int aur, int expectedPoints) {
         requireServerThread();
-        return request(player, sessionId, (shop, ledger) -> TradePlanner.experience(shop, currency(),
-                player.getInventory(), budgetLeft(shop, ledger), ExperiencePoints.total(player), selling, aur,
-                expectedPoints, marketSnapshot()));
+        AtomicReference<TradePlan> marketPlan = new AtomicReference<>();
+        TradeOutcome outcome = request(player, sessionId, (shop, ledger) -> {
+            Optional<ExperienceMarket.Snapshot> snapshot = marketSnapshot();
+            TradePlan plan = TradePlanner.experience(shop, currency(), player.getInventory(), budgetLeft(shop, ledger),
+                    ExperiencePoints.total(player), selling, aur, expectedPoints, snapshot);
+            if (shop.experienceFees().isPresent() && snapshot.isPresent()) {
+                marketPlan.set(plan);
+            }
+            return plan;
+        }, plan -> movedLine(plan, selling, aur, expectedPoints));
+        TradePlan plan = marketPlan.get();
+        if (plan != null) {
+            countMarketRequest(outcome, plan, selling, expectedPoints);
+        }
+        return outcome;
+    }
+
+    /**
+     * The line of an accepted experience trade whose points moved from the quote: what the player gave or got, and the points
+     * quoted. Empty when the points are the quoted ones, which every trade at a fixed rate is.
+     */
+    private static Optional<Component> movedLine(TradePlan plan, boolean selling, int aur, int expectedPoints) {
+        int points = selling ? plan.pointsTaken() : plan.pointsGiven();
+        if (points == expectedPoints) {
+            return Optional.empty();
+        }
+        return Optional.of(selling ? TradeText.soldMoved(points, aur, expectedPoints)
+                : TradeText.boughtMoved(points, aur, expectedPoints));
+    }
+
+    /**
+     * Counts one experience request the planner worked out at the market: every one, the ones refused as stale, and the
+     * accepted ones whose points moved from the quote.
+     */
+    private void countMarketRequest(TradeOutcome outcome, TradePlan plan, boolean selling, int expectedPoints) {
+        market.requests++;
+        if (outcome.refusal().filter(refusal -> refusal.reason() == Reason.STALE).isPresent()) {
+            market.staleRefused++;
+        }
+        int points = selling ? plan.pointsTaken() : plan.pointsGiven();
+        if (outcome.accepted() && points != expectedPoints) {
+            market.movedAccepted++;
+        }
     }
 
     /** The shop's budget for the player today: empty while the record loads, or for a shop that does not buy. */
@@ -405,8 +459,8 @@ public final class TradeService {
     }
 
     /**
-     * For staff: the experience market's live reserves, seed and last restock day. Empty when the content has no market, or
-     * its reserves have not loaded.
+     * For staff: the experience market's live reserves, seed, last restock day, quote tolerance and request counts. Empty when
+     * the content has no market, or its reserves have not loaded.
      */
     public Optional<MarketStatus> market() {
         requireServerThread();
@@ -414,7 +468,8 @@ public final class TradeService {
         if (terms.isEmpty() || market.live.isEmpty()) {
             return Optional.empty();
         }
-        return Optional.of(new MarketStatus(market.live.get(), seed(terms.get()), market.restockedDay));
+        return Optional.of(new MarketStatus(market.live.get(), seed(terms.get()), market.restockedDay,
+                terms.get().quoteTolerancePercent(), market.requests, market.movedAccepted, market.staleRefused));
     }
 
     /**
@@ -468,8 +523,10 @@ public final class TradeService {
     /**
      * The checks every request makes, in order: the session is the player's current one, the shop and the revision still
      * hold, no trade is settling, and the planner accepts the request. Every outcome sends the result and a fresh view.
+     * {@code lineOf} gives the shop's line for an accepted plan in place of the shop's own line, when it gives one.
      */
-    private TradeOutcome request(ServerPlayer player, int sessionId, Planner planner) {
+    private TradeOutcome request(ServerPlayer player, int sessionId, Planner planner,
+            Function<TradePlan, Optional<Component>> lineOf) {
         if (!alive(player)) {
             // A lethal hit can land between two ticks, so a request may arrive before the tick that closes the session.
             closePlayersSession(player);
@@ -495,14 +552,15 @@ public final class TradeService {
         if (plan.refusal().isPresent()) {
             return reply(player, sessionId, TradeOutcome.refused(refusalOf(plan.refusal().get(), shop)));
         }
-        return reply(player, sessionId, submit(player, ledger, shop, plan));
+        return reply(player, sessionId, submit(player, ledger, shop, plan, lineOf));
     }
 
     /**
      * Hands the plan to settlement. A refused begin changes nothing and is reported as busy. An accepted one is added to
-     * the record at once, and the shop's line answers it.
+     * the record at once, and its line answers it: the one {@code lineOf} gives, else the shop's line.
      */
-    private TradeOutcome submit(ServerPlayer player, TradeLedger ledger, Shop shop, TradePlan plan) {
+    private TradeOutcome submit(ServerPlayer player, TradeLedger ledger, Shop shop, TradePlan plan,
+            Function<TradePlan, Optional<Component>> lineOf) {
         LocalDate day = day();
         OperationEffect.TradeSettled effect = new OperationEffect.TradeSettled(shop.id(), day, plan.aurPaid(),
                 plan.purchase().stream().toList(), plan.detail(), plan.marketPoints(), plan.marketAur());
@@ -529,7 +587,7 @@ public final class TradeService {
             market.begun.put(operation.get(), new ExperienceMarket.Move(plan.marketPoints(), plan.marketAur()));
             moveMarket(plan.marketPoints(), plan.marketAur());
         }
-        return TradeOutcome.ok(TradeText.line(shop, plan.line()));
+        return TradeOutcome.ok(lineOf.apply(plan).orElseGet(() -> TradeText.line(shop, plan.line())));
     }
 
     /** The removal of a plan: its takes from the inventory, and the experience points it gives up. */
@@ -790,7 +848,7 @@ public final class TradeService {
             return Optional.empty();
         }
         return Optional.of(new ExperienceMarket.Snapshot(market.live.get(), seed(terms.get()),
-                terms.get().maxTradePercent(), List.copyOf(market.history)));
+                terms.get().maxTradePercent(), terms.get().quoteTolerancePercent(), List.copyOf(market.history)));
     }
 
     private static Reserves seed(TradeContent.ExperienceMarket terms) {

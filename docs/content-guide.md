@@ -506,7 +506,9 @@ A shop needs a `name` (text) and at least one of these:
 | `lines` | Optional text for the shop's messages. The keys are `greeting`, `sold`, `bought`, `cannot_afford`, `budget_spent`, `no_room`, `nothing_to_sell`, `limit_reached`, `locked` and `busy`. Each is a text component. |
 
 The server checks the keys and the text of `lines`. The trade screen shows `greeting` when the shop opens, `sold` after a
-sale of items or experience, and `bought` after a purchase of an offer or of experience. The others answer a refused
+sale of items or experience, and `bought` after a purchase of an offer or of experience. A market trade accepted at points
+other than its quote is answered with Alina's own line instead, `Sold N points for A Aur (quoted Q).` or `Bought N points
+for A Aur (quoted Q).`, which no `lines` key replaces. The others answer a refused
 trade: `cannot_afford`, `budget_spent` (the day's budget is used up), `no_room` (the main inventory cannot hold what the
 player would receive), `nothing_to_sell` ("Sell junk" with no junk), `limit_reached`, `locked` (a `requires` the player
 does not meet) and `busy` (the player's last trade is still being recorded). A shop without a line uses Alina's default.
@@ -567,6 +569,7 @@ fees instead of rates:
 | `reserve.aur` | required | The Aur of the seed reserve, from 1000 to 1000000000. |
 | `restock_percent` | required | From 0 to 100: how far each reserve moves back to the seed once per Guild board day, in percent. |
 | `max_trade_percent` | 10 | From 1 to 50: the most of the reserve one trade may take from it, in percent. |
+| `quote_tolerance_percent` | 0 | From 0 to 10: how far, in percent of the quoted points, a trade may have moved against the player since the screen's quote and still go through. 0 refuses any difference. |
 | `fee_percent` | none | In a shop's `sell` or `buy`: from 0 to 50, the shop's fee in that direction, in percent. A direction with no entry is not traded. |
 
 Every experience broker trades against the same pool. At the seed, the rate is `reserve.points / reserve.aur` points
@@ -579,6 +582,12 @@ the player that many more points, and a purchase gives the player that many fewe
 
 Once per Guild board day, each reserve moves `restock_percent` of the way back to the seed. One trade may take at most
 `max_trade_percent` of the reserve it draws from.
+
+With `quote_tolerance_percent` above 0, a trade still goes through when the live points have moved against the player by
+up to that percent of the quoted points, rounded up to a whole point, and a move in the player's favour always goes
+through. The trade settles at the live points, and the line the screen shows gives the points traded, which are the live
+points, and the points quoted. At 0, any difference from the quote refuses the trade as stale. Above 0, the market panel
+shows `Quote tolerance N%` on its own line under the fee.
 
 The live reserves are kept in the database. Changing the seed in a new revision changes where the pool heads, not where
 it is.

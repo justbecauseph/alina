@@ -76,6 +76,12 @@ final class PriceLabel {
         return Component.translatableWithFallback("alina.trade.screen.market_fee", "Fee %s%%", fee);
     }
 
+    /** The quote tolerance of a market, in percent: {@code Quote tolerance 2%}, shown under the fee when it is above 0. */
+    static Component tolerance(int tolerancePercent) {
+        return Component.translatableWithFallback("alina.trade.screen.market_tolerance", "Quote tolerance %s%%",
+                tolerancePercent);
+    }
+
     /** The level a preview reaches: {@code Lv 24} is level 24. */
     static Component previewLevel(int level) {
         return Component.translatableWithFallback("alina.trade.screen.preview_level", "Lv %s", level);

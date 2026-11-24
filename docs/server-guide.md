@@ -245,7 +245,7 @@ cap, proof not met, and so on) is the reply.
 | `/alina trade quote <shop>` | Prices the item in your main hand at the shop and names the sell rule that matched. |
 | `/alina trade budget <player> [<shop>]` | The Aur the shop, or every shop, has paid the player today against its daily budget. |
 | `/alina trade budget <player> reset [<shop>]` | Deletes today's budget rows of the player. Refused while a trade of the player is settling. |
-| `/alina trade market` | The experience market's live reserves and rate, its seed and base rate, and the last restock day. |
+| `/alina trade market` | The experience market's live reserves and rate, its seed and base rate, the last restock day, the quote tolerance, and the experience trades since the server started: how many were asked, how many were accepted at a moved price, and how many were refused as stale. |
 | `/alina trade market reset` | Sets the market's reserves to the seed of the active content. |
 | `/alina trade market set <points> <aur>` | Sets both reserves, each from 1 to 4000000000. |
 

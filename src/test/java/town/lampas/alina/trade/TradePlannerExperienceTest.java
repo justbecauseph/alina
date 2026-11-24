@@ -36,7 +36,9 @@ import town.lampas.alina.trade.pricing.ReserveCurve.Reserves;
 class TradePlannerExperienceTest {
     private static final Identifier SHOP = Identifier.parse("alina:trade_test/broker");
     private static final Reserves POOL = new Reserves(500_000, 10_000);
-    private static final ExperienceMarket.Snapshot MARKET = new ExperienceMarket.Snapshot(POOL, POOL, 10, List.of());
+    private static final ExperienceMarket.Snapshot MARKET = new ExperienceMarket.Snapshot(POOL, POOL, 10, 0, List.of());
+    /** The same pool with a quote tolerance of 2 percent. */
+    private static final ExperienceMarket.Snapshot TOLERANT = new ExperienceMarket.Snapshot(POOL, POOL, 10, 2, List.of());
     private static final long HELD = 5_345;
     private static final int BUDGET = 5_000;
     private static final int SALE_POINTS = 5_051;
@@ -230,6 +232,97 @@ class TradePlannerExperienceTest {
         TradePlan over = experience(feeShop(OptionalInt.of(5), OptionalInt.of(5)), false, most + 1, 0, 5_000, 0,
                 Optional.of(MARKET), coins);
         assertEquals(Optional.of(Reason.INVALID), over.refusal());
+    }
+
+    @Test
+    void aSaleQuotedOnePointBelowTheLiveCostIsAcceptedAndMovesTheLivePoints() {
+        // The pool gives 5051 points for 100 Aur, and 2 percent of the quote of 5050 is 101 points.
+        TradePlan plan = experience(feeShop(OptionalInt.of(0), OptionalInt.of(0)), true, 100, SALE_POINTS - 1, BUDGET,
+                HELD, Optional.of(TOLERANT));
+
+        assertFalse(plan.refusal().isPresent());
+        assertEquals("sold", plan.line());
+        assertEquals(SALE_POINTS, plan.pointsTaken());
+        assertEquals(SALE_POINTS, plan.marketPoints());
+        assertEquals(-100, plan.marketAur());
+    }
+
+    @Test
+    void aPurchaseQuotedOnePointAboveTheLiveGiveIsAcceptedAndMovesTheLivePoints() {
+        // The pool gives 4950 points for 100 Aur, and 2 percent of the quote of 4951 is 100 points.
+        TradePlan plan = experience(feeShop(OptionalInt.of(0), OptionalInt.of(0)), false, 100, PURCHASE_POINTS + 1, BUDGET,
+                0, Optional.of(TOLERANT), eleven());
+
+        assertFalse(plan.refusal().isPresent());
+        assertEquals("bought", plan.line());
+        assertEquals(PURCHASE_POINTS, plan.pointsGiven());
+        assertEquals(-PURCHASE_POINTS, plan.marketPoints());
+        assertEquals(100, plan.marketAur());
+    }
+
+    @Test
+    void aSaleQuotedBeyondTheAllowanceIsStale() {
+        // 2 percent of the quote of 4900 is 98 points, and the live cost is 151 points above it.
+        TradePlan plan = experience(feeShop(OptionalInt.of(0), OptionalInt.of(0)), true, 100, 4_900, BUDGET, HELD,
+                Optional.of(TOLERANT));
+
+        assertEquals(Optional.of(Reason.STALE), plan.refusal());
+    }
+
+    @Test
+    void aPurchaseQuotedBeyondTheAllowanceIsStale() {
+        // 2 percent of the quote of 5100 is 102 points, and the live give is 150 points below it.
+        TradePlan plan = experience(feeShop(OptionalInt.of(0), OptionalInt.of(0)), false, 100, 5_100, BUDGET, 0,
+                Optional.of(TOLERANT), eleven());
+
+        assertEquals(Optional.of(Reason.STALE), plan.refusal());
+    }
+
+    @Test
+    void aSaleQuotedAboveTheLiveCostIsAcceptedAtTheLivePoints() {
+        TradePlan plan = experience(feeShop(OptionalInt.of(0), OptionalInt.of(0)), true, 100, 5_200, BUDGET, HELD,
+                Optional.of(TOLERANT));
+
+        assertFalse(plan.refusal().isPresent());
+        assertEquals(SALE_POINTS, plan.pointsTaken());
+        assertEquals(SALE_POINTS, plan.marketPoints());
+    }
+
+    @Test
+    void aPurchaseQuotedBelowTheLiveGiveIsAcceptedAtTheLivePoints() {
+        TradePlan plan = experience(feeShop(OptionalInt.of(0), OptionalInt.of(0)), false, 100, 4_900, BUDGET, 0,
+                Optional.of(TOLERANT), eleven());
+
+        assertFalse(plan.refusal().isPresent());
+        assertEquals(PURCHASE_POINTS, plan.pointsGiven());
+        assertEquals(-PURCHASE_POINTS, plan.marketPoints());
+    }
+
+    @Test
+    void aSaleHeldUpToTheQuoteButNotTheLivePointsIsStale() {
+        // The pool gives 5051 points for 100 Aur, the quote is 5050, and 2 percent of 5050 is 101 points, so the live figure
+        // is accepted. A player holding 5050 covers the quote but not the 5051 live points: the price moved, so it is STALE.
+        TradePlan plan = experience(feeShop(OptionalInt.of(0), OptionalInt.of(0)), true, 100, SALE_POINTS - 1, BUDGET,
+                SALE_POINTS - 1, Optional.of(TOLERANT));
+
+        assertEquals(Optional.of(Reason.STALE), plan.refusal());
+    }
+
+    @Test
+    void aSaleHeldBelowTheQuoteIsNotEnoughExperience() {
+        // Same quote and live figure, but 100 points is short of the quote as well as of the live points.
+        TradePlan plan = experience(feeShop(OptionalInt.of(0), OptionalInt.of(0)), true, 100, SALE_POINTS - 1, BUDGET,
+                100, Optional.of(TOLERANT));
+
+        assertEquals(Optional.of(Reason.NOT_ENOUGH_EXPERIENCE), plan.refusal());
+    }
+
+    @Test
+    void withNoToleranceAOnePointDifferenceIsStale() {
+        assertEquals(Optional.of(Reason.STALE), experience(feeShop(OptionalInt.of(0), OptionalInt.of(0)), true, 100,
+                SALE_POINTS - 1, BUDGET, HELD, Optional.of(MARKET)).refusal());
+        assertEquals(Optional.of(Reason.STALE), experience(feeShop(OptionalInt.of(0), OptionalInt.of(0)), false, 100,
+                PURCHASE_POINTS + 1, BUDGET, 0, Optional.of(MARKET), eleven()).refusal());
     }
 
     /** A shop with the given experience fees, which trades nothing else. */

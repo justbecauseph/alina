@@ -324,9 +324,13 @@ class TradeLayoutTest {
         assertFalse(TradeLayout.fitsIn(list, new Box(6, bottom - LINE + 1, 174, bottom + 1)));
     }
 
-    /** The market status's six boxes, top to bottom: the summary, the bar and the preview row; the price, chart and fee lines. */
+    /**
+     * The market status's seven boxes, top to bottom: the summary, the bar and the preview row; the price, chart, fee and quote
+     * tolerance lines.
+     */
     private static List<Box> marketBoxes(ExperienceMarketStatus status) {
-        return List.of(status.summary(), status.bar(), status.preview(), status.price(), status.chart(), status.fee());
+        return List.of(status.summary(), status.bar(), status.preview(), status.price(), status.chart(), status.fee(),
+                status.tolerance());
     }
 
     @Test
@@ -346,10 +350,26 @@ class TradeLayoutTest {
     void theMarketStatusBoxesFollowEachOtherTopToBottomWithoutOverlap() {
         List<Box> boxes = marketBoxes(TradeLayout.experienceMarketStatus(new Box(0, 0, 180, 170), LINE));
 
-        assertEquals(6, boxes.size());
+        assertEquals(7, boxes.size());
         for (int i = 1; i < boxes.size(); i++) {
             assertTrue(boxes.get(i - 1).y1() <= boxes.get(i).y0(), boxes.get(i - 1) + " then " + boxes.get(i));
         }
+    }
+
+    @Test
+    void theQuoteToleranceLineSitsDirectlyUnderTheFeeLine() {
+        ExperienceMarketStatus status = TradeLayout.experienceMarketStatus(new Box(0, 0, 180, 170), LINE);
+
+        assertEquals(status.fee().y1(), status.tolerance().y0());
+        assertEquals(LINE, status.tolerance().height());
+        assertEquals(status.fee().x0(), status.tolerance().x0());
+        assertEquals(status.fee().x1(), status.tolerance().x1());
+        assertFalse(overlaps(status.fee(), status.tolerance()));
+    }
+
+    /** Whether two boxes share an area, with their edges touching not counted. */
+    private static boolean overlaps(Box a, Box b) {
+        return a.x0() < b.x1() && b.x0() < a.x1() && a.y0() < b.y1() && b.y0() < a.y1();
     }
 
     @Test

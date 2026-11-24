@@ -10,6 +10,8 @@ import java.util.OptionalInt;
 public final class ReserveCurve {
     /** The most either reserve may hold: at this size a reserve times an int still fits a long. */
     public static final long MAX_RESERVE = 4_000_000_000L;
+    /** The most percent of the quoted points a market trade may move against the player and still go through. */
+    public static final int MAX_QUOTE_TOLERANCE = 10;
 
     private ReserveCurve() {}
 
@@ -149,6 +151,41 @@ public final class ReserveCurve {
     /** The points per Aur, times 100, rounded down: {@code X * 100 / A}. */
     public static long rateHundredths(Reserves reserves) {
         return Math.floorDiv(reserves.points() * 100, reserves.aur());
+    }
+
+    /**
+     * Whether a market trade goes through when the points the server works out now differ from the points the client quoted.
+     * With {@code tolerancePercent} 0 only an equal figure does. Above 0, a quote below 1 does not, a figure in the player's
+     * favour always does, and a figure against the player does when it is at most {@code ceil(quoted * tolerancePercent / 100)}
+     * points away from the quote. The trade settles at the live figure, so this decides only whether it is refused as stale.
+     *
+     * @param selling true when the player gives points, false when the player gets them
+     * @param quoted the points the client quoted
+     * @param live the points the server works out now
+     * @param tolerancePercent how far, in percent of the quoted points, a figure may move against the player, from 0 to
+     *     {@link #MAX_QUOTE_TOLERANCE}
+     * @throws IllegalArgumentException when {@code tolerancePercent} is outside 0 to {@link #MAX_QUOTE_TOLERANCE}
+     */
+    public static boolean acceptsQuote(boolean selling, int quoted, int live, int tolerancePercent) {
+        requireQuoteTolerance(tolerancePercent);
+        if (tolerancePercent == 0) {
+            return live == quoted;
+        }
+        if (quoted < 1) {
+            return false;
+        }
+        if (selling ? live <= quoted : live >= quoted) {
+            return true;
+        }
+        long againstPlayer = selling ? (long) live - quoted : (long) quoted - live;
+        return againstPlayer <= Math.ceilDiv((long) quoted * tolerancePercent, 100);
+    }
+
+    private static void requireQuoteTolerance(int tolerancePercent) {
+        if (tolerancePercent < 0 || tolerancePercent > MAX_QUOTE_TOLERANCE) {
+            throw new IllegalArgumentException(
+                    "a quote tolerance percent is from 0 to " + MAX_QUOTE_TOLERANCE + ", was " + tolerancePercent);
+        }
     }
 
     private static void requireReserve(long value, String name) {

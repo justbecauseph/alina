@@ -245,7 +245,7 @@ class TradePayloadsTest {
 
     private static MarketView sampleMarket() {
         // Reserves past the int range, and the rates after two changes of the pool, oldest first: 50.00 and 51.01 points per Aur.
-        return new MarketView(505_051L, 9_900L, 500_000L, 10_000L, 5, -1, 10, List.of(5_000, 5_101));
+        return new MarketView(505_051L, 9_900L, 500_000L, 10_000L, 5, -1, 10, 2, List.of(5_000, 5_101));
     }
 
     @Test
@@ -255,7 +255,7 @@ class TradePayloadsTest {
 
     @Test
     void aMarketViewWithNoHistoryRoundTrips() {
-        MarketView empty = new MarketView(1, 1, 500_000, 10_000, -1, 0, 50, List.of());
+        MarketView empty = new MarketView(1, 1, 500_000, 10_000, -1, 0, 50, 0, List.of());
 
         assertEquals(empty, roundTrip(MarketView.STREAM_CODEC, empty));
     }
@@ -264,9 +264,9 @@ class TradePayloadsTest {
     void aMarketViewKeepsAtMostThirtyTwoRates() {
         List<Integer> rates = java.util.stream.IntStream.rangeClosed(1, MarketView.MAX_HISTORY).boxed().toList();
 
-        assertEquals(MarketView.MAX_HISTORY, new MarketView(1, 1, 1, 1, 0, 0, 10, rates).history().size());
+        assertEquals(MarketView.MAX_HISTORY, new MarketView(1, 1, 1, 1, 0, 0, 10, 0, rates).history().size());
         assertThrows(IllegalArgumentException.class,
-                () -> new MarketView(1, 1, 1, 1, 0, 0, 10, java.util.stream.IntStream.rangeClosed(1, 33).boxed().toList()));
+                () -> new MarketView(1, 1, 1, 1, 0, 0, 10, 0, java.util.stream.IntStream.rangeClosed(1, 33).boxed().toList()));
     }
 
     @Test
@@ -280,6 +280,7 @@ class TradePayloadsTest {
         ByteBufCodecs.VAR_INT.encode(written, 5);
         ByteBufCodecs.VAR_INT.encode(written, -1);
         ByteBufCodecs.VAR_INT.encode(written, 10);
+        ByteBufCodecs.VAR_INT.encode(written, 0);
         ByteBufCodecs.VAR_INT.apply(ByteBufCodecs.list()).encode(written,
                 java.util.stream.IntStream.rangeClosed(1, 33).boxed().toList());
 

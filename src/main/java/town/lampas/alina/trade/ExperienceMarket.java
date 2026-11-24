@@ -62,9 +62,21 @@ final class ExperienceMarket {
     boolean reconcileInFlight;
     /** The tick a failed reconcile read may be tried again at. */
     long reconcileRetryAt;
+    /** The experience requests the planner has worked out at this market since the server started. Zero in a new market. */
+    long requests;
+    /**
+     * The experience requests at this market accepted at a moved price, that is at points other than the quote, since the
+     * server started. Zero in a new market.
+     */
+    long movedAccepted;
+    /** The experience requests at this market refused as stale since the server started. Zero in a new market. */
+    long staleRefused;
 
-    /** The market as a trade or a view reads it: the live reserves, the content's seed and cap, and the rate history. */
-    record Snapshot(Reserves live, Reserves seed, int maxTradePercent, List<Integer> history) {}
+    /**
+     * The market as a trade or a view reads it: the live reserves, the content's seed, cap and quote tolerance, and the rate
+     * history.
+     */
+    record Snapshot(Reserves live, Reserves seed, int maxTradePercent, int quoteTolerancePercent, List<Integer> history) {}
 
     /**
      * Installs the row, clamping each reserve into 1 to {@link ReserveCurve#MAX_RESERVE}, and replaces the rate history with

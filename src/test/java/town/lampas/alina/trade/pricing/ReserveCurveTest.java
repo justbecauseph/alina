@@ -2,6 +2,7 @@ package town.lampas.alina.trade.pricing;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -192,6 +193,74 @@ class ReserveCurveTest {
         assertEquals(Optional.empty(), ReserveCurve.afterBuy(POOL, 500_000, 1));
         // Paying out all the Aur leaves no Aur in it.
         assertEquals(Optional.empty(), ReserveCurve.afterSell(POOL, 1, 10_000));
+    }
+
+    @Test
+    void withNoToleranceOnlyTheQuotedFigureIsAccepted() {
+        assertTrue(ReserveCurve.acceptsQuote(true, 48, 48, 0));
+        assertFalse(ReserveCurve.acceptsQuote(true, 47, 48, 0));
+        assertFalse(ReserveCurve.acceptsQuote(true, 48, 47, 0));
+        assertTrue(ReserveCurve.acceptsQuote(false, 48, 48, 0));
+        assertFalse(ReserveCurve.acceptsQuote(false, 47, 48, 0));
+        assertFalse(ReserveCurve.acceptsQuote(false, 48, 47, 0));
+    }
+
+    @Test
+    void aSaleAtTwoPercentAcceptsAnAllowanceOfOnePointOnAQuoteOf48() {
+        // 2 percent of 48 is 0.96 points, rounded up to 1.
+        assertTrue(ReserveCurve.acceptsQuote(true, 48, 49, 2));
+        assertFalse(ReserveCurve.acceptsQuote(true, 48, 50, 2));
+    }
+
+    @Test
+    void aSaleAtTwoPercentAcceptsTheAllowanceAndNotOneMoreOnAQuoteOf2400() {
+        // 2 percent of 2400 is 48 points.
+        assertTrue(ReserveCurve.acceptsQuote(true, 2400, 2440, 2));
+        assertTrue(ReserveCurve.acceptsQuote(true, 2400, 2448, 2));
+        assertFalse(ReserveCurve.acceptsQuote(true, 2400, 2449, 2));
+    }
+
+    @Test
+    void aPurchaseAtTwoPercentAcceptsTheAllowanceAgainstThePlayerOnAQuoteOf2300() {
+        // 2 percent of 2300 is 46 points, and a purchase that gives more points than quoted is always in the player's favour.
+        assertTrue(ReserveCurve.acceptsQuote(false, 2300, 2254, 2));
+        assertFalse(ReserveCurve.acceptsQuote(false, 2300, 2253, 2));
+        assertTrue(ReserveCurve.acceptsQuote(false, 2300, 2390, 2));
+    }
+
+    @Test
+    void aFigureInThePlayersFavourIsAcceptedAtAnySizeAboveZero() {
+        assertTrue(ReserveCurve.acceptsQuote(true, 2400, 100, 2));
+        assertTrue(ReserveCurve.acceptsQuote(false, 2300, 9000, 2));
+    }
+
+    @Test
+    void aQuoteBelowOneIsRefusedWhenTheToleranceIsAboveZero() {
+        assertFalse(ReserveCurve.acceptsQuote(true, 0, 0, 2));
+        assertFalse(ReserveCurve.acceptsQuote(true, -5, -5, 2));
+        assertFalse(ReserveCurve.acceptsQuote(false, 0, 0, 2));
+        assertFalse(ReserveCurve.acceptsQuote(false, -5, -5, 2));
+    }
+
+    @Test
+    void aQuoteOfOnePointAtOnePercentAllowsOnePointAgainstThePlayer() {
+        // 1 percent of 1 point is 0.01, rounded up to 1.
+        assertTrue(ReserveCurve.acceptsQuote(true, 1, 2, 1));
+        assertFalse(ReserveCurve.acceptsQuote(true, 1, 3, 1));
+    }
+
+    @Test
+    void theAllowanceOfTheLargestQuoteDoesNotOverflow() {
+        // 10 percent of Integer.MAX_VALUE is 214748364.7, rounded up to 214748365 points: past an int when multiplied out.
+        assertTrue(ReserveCurve.acceptsQuote(true, Integer.MAX_VALUE, Integer.MAX_VALUE, 10));
+        assertTrue(ReserveCurve.acceptsQuote(false, Integer.MAX_VALUE, Integer.MAX_VALUE - 214_748_365, 10));
+        assertFalse(ReserveCurve.acceptsQuote(false, Integer.MAX_VALUE, Integer.MAX_VALUE - 214_748_366, 10));
+    }
+
+    @Test
+    void theToleranceOutsideZeroToTenIsRefused() {
+        assertThrows(IllegalArgumentException.class, () -> ReserveCurve.acceptsQuote(true, 48, 48, -1));
+        assertThrows(IllegalArgumentException.class, () -> ReserveCurve.acceptsQuote(false, 48, 48, 11));
     }
 
     /** The Aur-side payout of {@code points} at the pool {@code (500_000, 10_000)}: {@code floor(A * p / (X + p))}. */

@@ -118,7 +118,7 @@ final class TradeViews {
         long maxBuy = ExperienceMarket.maxBuyAur(market.live(), fees.buy(), aur, points, market.maxTradePercent());
         MarketView view = new MarketView(market.live().points(), market.live().aur(), market.seed().points(),
                 market.seed().aur(), fees.sell().orElse(-1), fees.buy().orElse(-1), market.maxTradePercent(),
-                market.history());
+                market.quoteTolerancePercent(), market.history());
         return new ExperienceView(points, level, 0, 0, (int) maxSell, 0, 0, (int) maxBuy, Optional.of(view));
     }
 

@@ -169,8 +169,11 @@ public record TradeContent(
      * @param seedAur the Aur of the seed reserve
      * @param restockPercent how far each live reserve moves back to the seed per Guild board day, in percent
      * @param maxTradePercent the most of the reserve one trade may take from it, in percent
+     * @param quoteTolerancePercent how far, in percent of the quoted points, a market trade may have moved against the player
+     *     since the quote and still go through; 0 refuses any difference
      */
-    public record ExperienceMarket(long seedPoints, long seedAur, int restockPercent, int maxTradePercent) {}
+    public record ExperienceMarket(long seedPoints, long seedAur, int restockPercent, int maxTradePercent,
+            int quoteTolerancePercent) {}
 
     /**
      * A shop's fee on experience in a section with an experience market: the fee in percent for each direction. A direction

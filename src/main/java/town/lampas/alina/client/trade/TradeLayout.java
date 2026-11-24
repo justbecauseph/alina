@@ -155,10 +155,10 @@ record TradeLayout(
 
     /**
      * The boxes of the experience status panel of a shop that trades against the market, top to bottom: the summary line, the
-     * progress bar and the preview row; the price line, the chart and the fee line. The chart is {@link #MARKET_CHART_HEIGHT}
-     * high. A box that reaches past the panel's inner bottom is not drawn.
+     * progress bar and the preview row; the price line, the chart, the fee line and the quote tolerance line. The chart is
+     * {@link #MARKET_CHART_HEIGHT} high. A box that reaches past the panel's inner bottom is not drawn.
      */
-    record ExperienceMarketStatus(Box summary, Box bar, Box preview, Box price, Box chart, Box fee) {}
+    record ExperienceMarketStatus(Box summary, Box bar, Box preview, Box price, Box chart, Box fee, Box tolerance) {}
 
     /** The top of the whole panel, which the HUD keeps the chat above. */
     int top() {
@@ -308,8 +308,9 @@ record TradeLayout(
     /**
      * The experience status of a shop that trades against the market, in {@code list}: the progress group as
      * {@link #experienceStatus} lays it out, then the price line {@link #EXPERIENCE_GROUP_GAP} under the preview row, the
-     * chart with {@link #EXPERIENCE_CHART_GAP} above and below it, and the fee line. The boxes are not checked against the
-     * list; see {@link #fitsIn}.
+     * chart with {@link #EXPERIENCE_CHART_GAP} above and below it, the fee line {@link #EXPERIENCE_CHART_GAP} under the chart,
+     * and the quote tolerance line directly under the fee line, with the same x, width and line height. The boxes are not
+     * checked against the list; see {@link #fitsIn}.
      */
     static ExperienceMarketStatus experienceMarketStatus(Box list, int lineHeight) {
         ExperienceStatus progress = experienceStatus(list, lineHeight);
@@ -318,7 +319,9 @@ record TradeLayout(
         Box price = sized(x0, progress.preview().y1() + EXPERIENCE_GROUP_GAP, width, lineHeight);
         Box chart = sized(x0, price.y1() + EXPERIENCE_CHART_GAP, width, MARKET_CHART_HEIGHT);
         Box fee = sized(x0, chart.y1() + EXPERIENCE_CHART_GAP, width, lineHeight);
-        return new ExperienceMarketStatus(progress.summary(), progress.bar(), progress.preview(), price, chart, fee);
+        Box tolerance = sized(x0, fee.y1(), width, lineHeight);
+        return new ExperienceMarketStatus(progress.summary(), progress.bar(), progress.preview(), price, chart, fee,
+                tolerance);
     }
 
     /**

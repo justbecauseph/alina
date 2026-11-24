@@ -29,6 +29,7 @@ import town.lampas.alina.content.TradeContent.Rate;
 import town.lampas.alina.content.TradeContent.SellRule;
 import town.lampas.alina.content.TradeContent.Shop;
 import town.lampas.alina.trade.network.OfferRow;
+import town.lampas.alina.trade.pricing.ReserveCurve;
 
 /**
  * The {@code alina:trade} extension. Expected values come from the brief for the section: the JSON shape, the validation
@@ -817,7 +818,7 @@ class TradeReaderTest {
     void theMarketExampleParses() {
         TradeContent content = trade(MARKET_EXAMPLE).orThrow();
 
-        assertEquals(new ExperienceMarket(500000, 10000, 10, 10), content.market().orElseThrow());
+        assertEquals(new ExperienceMarket(500000, 10000, 10, 10, 0), content.market().orElseThrow());
         Shop mira = content.shops().get(id("lampas:mira"));
         assertEquals(Optional.empty(), mira.experience());
         assertEquals(new ExperienceFees(OptionalInt.of(5), OptionalInt.of(5)), mira.experienceFees().orElseThrow());
@@ -840,7 +841,40 @@ class TradeReaderTest {
     void maxTradePercentLeftOutIsTen() {
         TradeContent content = trade(marketSection(market(RESERVE, "10"), "{}")).orThrow();
 
-        assertEquals(new ExperienceMarket(500000, 10000, 10, 10), content.market().orElseThrow());
+        assertEquals(new ExperienceMarket(500000, 10000, 10, 10, 0), content.market().orElseThrow());
+    }
+
+    @Test
+    void aQuoteToleranceLeftOutIsZero() {
+        TradeContent content = trade(marketSection(market(RESERVE, "10"), "{}")).orThrow();
+
+        assertEquals(0, content.market().orElseThrow().quoteTolerancePercent());
+    }
+
+    @Test
+    void theQuoteToleranceIsReadAsWritten() {
+        String withTolerance = "{ \"reserve\": " + RESERVE + ", \"restock_percent\": 10, \"quote_tolerance_percent\": %s }";
+
+        assertEquals(0, trade(marketSection(withTolerance.formatted("0"), "{}")).orThrow().market().orElseThrow()
+                .quoteTolerancePercent());
+        assertEquals(10, trade(marketSection(withTolerance.formatted("10"), "{}")).orThrow().market().orElseThrow()
+                .quoteTolerancePercent());
+    }
+
+    @Test
+    void aQuoteToleranceIsFrom0To10() {
+        String withTolerance = "{ \"reserve\": " + RESERVE + ", \"restock_percent\": 10, \"quote_tolerance_percent\": %s }";
+        assertEquals(List.of("extension alina:trade, experience_market: quote_tolerance_percent must be at least 0"),
+                marketProblems(withTolerance.formatted("-1")));
+        assertEquals(List.of("extension alina:trade, experience_market: quote_tolerance_percent must be at most 10"),
+                marketProblems(withTolerance.formatted("11")));
+        assertEquals(List.of(), marketProblems(withTolerance.formatted("0")));
+        assertEquals(List.of(), marketProblems(withTolerance.formatted("10")));
+    }
+
+    @Test
+    void theReaderAndTheReserveCurveAgreeOnTheQuoteToleranceLimit() {
+        assertEquals(ReserveCurve.MAX_QUOTE_TOLERANCE, TradeReader.MAX_QUOTE_TOLERANCE);
     }
 
     @Test

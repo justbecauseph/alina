@@ -50,7 +50,8 @@ import town.lampas.haruhi.content.api.ExtensionContext;
 final class TradeReader {
     static final Set<String> TRADE_KEYS = Set.of("currency", "experience_market", "price_lists", "shops");
     static final Set<String> DENOMINATION_KEYS = Set.of("item", "value");
-    static final Set<String> EXPERIENCE_MARKET_KEYS = Set.of("reserve", "restock_percent", "max_trade_percent");
+    static final Set<String> EXPERIENCE_MARKET_KEYS = Set.of("reserve", "restock_percent", "max_trade_percent",
+            "quote_tolerance_percent");
     static final Set<String> RESERVE_KEYS = Set.of("points", "aur");
     static final Set<String> PRICE_LIST_KEYS = Set.of("rules");
     static final Set<String> SELL_RULE_KEYS = Set.of("match", "namespace", "price", "junk", "refuse");
@@ -74,6 +75,11 @@ final class TradeReader {
     static final int MIN_TRADE_PERCENT = 1;
     static final int MAX_TRADE_PERCENT = 50;
     static final int DEFAULT_TRADE_PERCENT = 10;
+    /**
+     * The most percent a market trade may move against the player past its quote. A unit test asserts it equals
+     * {@code ReserveCurve.MAX_QUOTE_TOLERANCE}, because this package does not import {@code trade.pricing}, which imports it.
+     */
+    static final int MAX_QUOTE_TOLERANCE = 10;
     static final int MAX_FEE_PERCENT = 50;
     /** The longest offer id. A unit test asserts it equals {@code OfferRow.MAX_ID_LENGTH}, the limit the shop's payloads carry. */
     static final int MAX_ID_LENGTH = 64;
@@ -180,8 +186,9 @@ final class TradeReader {
     }
 
     /**
-     * {@code experience_market}: exactly {@code reserve} and {@code restock_percent}, which are required, and
-     * {@code max_trade_percent}, which is {@value #DEFAULT_TRADE_PERCENT} when left out.
+     * {@code experience_market}: exactly {@code reserve} and {@code restock_percent}, which are required, then
+     * {@code max_trade_percent}, which is {@value #DEFAULT_TRADE_PERCENT} when left out, and {@code quote_tolerance_percent},
+     * a whole number from 0 to {@value #MAX_QUOTE_TOLERANCE} which is 0 when left out.
      */
     private static Optional<ExperienceMarket> readMarket(JsonElement value, String where, CountingContext context) {
         Optional<Section> parsed = Section.of(value, where + ", experience_market", context);
@@ -200,11 +207,13 @@ final class TradeReader {
         Optional<Integer> restock = market.required("restock_percent", integerBetween(0, MAX_RESTOCK_PERCENT));
         Optional<Integer> maxTrade = market.optional("max_trade_percent",
                 integerBetween(MIN_TRADE_PERCENT, MAX_TRADE_PERCENT));
+        Optional<Integer> quoteTolerance = market.optional("quote_tolerance_percent",
+                integerBetween(0, MAX_QUOTE_TOLERANCE));
         if (reserve.isEmpty() || restock.isEmpty() || context.count() > mark) {
             return Optional.empty();
         }
         return Optional.of(new ExperienceMarket(reserve.get().points(), reserve.get().aur(), restock.get(),
-                maxTrade.orElse(DEFAULT_TRADE_PERCENT)));
+                maxTrade.orElse(DEFAULT_TRADE_PERCENT), quoteTolerance.orElse(0)));
     }
 
     /**

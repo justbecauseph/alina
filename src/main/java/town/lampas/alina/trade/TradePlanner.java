@@ -144,7 +144,9 @@ final class TradePlanner {
 
     /**
      * Sells the player's experience for {@code aur} Aur when {@code selling}, or buys experience for {@code aur} Aur. The
-     * points are those the shop gives, and {@code expectedPoints} must be them. {@code held} is the player's points.
+     * points are those the shop gives now. At a fixed rate {@code expectedPoints} must be them. At a shop with experience
+     * fees, {@code expectedPoints} is the quote, and the trade goes through when {@link ReserveCurve#acceptsQuote} accepts it
+     * for the market's quote tolerance; it then moves the points the shop gives now. {@code held} is the player's points.
      * {@code market} is the experience market, empty while it has not loaded; a shop with experience fees trades against it
      * and refuses with {@link Reason#LOADING} without it.
      */
@@ -243,14 +245,16 @@ final class TradePlanner {
             return TradePlan.refuse(Reason.INVALID);
         }
         int points = sold.getAsInt();
-        if (points != expectedPoints) {
+        if (!ReserveCurve.acceptsQuote(true, expectedPoints, points, market.quoteTolerancePercent())) {
             return TradePlan.refuse(Reason.STALE);
         }
         if (aur > budgetLeft) {
             return TradePlan.refuse(Reason.BUDGET_SPENT);
         }
         if (held < points) {
-            return TradePlan.refuse(Reason.NOT_ENOUGH_EXPERIENCE);
+            // The player holds the quote but not the live points: the price moved against them, so the quote is stale.
+            boolean priceMoved = points != expectedPoints && held >= expectedPoints;
+            return TradePlan.refuse(priceMoved ? Reason.STALE : Reason.NOT_ENOUGH_EXPERIENCE);
         }
         List<ItemStack> grant = Wallet.coins(currency, aur);
         if (!InventoryFit.fits(inventory, List.of(), grant)) {
@@ -279,7 +283,7 @@ final class TradePlanner {
             return TradePlan.refuse(Reason.INVALID);
         }
         int points = bought.getAsInt();
-        if (points != expectedPoints) {
+        if (!ReserveCurve.acceptsQuote(false, expectedPoints, points, market.quoteTolerancePercent())) {
             return TradePlan.refuse(Reason.STALE);
         }
         Optional<Wallet.Payment> payment = Wallet.plan(inventory, currency, aur);

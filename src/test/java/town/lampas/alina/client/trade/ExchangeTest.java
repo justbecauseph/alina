@@ -20,7 +20,7 @@ class ExchangeTest {
 
     /** A market over reserves of 500000 points and 10000 Aur, seeded the same, capped at 10 percent per trade. */
     private static ExperienceView market(int sellFee, int buyFee) {
-        MarketView market = new MarketView(500000, 10000, 500000, 10000, sellFee, buyFee, 10, List.of());
+        MarketView market = new MarketView(500000, 10000, 500000, 10000, sellFee, buyFee, 10, 0, List.of());
         return new ExperienceView(0, 0, 0, 0, 0, 0, 0, 0, Optional.of(market));
     }
 
@@ -140,7 +140,7 @@ class ExchangeTest {
 
     @Test
     void theMarketRateIsInHundredthsOfAPoint() {
-        MarketView live = new MarketView(505000, 9901, 500000, 10000, 5, 5, 10, List.of());
+        MarketView live = new MarketView(505000, 9901, 500000, 10000, 5, 5, 10, 0, List.of());
         assertEquals(5100, Exchange.marketRate(live));
     }
 
@@ -256,7 +256,7 @@ class ExchangeTest {
 
     @Test
     void aMarketWithAReserveOutOfRangeQuotesNothing() {
-        MarketView empty = new MarketView(0, 10000, 500000, 10000, 5, 5, 10, List.of());
+        MarketView empty = new MarketView(0, 10000, 500000, 10000, 5, 5, 10, 0, List.of());
         ExperienceView view = new ExperienceView(0, 0, 0, 0, 0, 0, 0, 0, Optional.of(empty));
         assertEquals(0, Exchange.experienceSellPoints(view, 1));
         assertEquals(0, Exchange.marketRate(empty));

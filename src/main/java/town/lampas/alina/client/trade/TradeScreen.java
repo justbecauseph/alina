@@ -580,7 +580,8 @@ public final class TradeScreen extends Screen implements DialogueStyleScreen {
 
     /**
      * The market group: the price of 100 points, and the chart of its recent changes, with the usual price's line across it;
-     * then the fee of each direction the shop trades. The usual price is the price of the seed reserves.
+     * then the fee of each direction the shop trades, and, above a quote tolerance of 0, the tolerance line under the fee. The
+     * usual price is the price of the seed reserves.
      */
     private void drawMarket(GuiGraphicsExtractor graphics, Box list, ExperienceMarketStatus status, MarketView market) {
         int price = Exchange.priceHundredths(market.points(), market.aur());
@@ -590,6 +591,10 @@ public final class TradeScreen extends Screen implements DialogueStyleScreen {
         drawChart(graphics, list, status.chart(), values, usual);
         if (market.sellFee() >= 0 || market.buyFee() >= 0) {
             drawIfFits(graphics, list, status.fee(), PriceLabel.fee(market.sellFee(), market.buyFee()), NOTE_TEXT);
+            if (market.quoteTolerancePercent() > 0) {
+                drawIfFits(graphics, list, status.tolerance(), PriceLabel.tolerance(market.quoteTolerancePercent()),
+                        NOTE_TEXT);
+            }
         }
     }
 

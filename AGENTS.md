@@ -364,11 +364,13 @@ The NPC shop trade is `TradeModule.service()` on a running server; the class jav
   - The effect's `detailJson` is `{"sold", "bought", "experience_sold", "experience_bought", "aur_spent"}`. The
     `alina:trade_completed` trigger reads `aur_spent` from it.
 - **Views and the client.** The view's experience maximums are whole steps of the rate's `aur`, rounded down. The client
-  sends `expectedPoints = aur / rateAur * ratePoints`, and a request that differs from the server's figure is `STALE`.
+  sends `expectedPoints = aur / rateAur * ratePoints`, and a request that differs from the server's figure is `STALE`
+  (at a market shop the quote tolerance applies instead; see Experience market).
 - **Requirements.** An offer's `requires` reads the player's reputation from `GuildModule` and an achievement from
   `AchievementModule`. A lookup that is still loading locks the offer.
 - **Lines.** A shop's own `lines` entry replaces Alina's default for its key. The defaults are `alina.trade.*` keys in
-  `en_us.json`.
+  `en_us.json`. Exception: a market experience trade accepted at points other than its quote is answered with
+  `TradeText.soldMoved` or `boughtMoved` (`alina.trade.sold_moved`, `alina.trade.bought_moved`), which no `lines` key replaces.
 
 ### Experience market
 
@@ -402,6 +404,11 @@ carry `experienceFees`, never `experience`. The design is EXPERIENCE-MARKET-PLAN
   row and its last 32 ticks. It installs them only if no trade began, no foreign apply arrived, and no write started
   while the read ran (`epoch`); otherwise the reconcile stays due and a later tick tries again. A failed read is tried 5
   seconds later.
+- **Quote tolerance.** `quote_tolerance_percent` (0 to `ReserveCurve.MAX_QUOTE_TOLERANCE`, default 0) lets a market
+  request whose quoted points differ from the live ones go through: `ReserveCurve.acceptsQuote` accepts any move in the
+  player's favour above 0, and one against the player up to `ceil(quoted * t / 100)`. The trade settles at the live
+  points; `TradeText.soldMoved`/`boughtMoved` name the quote. `ExperienceMarket` counts `requests`, `movedAccepted` and
+  `staleRefused` since the server started, which `/alina trade market` prints. The fixed-rate and item requests stay strict.
 - **Limits.** One trade may take at most `max_trade_percent` of the reserve it draws from: Aur for a sale, points for a
   purchase. The view's `maxSellAur` and `maxBuyAur` are found by binary search over the same quotes the planner uses.
 - **Staff.** `setMarket` writes the difference between the target and the live reserves through `adjustMarket`. It is a
@@ -426,7 +433,8 @@ Registered by `TradeDialogue`. Every type refuses unknown argument keys.
 For gamemasters: `/alina trade open <player> <shop>` (no interlocutor, no anchor), `quote <shop>` (prices the held item
 and names its rule's index in the shop's sell rules), `budget <player> [<shop>]`, and `budget <player> reset [<shop>]`,
 which deletes today's budget rows in storage and clears them from the record. The reset is refused while a trade of the
-player is settling. `market` prints the live reserves, the rate, the seed and the last restock day; `market reset`
+player is settling. `market` prints the live reserves, the rate, the seed, the last restock day, the quote tolerance, and the
+experience trades since the server started (asked, accepted at a moved price, refused as stale); `market reset`
 sets the pool to the seed and `market set <points> <aur>` to the given reserves, each written as the difference from the
 live reserves (so no trade is refused for it) and logged with who ran it and the reserves before and after. Feedback is
 `Component.literal`.

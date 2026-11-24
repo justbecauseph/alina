@@ -33,6 +33,7 @@ import town.lampas.alina.trade.TradeOutcome;
 import town.lampas.alina.trade.TradeRefusal;
 import town.lampas.alina.trade.TradeRefusal.Reason;
 import town.lampas.alina.trade.TradeService;
+import town.lampas.alina.trade.pricing.ReserveCurve;
 import town.lampas.alina.trade.pricing.ReserveCurve.Reserves;
 import town.lampas.alina.trade.network.MarketView;
 import town.lampas.alina.trade.network.TradeClosePayload;
@@ -56,6 +57,8 @@ public final class TradeGameTests {
     private static final String BUNDLE = "bundle.json";
     private static final String BUNDLE_NEXT = "bundle_next.json";
     private static final String BUNDLE_MARKET = "bundle_market.json";
+    /** {@link #BUNDLE_MARKET} with a quote tolerance of 2 percent on its experience market. */
+    private static final String BUNDLE_MARKET_TOLERANCE = "bundle_market_tolerance.json";
     private static final String OFFER_PAPER = "paper";
     private static final String OFFER_SNOWBALL = "snowball";
     private static final String OFFER_CHARM = "charm";
@@ -742,6 +745,302 @@ public final class TradeGameTests {
                 .thenSucceed();
     }
 
+    @GameTest(maxTicks = 600)
+    public void aMarketTradeWithinTheToleranceGoesThroughAtTheLivePoints(GameTestHelper helper) {
+        TradeRig rig = TradeRig.create(helper, BUNDLE_MARKET_TOLERANCE);
+        ServerPlayer quoter = rig.joined();
+        ServerPlayer mover = rig.joined();
+        holdFiveThousandPoints(quoter);
+        holdFiveThousandPoints(mover);
+        int[] quoted = new int[1];
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    rig.tick();
+                    helper.assertTrue(rig.loaded(quoter) && rig.loaded(mover) && rig.service().market().isPresent(),
+                            "the trade record or the market has not loaded");
+                })
+                .thenExecute(() -> {
+                    open(helper, rig, quoter, BROKER, Optional.empty());
+                    open(helper, rig, mover, BROKER, Optional.empty());
+                    helper.assertValueEqual(rig.messenger().lastView(quoter).orElseThrow().experience().orElseThrow()
+                            .market().orElseThrow().quoteTolerancePercent(), 2, "the view carries the quote tolerance");
+                    // The quote is the curve at the pool as it stands, with the broker's fee of 0: 100 Aur is 5051 points.
+                    Reserves before = live(rig);
+                    quoted[0] = ReserveCurve.sellPoints(before, 100, 0).getAsInt();
+                    helper.assertValueEqual(quoted[0], 5051, "the quote for 100 Aur at the seed pool");
+                    int moverQuote = ReserveCurve.sellPoints(before, 10, 0).getAsInt();
+                    helper.assertValueEqual(moverQuote, 501, "the quote for 10 Aur at the seed pool");
+                    assertAccepted(helper, rig.service().experience(mover, rig.sessionId(mover), true, 10, moverQuote),
+                            "the other player sells 10 Aur of experience");
+                })
+                .thenWaitUntil(() -> {
+                    rig.tick();
+                    helper.assertTrue(rig.idle(mover), "the other player's sale is still settling");
+                })
+                .thenExecute(() -> {
+                    // The pool is now 500501 points and 9990 Aur. 100 Aur costs 5061 points there: 10 more than the quote,
+                    // and 2 percent of the quote is 102 points.
+                    helper.assertValueEqual(live(rig), new Reserves(500_501, 9_990), "the other sale moved the pool");
+                    TradeOutcome outcome = rig.service().experience(quoter, rig.sessionId(quoter), true, 100, quoted[0]);
+                    assertAccepted(helper, outcome, "the quoter sells 100 Aur of experience at the old quote");
+                    helper.assertValueEqual(outcome.line().getString(), "Sold 5061 points for 100 Aur (quoted 5051).",
+                            "the line names the live points and the quote");
+                })
+                .thenWaitUntil(() -> {
+                    rig.tick();
+                    helper.assertTrue(rig.idle(quoter), "the quoter's sale is still settling");
+                })
+                .thenExecute(() -> {
+                    helper.assertValueEqual(quoter.totalExperience, 284, "the live 5061 points left the quoter, not 5051");
+                    // 100 Aur in the largest coins: 11 ingots of 9 and one nugget.
+                    helper.assertValueEqual(count(quoter, Items.GOLD_INGOT), 11, "the ingots paid");
+                    helper.assertValueEqual(count(quoter, Items.GOLD_NUGGET), 1, "the nugget paid");
+                    helper.assertValueEqual(rig.service().market().orElseThrow().requests(), 2L,
+                            "the two experience requests at the market");
+                    helper.assertValueEqual(rig.service().market().orElseThrow().movedAccepted(), 1L,
+                            "the quoter's trade was accepted at a moved price");
+                    helper.assertValueEqual(rig.service().market().orElseThrow().staleRefused(), 0L,
+                            "no request was refused as stale");
+                    helper.assertValueEqual(rig.service().market().orElseThrow().quoteTolerancePercent(), 2,
+                            "the market's quote tolerance");
+                })
+                .thenSucceed();
+    }
+
+    @GameTest(maxTicks = 600)
+    public void aMarketTradeBeyondTheToleranceIsRefusedAsStale(GameTestHelper helper) {
+        TradeRig rig = TradeRig.create(helper, BUNDLE_MARKET_TOLERANCE);
+        ServerPlayer quoter = rig.joined();
+        ServerPlayer seller = rig.joined();
+        holdFiveThousandPoints(quoter);
+        holdFiveThousandPoints(seller);
+        int[] quoted = new int[1];
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    rig.tick();
+                    helper.assertTrue(rig.loaded(quoter) && rig.loaded(seller) && rig.service().market().isPresent(),
+                            "the trade record or the market has not loaded");
+                })
+                .thenExecute(() -> {
+                    open(helper, rig, quoter, BROKER, Optional.empty());
+                    open(helper, rig, seller, BROKER, Optional.empty());
+                    quoted[0] = ReserveCurve.sellPoints(live(rig), 100, 0).getAsInt();
+                    helper.assertValueEqual(quoted[0], 5051, "the quote for 100 Aur at the seed pool");
+                    assertAccepted(helper, rig.service().experience(seller, rig.sessionId(seller), true, 100, quoted[0]),
+                            "the other player sells 100 Aur of experience");
+                })
+                .thenWaitUntil(() -> {
+                    rig.tick();
+                    helper.assertTrue(rig.idle(seller), "the other player's sale is still settling");
+                })
+                .thenExecute(() -> {
+                    // The pool is now 505051 points and 9900 Aur. 100 Aur costs 5154 points there: 103 more than the quote,
+                    // and the allowance is 102 points.
+                    helper.assertValueEqual(live(rig), new Reserves(505_051, 9_900), "the other sale moved the pool");
+                    helper.assertValueEqual(ReserveCurve.sellPoints(live(rig), 100, 0).getAsInt(), 5154,
+                            "the live cost of 100 Aur");
+                    assertRefused(helper, rig.service().experience(quoter, rig.sessionId(quoter), true, 100, quoted[0]),
+                            Reason.STALE, "100 Aur quoted at 5051 when the live cost is 5154");
+                })
+                .thenWaitUntil(() -> {
+                    rig.tick();
+                    helper.assertValueEqual(quoter.totalExperience, 5_345, "no points left the quoter");
+                    helper.assertValueEqual(count(quoter, Items.GOLD_INGOT), 0, "no ingots were paid");
+                    helper.assertValueEqual(count(quoter, Items.GOLD_NUGGET), 0, "no nugget was paid");
+                    helper.assertValueEqual(rig.service().budget(quoter, BROKER).orElseThrow().paid(), 0,
+                            "no Aur was paid against the broker's budget");
+                    helper.assertValueEqual(rig.service().market().orElseThrow().staleRefused(), 1L,
+                            "the refused request counts as stale");
+                    helper.assertValueEqual(rig.service().market().orElseThrow().movedAccepted(), 0L,
+                            "no accepted request moved");
+                })
+                .thenSucceed();
+    }
+
+    @GameTest(maxTicks = 600)
+    public void withoutAToleranceAMovedMarketQuoteIsRefused(GameTestHelper helper) {
+        TradeRig rig = TradeRig.create(helper, BUNDLE_MARKET);
+        ServerPlayer quoter = rig.joined();
+        ServerPlayer seller = rig.joined();
+        holdFiveThousandPoints(quoter);
+        holdFiveThousandPoints(seller);
+        int[] quoted = new int[1];
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    rig.tick();
+                    helper.assertTrue(rig.loaded(quoter) && rig.loaded(seller) && rig.service().market().isPresent(),
+                            "the trade record or the market has not loaded");
+                })
+                .thenExecute(() -> {
+                    open(helper, rig, quoter, BROKER, Optional.empty());
+                    open(helper, rig, seller, BROKER, Optional.empty());
+                    quoted[0] = ReserveCurve.sellPoints(live(rig), 100, 0).getAsInt();
+                    helper.assertValueEqual(quoted[0], 5051, "the quote for 100 Aur at the seed pool");
+                    int sellerQuote = ReserveCurve.sellPoints(live(rig), 1, 0).getAsInt();
+                    assertAccepted(helper, rig.service().experience(seller, rig.sessionId(seller), true, 1, sellerQuote),
+                            "the other player sells 1 Aur of experience");
+                })
+                .thenWaitUntil(() -> {
+                    rig.tick();
+                    helper.assertTrue(rig.idle(seller), "the other player's sale is still settling");
+                })
+                .thenExecute(() -> {
+                    // The pool is now 500051 points and 9999 Aur. 100 Aur costs 5052 points there: one more than the quote.
+                    helper.assertValueEqual(live(rig), new Reserves(500_051, 9_999), "the other sale moved the pool");
+                    helper.assertValueEqual(ReserveCurve.sellPoints(live(rig), 100, 0).getAsInt(), 5052,
+                            "the live cost of 100 Aur");
+                    assertRefused(helper, rig.service().experience(quoter, rig.sessionId(quoter), true, 100, quoted[0]),
+                            Reason.STALE, "100 Aur quoted at 5051 with no tolerance when the live cost is 5052");
+                })
+                .thenWaitUntil(() -> {
+                    rig.tick();
+                    helper.assertValueEqual(quoter.totalExperience, 5_345, "no points left the quoter");
+                    helper.assertValueEqual(rig.service().market().orElseThrow().staleRefused(), 1L,
+                            "the refused request counts as stale");
+                })
+                .thenSucceed();
+    }
+
+    @GameTest(maxTicks = 600)
+    public void aMarketPurchaseWithinTheToleranceAtAFeeGoesThroughAtTheLivePoints(GameTestHelper helper) {
+        TradeRig rig = TradeRig.create(helper, BUNDLE_MARKET_TOLERANCE);
+        ServerPlayer quoter = rig.joined();
+        ServerPlayer buyer = rig.joined();
+        holdFiveThousandPoints(quoter);
+        holdFiveThousandPoints(buyer);
+        // 100 Aur in the largest coins for the quoter: 11 ingots of 9 and one nugget. The other buyer has 50 Aur: 5 and 5.
+        quoter.getInventory().setItem(0, new ItemStack(Items.GOLD_INGOT, 11));
+        quoter.getInventory().setItem(1, new ItemStack(Items.GOLD_NUGGET, 1));
+        buyer.getInventory().setItem(0, new ItemStack(Items.GOLD_INGOT, 5));
+        buyer.getInventory().setItem(1, new ItemStack(Items.GOLD_NUGGET, 5));
+        int[] quoted = new int[1];
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    rig.tick();
+                    helper.assertTrue(rig.loaded(quoter) && rig.loaded(buyer) && rig.service().market().isPresent(),
+                            "the trade record or the market has not loaded");
+                })
+                .thenExecute(() -> {
+                    open(helper, rig, quoter, TOLL, Optional.empty());
+                    open(helper, rig, buyer, TOLL, Optional.empty());
+                    // The quote: the curve gives floor(500000 * 100 / 10100) = 4950 points, and the toll's 5 percent fee takes
+                    // floor(4950 * 95 / 100) = 4702, leaving 4702 points for the quoter.
+                    quoted[0] = ReserveCurve.buyPoints(live(rig), 100, 5).getAsInt();
+                    helper.assertValueEqual(quoted[0], 4_702, "the quote for 100 Aur at the seed pool");
+                    // The other buyer's figure for 50 Aur: floor(500000 * 50 / 10050) = 2487, and floor(2487 * 95 / 100) = 2362.
+                    int buyerPoints = ReserveCurve.buyPoints(live(rig), 50, 5).getAsInt();
+                    helper.assertValueEqual(buyerPoints, 2_362, "the other buyer's figure for 50 Aur");
+                    assertAccepted(helper, rig.service().experience(buyer, rig.sessionId(buyer), false, 50, buyerPoints),
+                            "the other player buys 50 Aur of experience");
+                })
+                .thenWaitUntil(() -> {
+                    rig.tick();
+                    helper.assertTrue(rig.idle(buyer), "the other player's purchase is still settling");
+                })
+                .thenExecute(() -> {
+                    // The pool is now 500000 - 2362 = 497638 points and 10050 Aur. There 100 Aur gives floor(497638 * 100 /
+                    // 10150) = 4902 before the fee, and floor(4902 * 95 / 100) = 4656 after it. That is 46 fewer than the quote,
+                    // and 2 percent of the quote, 4702, is 94.04 points, rounded up to 95.
+                    helper.assertValueEqual(live(rig), new Reserves(497_638, 10_050), "the other purchase moved the pool");
+                    TradeOutcome outcome = rig.service().experience(quoter, rig.sessionId(quoter), false, 100, quoted[0]);
+                    assertAccepted(helper, outcome, "the quoter buys 100 Aur of experience at the old quote");
+                    helper.assertValueEqual(outcome.line().getString(), "Bought 4656 points for 100 Aur (quoted 4702).",
+                            "the line names the live points and the quote");
+                })
+                .thenWaitUntil(() -> {
+                    rig.tick();
+                    helper.assertTrue(rig.idle(quoter), "the quoter's purchase is still settling");
+                })
+                .thenExecute(() -> {
+                    // 5345 + 4656 = 10001: the live points came to the quoter, not the 4702 quoted.
+                    helper.assertValueEqual(quoter.totalExperience, 10_001, "the live 4656 points came to the quoter");
+                    helper.assertValueEqual(count(quoter, Items.GOLD_INGOT), 0, "the ingots paid");
+                    helper.assertValueEqual(count(quoter, Items.GOLD_NUGGET), 0, "the nugget paid");
+                    helper.assertValueEqual(live(rig), new Reserves(492_982, 10_150), "the pool after both purchases");
+                    helper.assertValueEqual(rig.service().market().orElseThrow().requests(), 2L,
+                            "the two experience requests at the market");
+                    helper.assertValueEqual(rig.service().market().orElseThrow().movedAccepted(), 1L,
+                            "the quoter's purchase was accepted at a moved price");
+                    helper.assertValueEqual(rig.service().market().orElseThrow().staleRefused(), 0L,
+                            "no request was refused as stale");
+                })
+                .thenWaitUntil(() -> {
+                    rig.tick();
+                    helper.assertValueEqual(rig.storedMarket().orElseThrow().points(), 492_982L, "the stored points");
+                    helper.assertValueEqual(rig.storedMarket().orElseThrow().aur(), 10_150L, "the stored Aur");
+                })
+                .thenSucceed();
+    }
+
+    @GameTest(maxTicks = 600)
+    public void aFavourableMarketMoveGoesThroughAtTheLivePoints(GameTestHelper helper) {
+        TradeRig rig = TradeRig.create(helper, BUNDLE_MARKET_TOLERANCE);
+        ServerPlayer seller = rig.joined();
+        ServerPlayer buyer = rig.joined();
+        holdFiveThousandPoints(seller);
+        holdFiveThousandPoints(buyer);
+        // The other buyer has 10 Aur: one ingot of 9 and one nugget.
+        buyer.getInventory().setItem(0, new ItemStack(Items.GOLD_INGOT, 1));
+        buyer.getInventory().setItem(1, new ItemStack(Items.GOLD_NUGGET, 1));
+        int[] quoted = new int[1];
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    rig.tick();
+                    helper.assertTrue(rig.loaded(seller) && rig.loaded(buyer) && rig.service().market().isPresent(),
+                            "the trade record or the market has not loaded");
+                })
+                .thenExecute(() -> {
+                    open(helper, rig, seller, BROKER, Optional.empty());
+                    open(helper, rig, buyer, BROKER, Optional.empty());
+                    // The quote: 100 Aur at the seed pool with the broker's fee of 0 is ceil(500000 * 100 / 9900) = ceil(5050.5)
+                    // = 5051 points.
+                    quoted[0] = ReserveCurve.sellPoints(live(rig), 100, 0).getAsInt();
+                    helper.assertValueEqual(quoted[0], 5_051, "the quote for 100 Aur at the seed pool");
+                    // The other buyer's figure for 10 Aur: floor(500000 * 10 / 10010) = floor(499.5) = 499 points.
+                    int buyerPoints = ReserveCurve.buyPoints(live(rig), 10, 0).getAsInt();
+                    helper.assertValueEqual(buyerPoints, 499, "the other buyer's figure for 10 Aur");
+                    assertAccepted(helper, rig.service().experience(buyer, rig.sessionId(buyer), false, 10, buyerPoints),
+                            "the other player buys 10 Aur of experience");
+                })
+                .thenWaitUntil(() -> {
+                    rig.tick();
+                    helper.assertTrue(rig.idle(buyer), "the other player's purchase is still settling");
+                })
+                .thenExecute(() -> {
+                    // The pool is now 500000 - 499 = 499501 points and 10010 Aur. There 100 Aur costs ceil(499501 * 100 / 9910)
+                    // = ceil(5040.37) = 5041 points: 10 fewer than the quote, so the move is in the seller's favour.
+                    helper.assertValueEqual(live(rig), new Reserves(499_501, 10_010), "the other purchase moved the pool");
+                    TradeOutcome outcome = rig.service().experience(seller, rig.sessionId(seller), true, 100, quoted[0]);
+                    assertAccepted(helper, outcome, "the seller sells 100 Aur of experience at the old quote");
+                    helper.assertValueEqual(outcome.line().getString(), "Sold 5041 points for 100 Aur (quoted 5051).",
+                            "the line names the live points and the quote");
+                })
+                .thenWaitUntil(() -> {
+                    rig.tick();
+                    helper.assertTrue(rig.idle(seller), "the seller's sale is still settling");
+                })
+                .thenExecute(() -> {
+                    // 5345 - 5041 = 304: the live 5041 points left the seller, fewer than the quote.
+                    helper.assertValueEqual(seller.totalExperience, 304, "the live 5041 points left the seller");
+                    // 100 Aur in the largest coins: 11 ingots of 9 and one nugget.
+                    helper.assertValueEqual(count(seller, Items.GOLD_INGOT), 11, "the ingots paid");
+                    helper.assertValueEqual(count(seller, Items.GOLD_NUGGET), 1, "the nugget paid");
+                    helper.assertValueEqual(live(rig), new Reserves(504_542, 9_910), "the pool after both trades");
+                    helper.assertValueEqual(rig.service().market().orElseThrow().requests(), 2L,
+                            "the two experience requests at the market");
+                    helper.assertValueEqual(rig.service().market().orElseThrow().movedAccepted(), 1L,
+                            "the seller's sale was accepted at a moved price");
+                    helper.assertValueEqual(rig.service().market().orElseThrow().staleRefused(), 0L,
+                            "no request was refused as stale");
+                })
+                .thenWaitUntil(() -> {
+                    rig.tick();
+                    helper.assertValueEqual(rig.storedMarket().orElseThrow().points(), 504_542L, "the stored points");
+                    helper.assertValueEqual(rig.storedMarket().orElseThrow().aur(), 9_910L, "the stored Aur");
+                })
+                .thenSucceed();
+    }
+
     @GameTest(maxTicks = 500)
     public void aBuyBackAtTheBrokerGivesFewerPointsThanTheSaleTook(GameTestHelper helper) {
         TradeRig rig = TradeRig.create(helper, BUNDLE_MARKET);
@@ -1234,6 +1533,11 @@ public final class TradeGameTests {
     /** The stored ticks as {@code [points, aur]} pairs, newest first. */
     private static List<List<Long>> ticksOf(TradeRig rig) {
         return rig.storedMarketTicks().stream().map(tick -> List.of(tick.points(), tick.aur())).toList();
+    }
+
+    /** The experience market's live reserves, which the test's service must have loaded. */
+    private static Reserves live(TradeRig rig) {
+        return rig.service().market().orElseThrow().live();
     }
 
     /** Gives the player level 50 with no progress, which holds 5345 points: the total the game needs to reach level 50. */

@@ -60,6 +60,16 @@ public final class TradeText {
         return text("market_loading", "The experience market is still loading.");
     }
 
+    /** The line of a sale at the market whose points moved from the quote: the points given, the Aur, and the points quoted. */
+    public static Component soldMoved(int points, int aur, int quoted) {
+        return text("sold_moved", "Sold %s points for %s Aur (quoted %s).", points, aur, quoted);
+    }
+
+    /** The line of a purchase at the market whose points moved from the quote: the points got, the Aur, and the points quoted. */
+    public static Component boughtMoved(int points, int aur, int quoted) {
+        return text("bought_moved", "Bought %s points for %s Aur (quoted %s).", points, aur, quoted);
+    }
+
     public static Component needsReputation(int reputation) {
         return text("needs_reputation", "You need reputation %s.", reputation);
     }

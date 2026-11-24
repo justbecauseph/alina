@@ -464,6 +464,13 @@
           "maximum": 50,
           "default": 10,
           "description": "The most of the reserve one trade may take from it, in percent."
+        },
+        "quote_tolerance_percent": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10,
+          "default": 0,
+          "description": "How far, in percent of the quoted points, a market trade may have moved against the player since the quote and still go through. 0 refuses any difference."
         }
       },
       "required": ["reserve", "restock_percent"],

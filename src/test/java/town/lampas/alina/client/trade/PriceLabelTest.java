@@ -55,6 +55,12 @@ class PriceLabelTest {
     }
 
     @Test
+    void theQuoteToleranceIsItsOwnLineUnderTheFee() {
+        assertEquals("Quote tolerance 2%", PriceLabel.tolerance(2).getString());
+        assertEquals("Quote tolerance 10%", PriceLabel.tolerance(10).getString());
+    }
+
+    @Test
     void aPreviewNamesTheLevelAfterTheTrade() {
         assertEquals("Lv 24", PriceLabel.previewLevel(24).getString());
     }

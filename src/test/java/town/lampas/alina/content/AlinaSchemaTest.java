@@ -479,6 +479,10 @@ class AlinaSchemaTest {
                     useMarket(b);
                     market(b).remove("max_trade_percent");
                 }),
+                Arguments.of("an experience market with a quote tolerance of 2", (Consumer<JsonObject>) b -> {
+                    useMarket(b);
+                    market(b).addProperty("quote_tolerance_percent", 2);
+                }),
                 Arguments.of("an experience market at the reserve bounds", (Consumer<JsonObject>) b -> {
                     useMarket(b);
                     reserve(b).addProperty("points", 1000);
@@ -588,6 +592,10 @@ class AlinaSchemaTest {
                 Arguments.of("a max trade of 51", (Consumer<JsonObject>) b -> {
                     useMarket(b);
                     market(b).addProperty("max_trade_percent", 51);
+                }),
+                Arguments.of("a quote tolerance of 11", (Consumer<JsonObject>) b -> {
+                    useMarket(b);
+                    market(b).addProperty("quote_tolerance_percent", 11);
                 }),
                 Arguments.of("an experience market without a reserve", (Consumer<JsonObject>) b -> {
                     useMarket(b);

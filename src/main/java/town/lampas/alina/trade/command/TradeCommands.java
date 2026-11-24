@@ -205,7 +205,10 @@ public final class TradeCommands {
         return 1;
     }
 
-    /** {@code /alina trade market}: the live reserves and their rate, the seed and its base rate, and the last restock day. */
+    /**
+     * {@code /alina trade market}: the live reserves and their rate, the seed and its base rate, the last restock day, the quote
+     * tolerance, and the experience requests at the market since the server started.
+     */
     private static int market(CommandContext<CommandSourceStack> context) {
         CommandSourceStack source = context.getSource();
         Optional<TradeService.MarketStatus> status = TradeModule.service().market();
@@ -218,6 +221,10 @@ public final class TradeCommands {
         source.sendSuccess(() -> Component.literal("Seed: " + reserves(market.seed()) + ", base rate "
                 + rate(market.seed()) + "."), false);
         source.sendSuccess(() -> Component.literal("Last restock: " + market.restockedDay() + "."), false);
+        source.sendSuccess(() -> Component.literal("Quote tolerance: " + market.quoteTolerancePercent() + "%."), false);
+        source.sendSuccess(() -> Component.literal("Experience trades since the server started: " + market.requests()
+                + " asked, " + market.movedAccepted() + " at a moved price, " + market.staleRefused() + " refused as stale."),
+                false);
         return 1;
     }
 

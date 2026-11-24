@@ -35,7 +35,7 @@ class TradeTabTest {
 
     /** A market experience panel with the given fees, in percent, and -1 for a direction not traded. */
     private static ExperienceView market(int sellFee, int buyFee) {
-        MarketView market = new MarketView(500000, 10000, 500000, 10000, sellFee, buyFee, 10, List.of());
+        MarketView market = new MarketView(500000, 10000, 500000, 10000, sellFee, buyFee, 10, 0, List.of());
         return new ExperienceView(0, 0, 0, 0, 0, 0, 0, 0, Optional.of(market));
     }
 
